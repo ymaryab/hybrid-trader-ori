@@ -18,3 +18,6 @@ logs/
 
 # OS
 .DS_Store
+
+# Equity sidecar canli ciktisi (uretilen)
+docs/equity.json

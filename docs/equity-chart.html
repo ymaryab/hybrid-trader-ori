@@ -100,15 +100,15 @@ window.addEventListener('resize',draw);
 
 async function load(){
   try{
-    const r=await fetch('/equity-data.json',{cache:'no-store'});
+    const r=await fetch('/equity.json',{cache:'no-store'});
     if(!r.ok)throw 0; const d=await r.json(); rebuild(d);
     document.getElementById('liveDot').style.background='#3fb950';
     document.getElementById('liveTxt').textContent='canli - son guncelleme '+new Date().toLocaleTimeString('tr-TR')+(NOW&&NOW.equity!=null?' (acik: '+(NOW.unrealized>=0?'+':'')+(+NOW.unrealized).toFixed(2)+'$)':'');
   }catch(e){
     rebuild(FALLBACK);
     document.getElementById('liveDot').style.background='#f85149';
-    document.getElementById('liveTxt').textContent='offline (gomulu veri) - canli icin: python3 docs/equity-server.py';
+    document.getElementById('liveTxt').textContent='offline (gomulu veri) - canli icin: python3 docs/equity-sidecar.py';
   }
 }
-load(); setInterval(load,30000);
+load(); setInterval(load,15000);
 </script></body></html>
