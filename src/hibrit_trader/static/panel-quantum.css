@@ -1023,7 +1023,9 @@ html[lang="tr"] #hudSignalText {
   width: 100%;
   max-width: none;
   margin: 0;
-  min-height: calc(100vh - 4rem);
+  /* min-height kaldirildi: body min-height:100vh zaten dolduruyor; calc(100vh-4rem)
+     + 4rem nav vh yuvarlamasiyla ~1px tasip kaydirilamaz tam-boy bar yaratiyordu. */
+  min-height: 0;
 }
 
 .qc-trade-row {
@@ -1325,12 +1327,9 @@ html[lang="tr"] #hudSignalText {
 }
 
 .qc-hidden-legacy {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
+  /* display:none -> layout'tan tamamen cikar (sr-only clip child'lari scroll
+     alanina tasiyabiliyordu). JS bu ID'leri display:none'da da okur/yazar. */
+  display: none !important;
 }
 
 /* Hide old floating metrics & cockpit when quantum active */
