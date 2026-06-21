@@ -21,3 +21,4 @@ logs/
 
 # Equity sidecar canli ciktisi (uretilen)
 docs/equity.json
+docs/cf-shadow.jsonl
