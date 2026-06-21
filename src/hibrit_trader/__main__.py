@@ -90,8 +90,8 @@ def cmd_run() -> None:
             return
         print("⚠️  CANLI MOD — gerçek para (Solana/Jupiter). Max pozisyon: $%.0f" % s.max_position_usd)
     import uvicorn
-    print("Motor + panel başlıyor → http://127.0.0.1:8642")
-    uvicorn.run("hibrit_trader.panel:app", host="127.0.0.1", port=8642)
+    print("Motor + panel başlıyor → http://127.0.0.1:8643")
+    uvicorn.run("hibrit_trader.panel:app", host="127.0.0.1", port=8643)
 
 
 def main() -> None:

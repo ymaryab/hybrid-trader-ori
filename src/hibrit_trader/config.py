@@ -22,7 +22,7 @@ DEFAULT_RPC = {
 API = {
     "dexscreener": "https://api.dexscreener.com",
     "geckoterminal": "https://api.geckoterminal.com/api/v2",
-    "jupiter_quote": "https://quote-api.jup.ag/v6",
+    "jupiter_quote": "https://lite-api.jup.ag/swap/v1",
     "goplus": "https://api.gopluslabs.io/api/v1",
 }
 

@@ -309,7 +309,7 @@
     document.getElementById("walletStatus").innerHTML =
       '<span class="wallet-missing">Phantom bulunamadı. ' +
       '<a href="https://phantom.app/download" target="_blank" rel="noopener">Kur</a> ' +
-      "→ Chrome/Brave ile <strong>http://127.0.0.1:8642</strong> aç.</span>";
+      "→ Chrome/Brave ile <strong>http://127.0.0.1:8643</strong> aç.</span>";
     var btn = document.getElementById("phantomBtn");
     if (btn) {
       btn.disabled = false;
@@ -381,7 +381,7 @@
         "Phantom bulunamadı.\n\n" +
           "1) Chrome/Brave kullan\n" +
           "2) Phantom eklentisi kurulu olsun\n" +
-          "3) http://127.0.0.1:8642 adresini aç"
+          "3) http://127.0.0.1:8643 adresini aç"
       );
       btn.disabled = false;
       return;
