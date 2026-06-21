@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,6 +30,18 @@ STATE = ROOT / "data" / "paper_state.json"
 OUT = ROOT / "docs" / "equity.json"
 EVENTS: list[dict] = []
 INTERVAL = float(os.getenv("EQUITY_SIDECAR_SEC", "12"))
+# Canli MTM equity icin ORI botunun (8643) durumu. Erisilemezse maliyet-bazli fallback.
+BOT_STATE_URL = os.getenv("EQUITY_BOT_URL", "http://127.0.0.1:8643/api/state")
+
+
+def fetch_live_summary() -> dict | None:
+    """ORI botunun canli equity ozeti (MTM dahil). Hata -> None (fallback kullanilir)."""
+    try:
+        with urllib.request.urlopen(BOT_STATE_URL, timeout=3) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        return data.get("summary") or None
+    except Exception:
+        return None
 
 
 def build() -> dict | None:
@@ -55,7 +68,21 @@ def build() -> dict | None:
     rows.sort(key=lambda r: r[0])
 
     now_ms = int(time.time() * 1000)
-    equity = round(balance + deployed, 2)  # nakit + kilitli maliyet (MTM yok)
+    # Canli MTM equity'i botun /api/state'inden al (panelle birebir senkron).
+    # Erisilemezse maliyet-bazli (nakit + kilitli maliyet) fallback.
+    live = fetch_live_summary()
+    if live and live.get("equity") is not None:
+        equity = round(float(live["equity"]), 2)
+        unrealized = round(float(live.get("unrealized_pnl") or 0.0), 2)
+        cash = round(float(live.get("balance", balance)), 2)
+        deployed_v = round(equity - cash, 2)
+        synced = True
+    else:
+        equity = round(balance + deployed, 2)
+        unrealized = 0.0
+        cash = round(balance, 2)
+        deployed_v = round(deployed, 2)
+        synced = False
     return {
         "base": round(base, 6),
         "data": rows,
@@ -64,10 +91,11 @@ def build() -> dict | None:
             "ms": now_ms,
             "equity": equity,
             "realized": round(realized, 2),
-            "unrealized": 0.0,           # read-only: canli fiyat yok -> MTM hesaplanmaz
-            "cash": round(balance, 2),
-            "deployed": round(deployed, 2),
+            "unrealized": unrealized,
+            "cash": cash,
+            "deployed": deployed_v,
         },
+        "synced": synced,  # True = botun canli MTM equity'siyle senkron
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 

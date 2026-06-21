@@ -27,16 +27,14 @@
  <div class="sub"><span class="live" id="liveDot"></span><span id="liveTxt">canli baglaniyor...</span></div>
  <div class="stats" id="stats"></div>
  <div class="controls" id="ranges">
-  <button data-h="1">Son 1s</button><button data-h="6">Son 6s</button><button data-h="24">Son 24s</button>
-  <button data-h="168">1 hafta</button><button data-h="336">2 hafta</button><button data-h="720">1 ay</button>
-  <button data-evt="Faz A">Faz A sonrasi</button><button data-evt="C1">C1 sonrasi</button>
-  <button data-h="0" class="active">Tumu</button>
+  <button data-h="1">Son 1s</button><button data-h="6">Son 6s</button><button data-h="12">Son 12s</button><button data-h="24">Son 24s</button>
+  <button data-h="168">1w</button><button data-h="336">2w</button><button data-h="720">1m</button><button data-h="2160">3m</button>
+  <button data-h="0" class="active">All</button>
  </div>
  <div class="chart-wrap"><canvas id="c"></canvas><div id="tip"></div></div>
  <div class="legend">
   <span><i class="dot" style="background:var(--accent)"></i>Kasa (realized: kapanan islemler)</span>
   <span><i class="dot" style="background:var(--line)"></i>Toplam equity (MTM: + acik pozisyonlar)</span>
-  <span><i class="dot" style="background:var(--evt)"></i>Faz A / C1</span>
  </div>
 <script>
 const FALLBACK = {"base":499.967948,"data":[[1782043579429,-0.3758],[1782043766468,-24.9941],[1782043804567,-0.3524],[1782043804569,-12.5967],[1782043911371,-8.7701],[1782043911372,0.5438],[1782043981002,-0.9741],[1782044664201,-0.8628],[1782045713213,0.4237],[1782045713215,10.4342],[1782045902441,-2.1115],[1782047446922,-2.1331],[1782047518021,-3.3398],[1782048031913,62.8551],[1782048147343,2.4457],[1782048368517,-0.4481],[1782048405776,0.9425]],"events":[],"now":{"ms":1782048405776,"equity":520.65,"realized":20.69,"unrealized":0.0,"cash":520.65,"deployed":0}};
