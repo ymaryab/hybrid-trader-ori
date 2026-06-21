@@ -114,6 +114,32 @@ def test_update_excursion_tracks_mfe_mae_liq(tele_dir):
     assert pos.mfe_at_sec > 0
 
 
+def test_runner_time_profile_to_exits(tele_dir):
+    broker = _broker(tele_dir)
+    engine = Engine(Settings.from_env(), broker)
+    pair = _pair(price_usd=10.0, liquidity_usd=200_000)
+    pos = broker.buy(pair, 50.0, 70.0)
+    pos.opened_ts = time.time() - 120
+    for px in (14.0, 9.0, 11.0, 12.0, 13.0, 13.5):  # tepe 14, dip 9; 5'ten fazla tick
+        engine._update_excursion(pos, px, pair)
+    assert pos.obs_peak_price == 14.0 and pos.obs_trough_price == 9.0
+    assert pos.obs_peak_ts_ms > 0 and pos.obs_trough_ts_ms > 0
+    assert len(pos.early_ticks) == 5  # ilk ~5 tick ile sınırlı
+    assert pos.early_ticks[0] == [0, pos.entry_price]  # entry baseline t=0
+    trade = broker.sell(pos, 13.0, 200_000, "hedef")
+    engine._log_exit_profile(pos, trade)
+    rows = telemetry.read_recent("exits")
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["trade_id"] == pos.trade_id
+    assert r["peak_price"] == 14.0 and r["trough_price"] == 9.0
+    assert r["time_to_peak_ms"] is not None and r["time_to_peak_ms"] > 0
+    assert isinstance(r["early_ticks"], list) and len(r["early_ticks"]) == 5
+    # trades.jsonl bu alanları taşımaz (ayrı dosya, append-only korunur)
+    tline = json.loads((tele_dir / "t.jsonl").read_text().splitlines()[-1])
+    assert "peak_price" not in tline and "early_ticks" not in tline
+
+
 def test_log_reject_dedup_and_features(tele_dir):
     broker = _broker(tele_dir)
     engine = Engine(Settings.from_env(), broker)

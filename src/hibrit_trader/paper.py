@@ -53,6 +53,12 @@ class Position:
     mae_pct: float = 0.0              # max adverse excursion (dip zarar %)
     mfe_at_sec: float = 0.0           # MFE'ye ulaşıldığı tutuş süresi (sn)
     mae_at_sec: float = 0.0
+    # ---- Runner zaman-profili (saf gözlem; trading kararını etkilemez) ----
+    obs_peak_price: float = 0.0       # tutuş boyunca görülen en yüksek fiyat
+    obs_peak_ts_ms: int = 0           # tepe epoch ms (time-to-peak = peak_ts - entry_ts)
+    obs_trough_price: float = 0.0     # en düşük fiyat
+    obs_trough_ts_ms: int = 0         # dip epoch ms
+    early_ticks: list = field(default_factory=list)  # ilk ~5 tick: [[saniye, fiyat], ...]
 
 
 @dataclass

@@ -33,6 +33,7 @@ LOGS_DIR = Path(os.getenv("TELEMETRY_LOGS_DIR", "logs"))
 
 ATTRIBUTION_FILE = "attribution.jsonl"
 DECISIONS_FILE = "decisions.jsonl"
+EXITS_FILE = "exits.jsonl"  # kapanış anı tepe/dip + erken-tick profili (trades.jsonl'den ayrı)
 
 
 def telemetry_enabled() -> bool:
@@ -68,6 +69,14 @@ def log_decision(row: dict) -> None:
     _append(DATA_DIR / DECISIONS_FILE, row)
 
 
+def log_exit(row: dict) -> None:
+    """Kapanış anı gözlem kaydı — tepe/dip fiyat+zaman, erken-tick profili (runner ölçümü).
+
+    trades.jsonl append-only kalır; bu dosya counterfactual/ölçüm alanlarını taşır.
+    """
+    _append(DATA_DIR / EXITS_FILE, row)
+
+
 def log_event(kind: str, message: str, **fields) -> None:
     """Merkezi olay akışı — SYSTEM/SIGNAL/MONEY/ERROR + serbest alanlar.
 
@@ -81,7 +90,7 @@ def log_event(kind: str, message: str, **fields) -> None:
 
 def read_recent(name: str, limit: int = 100) -> list[dict]:
     """Son N kaydı oku (panel/analiz). name: 'attribution' | 'decisions'."""
-    fname = {"attribution": ATTRIBUTION_FILE, "decisions": DECISIONS_FILE}.get(name)
+    fname = {"attribution": ATTRIBUTION_FILE, "decisions": DECISIONS_FILE, "exits": EXITS_FILE}.get(name)
     if fname is None:
         return []
     path = DATA_DIR / fname
@@ -120,5 +129,6 @@ def summarize() -> dict:
         "enabled": telemetry_enabled(),
         "attribution_count": _count_lines(DATA_DIR / ATTRIBUTION_FILE),
         "decisions_count": _count_lines(DATA_DIR / DECISIONS_FILE),
+        "exits_count": _count_lines(DATA_DIR / EXITS_FILE),
         "reject_breakdown": reject_breakdown,
     }

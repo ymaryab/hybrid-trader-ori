@@ -53,6 +53,7 @@ PAIR_COOLDOWN_LOSS_SEC = int(os.getenv("PAIR_COOLDOWN_SEC", "5400"))  # kayıp s
 PAIR_COOLDOWN_ANY_SEC = int(os.getenv("PAIR_COOLDOWN_ANY_SEC", "1800"))  # her kapanış (30dk)
 MACRO_REFRESH_TICKS = 15
 BRAIN_REFRESH_TICKS = 30
+EARLY_TICKS_MAX = int(os.getenv("EARLY_TICKS_MAX", "5"))  # ilk ~5 tick (~0/30/60/90/120s) profili
 BRAIN_COOLDOWN_SEC = 300
 HOLD_REFRESH_TICKS = 20
 
@@ -505,6 +506,8 @@ class Engine:
             self._daily_pnl += trade.pnl_usd
             self._apply_pair_cooldown(pos, trade.pnl_usd)
             self._record_decision(decision)
+            if pos.pool_address not in {p.pool_address for p in self.broker.positions}:
+                self._log_exit_profile(pos, trade)  # tam kapanış (kısmi satışta yazma)
 
     def _apply_pair_cooldown(self, pos: Position, pnl_usd: float) -> None:
         cd = PAIR_COOLDOWN_LOSS_SEC if pnl_usd <= 0 else PAIR_COOLDOWN_ANY_SEC
@@ -521,7 +524,7 @@ class Engine:
         return regime, fg, self._macro_avg
 
     def _update_excursion(self, pos: Position, price: float, pair: Pair | None) -> None:
-        """Her tick: pozisyonun MFE/MAE (tepe/dip) + min likiditesini işle."""
+        """Her tick: MFE/MAE + min likidite + runner zaman-profili (saf gözlem)."""
         if pos.entry_price > 0 and price > 0:
             pnl_pct = (price - pos.entry_price) / pos.entry_price * 100
             held = max(0.0, time.time() - pos.opened_ts) if pos.opened_ts else 0.0
@@ -531,9 +534,64 @@ class Engine:
             if pnl_pct < pos.mae_pct:
                 pos.mae_pct = pnl_pct
                 pos.mae_at_sec = held
+            # Tepe/dip fiyat + epoch ms zaman damgası (entry baseline ile başlat)
+            now_ms = int(time.time() * 1000)
+            if pos.obs_peak_price <= 0:
+                entry_ms = int(pos.opened_ts * 1000) if pos.opened_ts else now_ms
+                pos.obs_peak_price = pos.entry_price
+                pos.obs_peak_ts_ms = entry_ms
+                pos.obs_trough_price = pos.entry_price
+                pos.obs_trough_ts_ms = entry_ms
+            if price > pos.obs_peak_price:
+                pos.obs_peak_price = price
+                pos.obs_peak_ts_ms = now_ms
+            if price < pos.obs_trough_price:
+                pos.obs_trough_price = price
+                pos.obs_trough_ts_ms = now_ms
+            # İlk ~5 tick fiyat profili: [[saniye, fiyat], ...] (onay penceresi)
+            if len(pos.early_ticks) < EARLY_TICKS_MAX:
+                if not pos.early_ticks:
+                    pos.early_ticks.append([0, pos.entry_price])
+                if len(pos.early_ticks) < EARLY_TICKS_MAX:
+                    sec = int(round(time.time() - pos.opened_ts)) if pos.opened_ts else 0
+                    pos.early_ticks.append([sec, price])
         if pair is not None and pair.liquidity_usd > 0:
             base = pos.liq_min if pos.liq_min > 0 else (pos.liq_entry or pair.liquidity_usd)
             pos.liq_min = min(base, pair.liquidity_usd)
+
+    def _log_exit_profile(self, pos: Position, trade) -> None:
+        """Tam kapanışta runner zaman-profili → exits.jsonl (trades.jsonl'den ayrı, saf gözlem)."""
+        try:
+            entry_ts_ms = int(pos.opened_ts * 1000) if pos.opened_ts else None
+            ttp = (
+                pos.obs_peak_ts_ms - entry_ts_ms
+                if entry_ts_ms and pos.obs_peak_ts_ms
+                else None
+            )
+            telemetry.log_exit({
+                "trade_id": pos.trade_id,
+                "pair": pos.pair_name,
+                "chain": pos.chain,
+                "token_address": pos.token_address,
+                "source": pos.discovery_source,
+                "regime": pos.entry_regime,
+                "entry_price": pos.entry_price,
+                "entry_ts_ms": entry_ts_ms,
+                "exit_price": getattr(trade, "exit_price", None),
+                "exit_reason": getattr(trade, "exit_reason", None),
+                "hold_sec": getattr(trade, "hold_sec", None),
+                "pnl_pct": getattr(trade, "pnl_pct", None),
+                "mfe_pct": round(pos.mfe_pct, 3),
+                "mae_pct": round(pos.mae_pct, 3),
+                "peak_price": pos.obs_peak_price,
+                "peak_ts": pos.obs_peak_ts_ms,
+                "trough_price": pos.obs_trough_price,
+                "trough_ts": pos.obs_trough_ts_ms,
+                "time_to_peak_ms": ttp,
+                "early_ticks": pos.early_ticks,
+            })
+        except Exception:
+            log.debug("exit profile log hatası", exc_info=True)
 
     def _pair_features(self, pair: Pair) -> dict:
         """Aday/giriş için ham sayısal özellikler — eşik kalibrasyonu için."""
@@ -645,6 +703,7 @@ class Engine:
             self._daily_pnl += trade.pnl_usd
             if fraction >= 0.999:
                 self._apply_pair_cooldown(pos, trade.pnl_usd)
+                self._log_exit_profile(pos, trade)
             pnl_pct = 100 * trade.pnl_usd / max(trade.cost_usd, 0.01)
             self._record_decision(
                 Decision(action, reason, pos.pair_name, pos.entry_score, pnl_pct, fraction if action == "exit_partial" else None)
@@ -974,6 +1033,7 @@ class Engine:
             return
         self._daily_pnl += trade.pnl_usd
         self._apply_pair_cooldown(victim, trade.pnl_usd)
+        self._log_exit_profile(victim, trade)
         self._record_decision(
             Decision(
                 "exit",
