@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -126,6 +127,17 @@ def enrich_trade_from_position(trade: "Trade", pos: "Position", *, liq_exit: flo
 
 
 def _slippage(usd: float, liquidity_usd: float) -> float:
+    """Paper fill slippage fraksiyonu. Yalniz olcum-sadakati; trading mantigi degil.
+
+    PAPER_SLIPPAGE_PCT set ise sabit slippage uygular (or. 5.27 = %5.27); bos/gecersiz
+    ise eski likidite modeline (min(usd/liq, %5)) duser. Geri alinabilir.
+    """
+    knob = os.getenv("PAPER_SLIPPAGE_PCT", "").strip()
+    if knob:
+        try:
+            return min(max(float(knob) / 100.0, 0.0), 0.5)
+        except ValueError:
+            pass
     return min(usd / max(liquidity_usd, 1.0), 0.05)
 
 
