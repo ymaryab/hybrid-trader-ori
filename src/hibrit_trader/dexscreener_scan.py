@@ -11,7 +11,7 @@ from typing import Optional
 
 import httpx
 
-from hibrit_trader.config import API, DEFAULT_SCAN_CHAINS
+from hibrit_trader.config import API, DEFAULT_SCAN_CHAINS, restrict_chains
 from hibrit_trader.scanner import Pair, _f, _parse_pool_created_at
 
 log = logging.getLogger(__name__)
@@ -88,6 +88,7 @@ def fetch_dexscreener_trending(
     boost_limit: int = 30,
 ) -> list[Pair]:
     """Token boost top list → en likit havuz → Pair."""
+    chains = restrict_chains(chains)  # SOLANA_ONLY açıksa EVM token istekleri hiç yapılmaz
     try:
         r = client.get(f"{API['dexscreener']}/token-boosts/top/v1", timeout=15)
         r.raise_for_status()

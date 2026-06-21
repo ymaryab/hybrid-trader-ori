@@ -15,7 +15,7 @@ from typing import Optional
 
 import httpx
 
-from hibrit_trader.config import API, DEFAULT_SCAN_CHAINS
+from hibrit_trader.config import API, DEFAULT_SCAN_CHAINS, restrict_chains
 from hibrit_trader.dexscreener_scan import _best_pair_per_token, pair_from_dexscreener
 from hibrit_trader.dex_trending_strategy import pool_age_hours
 from hibrit_trader.scanner import Pair, _f
@@ -273,6 +273,7 @@ def fetch_early_launches(
     if not early_launch_enabled():
         return []
 
+    chains = restrict_chains(chains)  # SOLANA_ONLY açıksa EVM token satırları hiç istenmez
     token_boost: dict[str, int] = {}
     addrs_by_chain: dict[str, set[str]] = {c: set() for c in chains}
 

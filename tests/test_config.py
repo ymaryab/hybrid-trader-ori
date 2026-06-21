@@ -24,7 +24,7 @@ def test_eth_ana_ag_yok():
 def test_scan_chains_sol_only_default():
     assert DEFAULT_SCAN_CHAINS == ("solana",)
     assert DEFAULT_ENTRY_CHAINS == ("solana",)
-    assert parse_scan_chains("solana,base") == ("solana", "base")
+    assert parse_scan_chains("solana,base") == ("solana",)  # SOLANA_ONLY sabit: EVM override yok sayılır
     assert parse_entry_chains("solana") == ("solana",)
     assert CHAIN_ENTRY_PRIORITY["solana"] < CHAIN_ENTRY_PRIORITY["arbitrum"]
     s = Settings.from_env()

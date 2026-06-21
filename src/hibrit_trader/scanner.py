@@ -12,7 +12,7 @@ from typing import Optional
 
 import httpx
 
-from hibrit_trader.config import API, DEFAULT_SCAN_CHAINS
+from hibrit_trader.config import API, DEFAULT_SCAN_CHAINS, restrict_chains, solana_only_enabled
 
 log = logging.getLogger(__name__)
 
@@ -95,7 +95,9 @@ def parse_pool(chain: str, item: dict) -> Optional[Pair]:
 
 
 def fetch_trending(client: httpx.Client, chain: str) -> list[Pair]:
-    """Tek ağın trend havuzlarını çeker."""
+    """Tek ağın trend havuzlarını çeker. SOLANA_ONLY açıkken EVM ağı erken döner."""
+    if solana_only_enabled() and chain != "solana":
+        return []
     url = f"{API['geckoterminal']}/networks/{chain}/trending_pools"
     resp = client.get(url, headers={"accept": "application/json"}, timeout=15)
     resp.raise_for_status()
@@ -142,6 +144,7 @@ def scan_all(chains: tuple[str, ...] | None = None) -> list[Pair]:
     if chains is None:
         chains = DEFAULT_SCAN_CHAINS
     """GeckoTerminal + Dexscreener boost trending birleşik tarama."""
+    chains = restrict_chains(chains)  # merkezi kısıt: SOLANA_ONLY açıksa yalnız solana
     gecko: list[Pair] = []
     with httpx.Client() as client:
         for chain in chains:

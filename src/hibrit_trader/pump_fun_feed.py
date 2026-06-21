@@ -15,7 +15,7 @@ from typing import Iterable
 
 import httpx
 
-from hibrit_trader.config import API, DEFAULT_SCAN_CHAINS
+from hibrit_trader.config import API, DEFAULT_SCAN_CHAINS, restrict_chains
 from hibrit_trader.dexscreener_scan import pair_from_dexscreener
 from hibrit_trader.early_launch import genesis_score, select_entry_pool
 from hibrit_trader.scanner import Pair, _f
@@ -113,6 +113,7 @@ def fetch_pump_fun_pairs(
     if not pump_fun_feed_enabled():
         return []
 
+    chains = restrict_chains(chains)  # tutarlılık (bu modül zaten yalnız solana mint çözer)
     mint_boost: dict[str, int] = {}
     for path in (
         "/token-profiles/latest/v1",

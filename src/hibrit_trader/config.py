@@ -44,20 +44,32 @@ CHAIN_ENTRY_PRIORITY = {
 }
 
 
+def solana_only_enabled() -> bool:
+    """Piyasa verisi yalnız Solana ağından çekilsin. Geri alınabilir: SOLANA_ONLY=0."""
+    return os.getenv("SOLANA_ONLY", "1") != "0"
+
+
+def restrict_chains(chains: tuple[str, ...]) -> tuple[str, ...]:
+    """Merkezi kısıt: SOLANA_ONLY açıkken her zaman ('solana',), kapalıyken gelen chains."""
+    if solana_only_enabled():
+        return ("solana",)
+    return tuple(chains)
+
+
 def parse_scan_chains(raw: str | None = None) -> tuple[str, ...]:
-    """SCAN_CHAINS env — varsayılan yalnız solana."""
+    """SCAN_CHAINS env — SOLANA_ONLY açıkken sabit yalnız solana (override yok sayılır)."""
     if raw is None:
         raw = os.getenv("SCAN_CHAINS", ",".join(DEFAULT_SCAN_CHAINS))
     chains = tuple(c.strip().lower() for c in raw.split(",") if c.strip())
-    return chains if chains else DEFAULT_SCAN_CHAINS
+    return restrict_chains(chains if chains else DEFAULT_SCAN_CHAINS)
 
 
 def parse_entry_chains(raw: str | None = None) -> tuple[str, ...]:
-    """ENTRY_CHAINS env — yalnız bu ağlarda pozisyon açılır (varsayılan solana)."""
+    """ENTRY_CHAINS env — SOLANA_ONLY açıkken sabit yalnız solana (override yok sayılır)."""
     if raw is None:
         raw = os.getenv("ENTRY_CHAINS", ",".join(DEFAULT_ENTRY_CHAINS))
     chains = tuple(c.strip().lower() for c in raw.split(",") if c.strip())
-    return chains if chains else DEFAULT_ENTRY_CHAINS
+    return restrict_chains(chains if chains else DEFAULT_ENTRY_CHAINS)
 
 # Yaklaşık swap başına gas maliyeti (USD) — fırsat skorunda net getiriye dahil
 GAS_COST_USD = {
