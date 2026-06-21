@@ -18,11 +18,24 @@ def is_active() -> bool:
 def activate(reason: str = "manuel") -> None:
     KILL_FILE.parent.mkdir(parents=True, exist_ok=True)
     KILL_FILE.write_text(f"{datetime.now(timezone.utc).isoformat()} — {reason}\n")
+    _event(f"kill-switch AKTIF — {reason}", reason=reason)
 
 
 def deactivate() -> None:
-    if KILL_FILE.exists():
+    was = KILL_FILE.exists()
+    if was:
         KILL_FILE.unlink()
+    if was:
+        _event("kill-switch kapatildi")
+
+
+def _event(message: str, **fields) -> None:
+    try:
+        from hibrit_trader import telemetry
+
+        telemetry.log_event("SYSTEM", message, **fields)
+    except Exception:
+        pass
 
 
 def notify(message: str, bot_token: str = "", chat_id: str = "") -> None:

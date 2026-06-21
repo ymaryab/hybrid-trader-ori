@@ -113,12 +113,14 @@ class Engine:
         self._tick_started_ts: float = 0.0
         # Telemetri reddetme dedup: (token, reject_type) -> son log zamanı
         self._decision_logged: dict[tuple[str, str], float] = {}
+        self._daily_halt_logged: bool = False  # gunluk-limit olayini gunde bir kez logla
 
     def _reset_daily_if_needed(self) -> None:
         today = date.today()
         if today != self._daily_date:
             self._daily_pnl = 0.0
             self._daily_date = today
+            self._daily_halt_logged = False
 
     def _pair_by_pool(self, pairs: list[Pair], pool_address: str) -> Pair | None:
         for p in pairs:
@@ -506,6 +508,11 @@ class Engine:
             self._daily_pnl += trade.pnl_usd
             self._apply_pair_cooldown(pos, trade.pnl_usd)
             self._record_decision(decision)
+            telemetry.log_event(
+                "MONEY", f"SELL {pos.pair_name} pnl ${trade.pnl_usd:+.2f} — {decision.reason}",
+                trade_id=pos.trade_id, pair=pos.pair_name, pnl_usd=round(trade.pnl_usd, 2),
+                reason=decision.reason, partial=(decision.action == "exit_partial"),
+            )
             if pos.pool_address not in {p.pool_address for p in self.broker.positions}:
                 self._log_exit_profile(pos, trade)  # tam kapanış (kısmi satışta yazma)
 
@@ -704,6 +711,11 @@ class Engine:
             if fraction >= 0.999:
                 self._apply_pair_cooldown(pos, trade.pnl_usd)
                 self._log_exit_profile(pos, trade)
+            telemetry.log_event(
+                "MONEY", f"SELL {pos.pair_name} pnl ${trade.pnl_usd:+.2f} — {reason}",
+                trade_id=pos.trade_id, pair=pos.pair_name, pnl_usd=round(trade.pnl_usd, 2),
+                reason=reason, partial=(fraction < 0.999), manual=True,
+            )
             pnl_pct = 100 * trade.pnl_usd / max(trade.cost_usd, 0.01)
             self._record_decision(
                 Decision(action, reason, pos.pair_name, pos.entry_score, pnl_pct, fraction if action == "exit_partial" else None)
@@ -909,6 +921,11 @@ class Engine:
                 )
             except Exception:
                 log.debug("attribution log hatası", exc_info=True)
+            telemetry.log_event(
+                "MONEY", f"BUY {pair.name} ${position_usd:.2f}",
+                trade_id=pos.trade_id, pair=pair.name, chain=pair.chain,
+                usd=round(position_usd, 2), score=round(skor, 1), source=pos.discovery_source,
+            )
         self._record_decision(Decision("enter", reason, pair.name, conf_score))
         return True
 
@@ -1034,6 +1051,11 @@ class Engine:
         self._daily_pnl += trade.pnl_usd
         self._apply_pair_cooldown(victim, trade.pnl_usd)
         self._log_exit_profile(victim, trade)
+        telemetry.log_event(
+            "MONEY", f"SELL {victim.pair_name} pnl ${trade.pnl_usd:+.2f} — {reason}",
+            trade_id=victim.trade_id, pair=victim.pair_name, pnl_usd=round(trade.pnl_usd, 2),
+            reason=reason, rotation=True,
+        )
         self._record_decision(
             Decision(
                 "exit",
@@ -1055,6 +1077,12 @@ class Engine:
         if slots_full and not slot_rotation_enabled():
             return
         if self._daily_pnl <= -self.settings.daily_loss_limit_usd:
+            if not self._daily_halt_logged:
+                self._daily_halt_logged = True
+                telemetry.log_event(
+                    "SYSTEM", f"gunluk zarar limiti asildi — giris durdu (pnl ${self._daily_pnl:.2f})",
+                    daily_pnl=round(self._daily_pnl, 2), limit=self.settings.daily_loss_limit_usd,
+                )
             return
 
         candidates = self._collect_entry_candidates(ranked, client)
@@ -1101,8 +1129,9 @@ class Engine:
                 self._exit_positions(pairs, ranked)
                 if not is_active():
                     self._try_entry(pairs, ranked, client)
-        except Exception:
+        except Exception as exc:
             log.exception("tick hatası")
+            telemetry.log_event("ERROR", f"tick hatasi: {type(exc).__name__}: {exc}")
 
     def run_forever(self) -> None:
         ep = self._exit_policy()
@@ -1127,6 +1156,11 @@ class Engine:
             log.warning(
                 "Alpha kapalı — ALPHA_RPC_FALLBACK=1 (varsayılan) veya ücretli Helius key"
             )
+        telemetry.log_event(
+            "SYSTEM", f"motor basladi — {self.settings.mode} mod",
+            mode=self.settings.mode, scan_chains=list(self.settings.scan_chains),
+            daily_limit=self.settings.daily_loss_limit_usd,
+        )
         while True:
             self.tick()
             time.sleep(SCAN_INTERVAL_SEC)
