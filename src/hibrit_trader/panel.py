@@ -85,6 +85,13 @@ def _restore_phantom_session() -> None:
 
 @app.on_event("startup")
 def _start_engine() -> None:
+    if os.getenv("STRATEGY", "").strip().lower() == "momentum":
+        # AYRI kod yolu: momentum paper modu. Normal engine döngüsü BAŞLATILMAZ
+        # (paper_state'e yazılmaz); sadece momentum_* dosyalarına yazar.
+        from hibrit_trader.momentum_session import MomentumEngine
+        mom = MomentumEngine(settings)
+        threading.Thread(target=mom.run_forever, daemon=True).start()
+        return
     _restore_phantom_session()
     sorunlar = settings.validate()
     if settings.mode == "live" and sorunlar:
@@ -255,6 +262,250 @@ def api_telemetry(stream: str = Query("decisions"), limit: int = Query(100)) -> 
         "stream": stream,
         "rows": telemetry.read_recent(stream, min(limit, 500)),
     }
+
+
+@app.get("/api/momentum")
+def api_momentum(limit: int = Query(100)) -> dict:
+    """Momentum modu gözlemi — momentum_* dosyalarından okur (salt-okunur)."""
+    data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
+    state: dict = {}
+    sp = data_dir / "momentum_state.json"
+    if sp.exists():
+        try:
+            state = json.loads(sp.read_text())
+        except Exception:
+            state = {}
+    positions = list(state.get("positions", []))
+    for p in positions:
+        entry = float(p.get("entry_price") or 0.0)
+        last = float(p.get("last_price") or entry)
+        p["pnl_pct_live"] = round((last / entry - 1) * 100, 2) if entry > 0 else 0.0
+        p["age_min"] = round((time.time() - float(p.get("opened_ts") or time.time())) / 60, 1)
+        if p.get("trail_armed"):
+            p["stop_mode"] = "trail"
+        elif p.get("be_armed"):
+            p["stop_mode"] = "breakeven"
+        else:
+            p["stop_mode"] = "stop_2"
+    trades: list[dict] = []
+    tp = data_dir / "momentum_trades.jsonl"
+    if tp.exists():
+        lines = tp.read_text().strip().splitlines()
+        trades = [json.loads(ln) for ln in lines if ln.strip()]
+    balance = float(state.get("balance") or 0.0)
+    pos_value = sum(
+        float(p.get("amount_token") or 0.0) * float(p.get("last_price") or 0.0)
+        for p in positions
+    )
+    reasons: dict[str, int] = {}
+    for t in trades:
+        r = t.get("exit_reason", "?")
+        reasons[r] = reasons.get(r, 0) + 1
+    wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
+    if state:
+        _mom_equity_append(data_dir, round(balance + pos_value, 2))
+    return {
+        "summary": {
+            "balance": round(balance, 2),
+            "start_balance": state.get("start_balance"),
+            "realized_pnl": state.get("realized_pnl"),
+            "equity": round(balance + pos_value, 2),
+            "open_slots": len(positions),
+            "trades_total": len(trades),
+            "wins": wins,
+            "win_rate_pct": round(wins / len(trades) * 100, 1) if trades else None,
+            "exit_reasons": reasons,
+            "updated_at": state.get("updated_at"),
+        },
+        "positions": positions,
+        "trades": list(reversed(trades[-min(limit, 500):])),
+    }
+
+
+_mom_eq_last_write = 0.0
+_mom_eq_lock = threading.Lock()
+
+
+def _mom_equity_append(data_dir: Path, equity: float) -> None:
+    """Panel poll'unda equity örneklemini biriktir (append-only, motora dokunmaz)."""
+    global _mom_eq_last_write
+    try:
+        with _mom_eq_lock:
+            now = time.time()
+            if now - _mom_eq_last_write < 4.0:  # çoklu sekme şişirmesin
+                return
+            _mom_eq_last_write = now
+        with (data_dir / "momentum_equity.jsonl").open("a") as fh:
+            fh.write(json.dumps({"ts": round(now, 1), "eq": equity}) + "\n")
+    except Exception:
+        pass
+
+
+@app.get("/api/momentum/equity")
+def api_momentum_equity(minutes: int = Query(0, ge=0)) -> dict:
+    """Equity serisi — trades kümülatifi + panel örneklemleri (salt-okunur birleşim)."""
+    data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
+    start_bal = 1000.0
+    sp = data_dir / "momentum_state.json"
+    if sp.exists():
+        try:
+            start_bal = float(json.loads(sp.read_text()).get("start_balance") or 1000.0)
+        except Exception:
+            pass
+    points: list[tuple[float, float]] = []
+    tp = data_dir / "momentum_trades.jsonl"
+    if tp.exists():
+        cum = start_bal
+        for ln in tp.read_text().splitlines():
+            if not ln.strip():
+                continue
+            try:
+                t = json.loads(ln)
+                ts = float(t.get("ts") or 0.0)
+                if ts <= 0:
+                    continue
+                if not points:  # başlangıç çapası: ilk işlemin açılış anı, $start
+                    points.append((ts - float(t.get("hold_sec") or 0.0), start_bal))
+                cum += float(t.get("pnl_usd") or 0.0)
+                points.append((ts, round(cum, 2)))
+            except Exception:
+                continue
+    ep = data_dir / "momentum_equity.jsonl"
+    if ep.exists():
+        for ln in ep.read_text().splitlines():
+            if not ln.strip():
+                continue
+            try:
+                d = json.loads(ln)
+                points.append((float(d["ts"]), float(d["eq"])))
+            except Exception:
+                continue
+    points.sort(key=lambda p: p[0])
+    if minutes > 0:
+        cutoff = time.time() - minutes * 60
+        older = [p for p in points if p[0] < cutoff]
+        points = ([older[-1]] if older else []) + [p for p in points if p[0] >= cutoff]
+    if len(points) > 1500:  # tarayıcıyı boğma
+        stride = len(points) // 1500 + 1
+        points = points[::stride] + [points[-1]]
+    return {
+        "start_balance": start_bal,
+        "points": [[round(ts * 1000), eq] for ts, eq in points],
+    }
+
+
+@app.get("/momentum", response_class=HTMLResponse)
+def momentum_page() -> str:
+    """Momentum modu mini paneli — /api/momentum'u 5sn'de bir yeniler."""
+    return """<!doctype html>
+<html lang="tr"><head><meta charset="utf-8"><title>Momentum v2</title>
+<style>
+ body{background:#0d1117;color:#c9d1d9;font:13px/1.5 monospace;margin:16px}
+ h2{color:#58a6ff;margin:12px 0 6px} .pos{color:#3fb950} .neg{color:#f85149}
+ table{border-collapse:collapse;width:100%;margin-bottom:14px}
+ th,td{border:1px solid #30363d;padding:3px 8px;text-align:right;white-space:nowrap}
+ th{background:#161b22;color:#8b949e} td:first-child,th:first-child{text-align:left}
+ .chip{display:inline-block;padding:0 6px;border-radius:8px;background:#21262d}
+ #sum span{margin-right:18px}
+ #eqbtns{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0 8px}
+ #eqbtns button{background:#21262d;color:#8b949e;border:1px solid #30363d;border-radius:6px;
+   padding:2px 10px;cursor:pointer;font:inherit}
+ #eqbtns button.act{background:#1f6feb;color:#fff;border-color:#1f6feb}
+ #eqwrap{position:relative;width:100%;height:280px;margin-bottom:16px}
+ @media(max-width:600px){#eqwrap{height:220px}}
+</style></head><body>
+<h2>MOMENTUM v2 — slot 5 · liq&ge;$40k · m5&gt;0 · h1 5..50 · stop-2/BE+3/trail 5/-3 · 60dk</h2>
+<div id="sum">yükleniyor…</div>
+<h2>Açık Pozisyonlar</h2>
+<table id="pos"><thead><tr><th>pair</th><th>chain</th><th>giriş</th><th>son</th>
+<th>pnl%</th><th>peak mfe%</th><th>stop modu</th><th>chg_m5</th><th>chg_h1</th>
+<th>liq $</th><th>yaş dk</th><th>maliyet $</th></tr></thead><tbody></tbody></table>
+<h2>Kapanan İşlemler (son 100)</h2>
+<table id="tr"><thead><tr><th>pair</th><th>chain</th><th>exit_reason</th><th>pnl $</th>
+<th>pnl%</th><th>friction%</th><th>chg_m5</th><th>chg_h1</th><th>liq $</th>
+<th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table>
+<h2>Equity</h2>
+<div id="eqbtns"></div>
+<div id="eqwrap"><canvas id="eqchart"></canvas></div>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<script>
+const f=(x,d=2)=>x==null?"-":Number(x).toFixed(d);
+const cls=x=>x>0?"pos":(x<0?"neg":"");
+async function tick(){
+  const r=await fetch("/api/momentum?limit=100"); const d=await r.json();
+  const s=d.summary;
+  document.getElementById("sum").innerHTML=
+    `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
+    `<span>realized <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`+
+    `<span>slot ${s.open_slots}/5</span><span>işlem ${s.trades_total}</span>`+
+    `<span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
+    `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
+  document.querySelector("#pos tbody").innerHTML=(d.positions||[]).map(p=>
+    `<tr><td>${p.pair}</td><td>${p.chain}</td><td>${Number(p.entry_price).toPrecision(6)}</td>`+
+    `<td>${Number(p.last_price).toPrecision(6)}</td><td class="${cls(p.pnl_pct_live)}">${f(p.pnl_pct_live)}</td>`+
+    `<td>${f(p.mfe_pct,1)}</td><td><span class="chip">${p.stop_mode}</span></td>`+
+    `<td>${f(p.chg_m5,1)}</td><td>${f(p.chg_h1,1)}</td><td>${f(p.liq_entry,0)}</td>`+
+    `<td>${f(p.age_min,1)}</td><td>${f(p.cost_usd)}</td></tr>`).join("")||"<tr><td colspan=12>boş</td></tr>";
+  document.querySelector("#tr tbody").innerHTML=(d.trades||[]).map(t=>
+    `<tr><td>${t.pair}</td><td>${t.chain}</td><td><span class="chip">${t.exit_reason}</span></td>`+
+    `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
+    `<td>${f(t.friction_pct)}</td><td>${f(t.chg_m5,1)}</td><td>${f(t.chg_h1,1)}</td>`+
+    `<td>${f(t.liq_entry,0)}</td><td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
+}
+tick(); setInterval(tick,5000);
+
+// ---- Equity chart ---------------------------------------------------------
+const EQWINS=[["5dk",5],["15dk",15],["30dk",30],["1s",60],["2s",120],["5s",300],
+  ["12s",720],["24s",1440],["48s",2880],["1h",10080],["2h",20160],["Tümü",0]];
+let eqWin=0, eqChart=null, eqStart=1000;
+const eqRefLine={id:"eqref",afterDatasetsDraw(c){
+  const y=c.scales.y.getPixelForValue(eqStart),a=c.chartArea;
+  if(!a||isNaN(y)||y<a.top||y>a.bottom)return;
+  const x=c.ctx;x.save();x.strokeStyle="#8b949e";x.setLineDash([4,4]);x.lineWidth=1;
+  x.beginPath();x.moveTo(a.left,y);x.lineTo(a.right,y);x.stroke();x.restore();}};
+function eqButtons(){
+  document.getElementById("eqbtns").innerHTML=EQWINS.map(([l,m],i)=>
+    `<button data-m="${m}" class="${m===eqWin?"act":""}">${l}</button>`).join("");
+  document.querySelectorAll("#eqbtns button").forEach(b=>b.onclick=()=>{
+    eqWin=Number(b.dataset.m);eqButtons();eqTick();});
+}
+async function eqTick(){
+  let d;
+  try{const r=await fetch(`/api/momentum/equity?minutes=${eqWin}`);d=await r.json();}
+  catch(e){return;}
+  eqStart=d.start_balance||1000;
+  const pts=(d.points||[]).map(p=>({x:p[0],y:p[1]}));
+  const now=Date.now();
+  const xmin=eqWin>0?now-eqWin*60000:undefined;
+  if(!eqChart){
+    eqChart=new Chart(document.getElementById("eqchart"),{type:"line",
+      data:{datasets:[{data:pts,borderColor:"#58a6ff",borderWidth:1.5,pointRadius:0,
+        pointHitRadius:10,tension:0,
+        fill:{target:{value:eqStart},above:"rgba(63,185,80,.13)",below:"rgba(248,81,73,.13)"}}]},
+      options:{responsive:true,maintainAspectRatio:false,animation:false,
+        interaction:{mode:"nearest",axis:"x",intersect:false},
+        plugins:{legend:{display:false},tooltip:{
+          backgroundColor:"#161b22",borderColor:"#30363d",borderWidth:1,
+          titleColor:"#c9d1d9",bodyColor:"#58a6ff",displayColors:false,
+          callbacks:{title:it=>new Date(it[0].parsed.x).toLocaleString("tr-TR"),
+            label:it=>" $"+it.parsed.y.toFixed(2)}}},
+        scales:{x:{type:"time",min:xmin,max:now,
+            time:{displayFormats:{millisecond:"HH:mm:ss",second:"HH:mm:ss",minute:"HH:mm",
+              hour:"dd.MM HH:mm",day:"dd.MM"}},
+            ticks:{color:"#8b949e",maxTicksLimit:8,maxRotation:0},grid:{color:"#21262d"}},
+          y:{ticks:{color:"#8b949e",callback:v=>"$"+v},grid:{color:"#21262d"}}}},
+      plugins:[eqRefLine]});
+  }else{
+    eqChart.data.datasets[0].data=pts;
+    eqChart.data.datasets[0].fill.target.value=eqStart;
+    eqChart.options.scales.x.min=xmin;
+    eqChart.options.scales.x.max=now;
+    eqChart.update("none");
+  }
+}
+eqButtons(); eqTick(); setInterval(eqTick,5000);
+</script></body></html>"""
 
 
 @app.post("/api/kill")
