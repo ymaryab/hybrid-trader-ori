@@ -290,8 +290,13 @@ def api_momentum(limit: int = Query(100)) -> dict:
     trades: list[dict] = []
     tp = data_dir / "momentum_trades.jsonl"
     if tp.exists():
-        lines = tp.read_text().strip().splitlines()
-        trades = [json.loads(ln) for ln in lines if ln.strip()]
+        for ln in tp.read_text().splitlines():
+            if not ln.strip():
+                continue
+            try:  # yarım/bozuk satır (crash anı) tüm paneli düşürmesin
+                trades.append(json.loads(ln))
+            except ValueError:
+                continue
     balance = float(state.get("balance") or 0.0)
     pos_value = sum(
         float(p.get("amount_token") or 0.0) * float(p.get("last_price") or 0.0)
@@ -326,6 +331,22 @@ _mom_eq_last_write = 0.0
 _mom_eq_lock = threading.Lock()
 
 
+_MOM_EQ_ROTATE_BYTES = 10 * 1024 * 1024  # 10MB üstünde arşive al (silme YOK)
+
+
+def _mom_equity_rotate(path: Path) -> None:
+    """Dosya tavanı aşınca eskisini arşiv adına taşı; veri kaybı sıfır (rename atomik)."""
+    if not path.exists() or path.stat().st_size < _MOM_EQ_ROTATE_BYTES:
+        return
+    stamp = time.strftime("%Y-%m-%d", time.gmtime())
+    target = path.with_name(f"momentum_equity_arsiv_{stamp}.jsonl")
+    n = 1
+    while target.exists():  # aynı gün ikinci rotasyon: sayaçla, üzerine YAZMA
+        n += 1
+        target = path.with_name(f"momentum_equity_arsiv_{stamp}.{n}.jsonl")
+    path.rename(target)
+
+
 def _mom_equity_append(data_dir: Path, equity: float) -> None:
     """Panel poll'unda equity örneklemini biriktir (append-only, motora dokunmaz)."""
     global _mom_eq_last_write
@@ -335,8 +356,10 @@ def _mom_equity_append(data_dir: Path, equity: float) -> None:
             if now - _mom_eq_last_write < 4.0:  # çoklu sekme şişirmesin
                 return
             _mom_eq_last_write = now
-        with (data_dir / "momentum_equity.jsonl").open("a") as fh:
-            fh.write(json.dumps({"ts": round(now, 1), "eq": equity}) + "\n")
+            p = data_dir / "momentum_equity.jsonl"
+            _mom_equity_rotate(p)
+            with p.open("a") as fh:
+                fh.write(json.dumps({"ts": round(now, 1), "eq": equity}) + "\n")
     except Exception:
         pass
 

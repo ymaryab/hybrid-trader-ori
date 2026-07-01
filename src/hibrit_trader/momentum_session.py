@@ -37,6 +37,7 @@ from pathlib import Path
 import httpx
 
 from hibrit_trader.config import GAS_COST_USD
+from hibrit_trader.killswitch import is_active as kill_is_active
 from hibrit_trader.live_sim import fetch_pool_price
 from hibrit_trader.paper import _now_iso, new_trade_id
 from hibrit_trader.safety import check_token
@@ -58,6 +59,18 @@ TRAIL_ARM_PCT = 5.0      # +%5'i geçince trailing devreye girer
 TRAIL_PCT = 3.0          # tepe fiyattan -%3 trailing stop
 CEILING_SEC = 60 * 60    # güvenlik tavanı: 60dk dolunca koşulsuz sat
 SCAN_INTERVAL_SEC = int(os.getenv("SCAN_INTERVAL_SEC", "30"))
+STALE_PRICE_WARN_SEC = 300  # taze fiyat gelmeyeli bu kadar olduysa uyar (karar değişmez)
+
+# ---- Token cooldown (in-memory, restart'ta sıfırlanması kabul) --------------
+# Veri: aynı token defalarca stop yiyor (BULLATLAS 10, CATWIF 7 kez). stop_2 ile
+# kapanan token'a (TÜM havuzlarıyla) 60dk, diğer sebeplerle kapanana 15dk giriş yok.
+COOLDOWN_STOP_SEC = float(os.getenv("MOM_COOLDOWN_STOP_MIN", "60")) * 60
+COOLDOWN_EXIT_SEC = float(os.getenv("MOM_COOLDOWN_EXIT_MIN", "15")) * 60
+
+# ---- Canlı-hazırlık korkulukları (VARSAYILAN KAPALI, paper davranışı değişmez) ----
+# 0 = kapalı. Açılırsa yalnız YENİ girişleri keser; açık pozisyon yönetimi sürer.
+DAILY_LOSS_LIMIT_USD = float(os.getenv("MOM_DAILY_LOSS_LIMIT_USD", "0"))
+MAX_POS_USD = float(os.getenv("MOM_MAX_POS_USD", "0"))  # 0 = kapalı, slot bütçesi sınırsız
 
 STATE_FILE = "momentum_state.json"
 TRADES_FILE = "momentum_trades.jsonl"
@@ -114,11 +127,24 @@ class MomentumEngine:
         self._reject_watch: dict[str, dict] = {}    # pool -> 30dk recheck bekleyen
         self._shadow_watch: dict[str, dict] = {}    # trade_id -> 20dk fiyat izi
         self._sol_h1_cache: tuple[float, float | None] = (0.0, None)  # (ts, chg_h1)
+        self._lock_fh = None                        # tek-instance flock tutucusu
+        self._cooldown_until: dict[str, float] = {}  # token -> yeniden giriş serbest ts
+        self._day_key: str = ""                     # UTC gün anahtarı (YYYY-MM-DD)
+        self._day_realized: float = 0.0             # gün içi realized PnL (limit için)
+        self._kill_logged = False                   # kill-switch uyarısı tek sefer
+        self._limit_logged = False                  # zarar limiti uyarısı tek sefer
         self._load()
+        self._restore_day_realized()
 
     # ---- Dosya yolları (yalnız momentum_*) ----------------------------------
     def _path(self, name: str) -> Path:
         return _data_dir() / name
+
+    # Pozisyon kaydında olmazsa tick'i kıracak zorunlu alanlar (restart doğrulaması)
+    _POS_REQUIRED = (
+        "trade_id", "pair", "chain", "pool_address", "entry_price",
+        "amount_token", "cost_usd", "opened_ts", "last_price", "peak_price",
+    )
 
     def _load(self) -> None:
         p = self._path(STATE_FILE)
@@ -126,23 +152,45 @@ class MomentumEngine:
             return
         try:
             data = json.loads(p.read_text())
+        except Exception:
+            # Bozuk state'i KAYBETME: yedeğe taşı, temiz başla, yüksek sesle logla.
+            backup = p.with_name(f"{p.name}.corrupt-{int(time.time())}")
+            try:
+                p.rename(backup)
+                log.critical(
+                    "momentum state BOZUK, yedeğe taşındı: %s (temiz başlanıyor)", backup
+                )
+            except OSError:
+                log.critical("momentum state bozuk ve yedeklenemedi, temiz başlanıyor")
+            return
+        try:
             self.balance = float(data.get("balance", START_BALANCE))
             self.start_balance = float(data.get("start_balance", START_BALANCE))
             self.realized_pnl = float(data.get("realized_pnl", 0.0))
-            self.positions = list(data.get("positions", []))
+            positions = []
+            for pos in data.get("positions", []) or []:
+                if isinstance(pos, dict) and all(k in pos for k in self._POS_REQUIRED):
+                    positions.append(pos)
+                else:
+                    log.critical("momentum: geçersiz pozisyon kaydı atlandı: %r", pos)
+            self.positions = positions
         except Exception:
-            log.exception("momentum state okunamadı, temiz başlanıyor")
+            log.exception("momentum state alanları okunamadı, temiz başlanıyor")
 
     def _save(self) -> None:
         p = self._path(STATE_FILE)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps({
+        payload = json.dumps({
             "balance": round(self.balance, 4),
             "start_balance": round(self.start_balance, 2),
             "realized_pnl": round(self.realized_pnl, 4),
             "positions": self.positions,
             "updated_at": _now_iso(),
-        }, ensure_ascii=False, indent=2))
+        }, ensure_ascii=False, indent=2)
+        # Atomik yazım: yarım dosya asla kalmasın (crash/elektrik kesintisi)
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(payload)
+        os.replace(tmp, p)
 
     def _append(self, name: str, row: dict) -> None:
         p = self._path(name)
@@ -150,6 +198,84 @@ class MomentumEngine:
         payload = {"ts": round(time.time(), 3), "ts_iso": _now_iso(), **row}
         with p.open("a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+
+    # ---- Tek instance kilidi (ikinci motor aynı dosyalara yazamasın) --------
+    def _acquire_lock(self) -> bool:
+        import fcntl
+
+        p = self._path("momentum_engine.lock")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fh = p.open("w")
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            fh.close()
+            log.critical(
+                "MOMENTUM: başka bir engine instance'ı çalışıyor (kilit dolu), "
+                "bu instance motor DÖNGÜSÜNÜ BAŞLATMIYOR. Panel salt-okunur sürer."
+            )
+            return False
+        fh.write(f"{os.getpid()}\n")
+        fh.flush()
+        self._lock_fh = fh  # referans tut: GC kapatırsa kilit düşer
+        return True
+
+    # ---- Gün içi realized PnL sayacı (zarar limiti için, limit kapalıyken etkisiz)
+    def _day_realized_add(self, pnl: float, now: float) -> None:
+        key = time.strftime("%Y-%m-%d", time.gmtime(now))
+        if key != self._day_key:
+            self._day_key = key
+            self._day_realized = 0.0
+            self._limit_logged = False
+        self._day_realized += pnl
+
+    def _restore_day_realized(self) -> None:
+        """Restart'ta bugünün (UTC) realized PnL'ini trades dosyasından geri yükle."""
+        self._day_key = time.strftime("%Y-%m-%d", time.gmtime())
+        try:
+            p = self._path(TRADES_FILE)
+            if not p.exists():
+                return
+            total = 0.0
+            for ln in p.read_text().splitlines():
+                if not ln.strip():
+                    continue
+                try:
+                    t = json.loads(ln)
+                    ts = float(t.get("ts") or 0.0)
+                    if time.strftime("%Y-%m-%d", time.gmtime(ts)) == self._day_key:
+                        total += float(t.get("pnl_usd") or 0.0)
+                except Exception:
+                    continue
+            self._day_realized = total
+        except Exception:
+            log.debug("momentum gün içi pnl geri yüklenemedi", exc_info=True)
+
+    def _entries_blocked(self) -> str | None:
+        """Yeni giriş engeli var mı? None = serbest. Çıkış yönetimi HER ZAMAN sürer."""
+        if kill_is_active():
+            if not self._kill_logged:
+                self._kill_logged = True
+                log.critical("MOMENTUM: kill-switch AKTİF, yeni girişler durdu (çıkışlar sürüyor)")
+            return "kill_switch"
+        if self._kill_logged:
+            self._kill_logged = False
+            log.warning("MOMENTUM: kill-switch kalktı, girişler serbest")
+        if DAILY_LOSS_LIMIT_USD > 0:
+            key = time.strftime("%Y-%m-%d", time.gmtime())
+            if key != self._day_key:  # gün devri: dünkü zarar bugünü bloklamasın
+                self._day_key = key
+                self._day_realized = 0.0
+                self._limit_logged = False
+            if self._day_realized <= -DAILY_LOSS_LIMIT_USD:
+                if not self._limit_logged:
+                    self._limit_logged = True
+                    log.critical(
+                        "MOMENTUM: günlük zarar limiti aşıldı ($%.2f <= -$%.2f), "
+                        "bugün (UTC) yeni giriş yok", self._day_realized, DAILY_LOSS_LIMIT_USD,
+                    )
+                return "daily_loss_limit"
+        return None
 
     # ---- Ana döngü ----------------------------------------------------------
     def run_forever(self) -> None:
@@ -159,6 +285,13 @@ class MomentumEngine:
             self.balance, MAX_SLOTS, LIQ_MIN_USD, CHG_M5_MIN, CHG_H1_MIN, CHG_H1_MAX,
             STOP_PCT, BE_ARM_PCT, BE_STOP_PCT, TRAIL_ARM_PCT, TRAIL_PCT, CEILING_SEC // 60,
         )
+        if not self._acquire_lock():
+            return  # ikinci instance: state'e dokunma, sessiz çekil (loud log atıldı)
+        if DAILY_LOSS_LIMIT_USD > 0 or MAX_POS_USD > 0:
+            log.warning(
+                "MOMENTUM korkuluklar: günlük zarar limiti $%.0f, max pozisyon $%.0f (0=kapalı)",
+                DAILY_LOSS_LIMIT_USD, MAX_POS_USD,
+            )
         self._save()  # state dosyasını garanti et
         while True:
             try:
@@ -187,17 +320,29 @@ class MomentumEngine:
         empty = MAX_SLOTS - len(self.positions)
         if empty <= 0 or self.balance <= 1.0:
             return
+        if self._entries_blocked():  # kill-switch / günlük zarar limiti (varsayılan kapalı)
+            return
         try:
             pairs = scan_all(self.settings.scan_chains)
         except Exception:
             log.exception("momentum scan hatası")
             return
+        # Çift giriş koruması: pool VE token bazlı (aynı token farklı havuzla gelebilir)
         held = {p["pool_address"] for p in self.positions}
+        held |= {p["token_address"] for p in self.positions if p.get("token_address")}
+        now = time.time()
+        # Süresi geçen cooldown'ları buda (sözlük şişmesin)
+        self._cooldown_until = {
+            t: ts for t, ts in self._cooldown_until.items() if ts > now
+        }
         # Filtre predicate'leri v2 ile BIREBIR aynı; tek fark takılanların pasif logu.
         cands = []
         for pr in pairs:
-            if pr.pool_address in held or pr.price_usd <= 0:
+            if pr.pool_address in held or pr.token_address in held or pr.price_usd <= 0:
                 continue  # zaten pozisyondayız / fiyatsız kayıt: reject sayılmaz
+            if self._cooldown_until.get(pr.token_address, 0.0) > now:
+                self._log_reject(pr, "cooldown")
+                continue
             if pr.liquidity_usd < LIQ_MIN_USD:
                 self._log_reject(pr, "liq_dusuk")
             elif getattr(pr, "chg_m5", 0.0) <= CHG_M5_MIN:
@@ -216,6 +361,8 @@ class MomentumEngine:
             )
             return
         budget_each = self.balance / empty  # boş slotlara eşit dağıt (~bakiye/5)
+        if MAX_POS_USD > 0:  # canlı-hazırlık tavanı, varsayılan kapalı (0)
+            budget_each = min(budget_each, MAX_POS_USD)
         for i, pair in enumerate(cands):
             if empty <= 0 or budget_each < 1.0:
                 # Filtreyi geçip slot/bütçe kalmadığı için giremeyenler (pasif log)
@@ -233,6 +380,8 @@ class MomentumEngine:
                 continue
             if self._open_position(pair, budget_each, client):
                 empty -= 1
+                held.add(pair.pool_address)
+                held.add(pair.token_address)
             else:
                 # bakiye/bütçe yetmedi (giriş kararı zaten False'tu, sadece kayıt)
                 self._log_reject(pair, "slot_dolu")
@@ -288,9 +437,12 @@ class MomentumEngine:
             "mfe_pct": 0.0,
             "mae_pct": 0.0,
             "last_price": eff_price,
+            "price_ts": now,          # son TAZE fiyatın zamanı (staleness takibi)
+            "price_stale": False,
         }
         self.balance -= (usd + gas)
         self.positions.append(pos)
+        self._save()  # açılış anında diske: crash'te sessiz pozisyon kaybı olmasın
         log.warning("MOMENTUM BUY %s $%.2f @ %.8g (m5 %.1f%%, h1 %.1f%%, liq $%.0f, slip %.2f%%)",
                     pair.name, usd, eff_price, pair.chg_m5, pair.chg_h1,
                     pair.liquidity_usd, slip * 100)
@@ -303,6 +455,20 @@ class MomentumEngine:
             price = fetch_pool_price(client, pos["chain"], pos["pool_address"])
             if price is None or price <= 0:
                 price = pos["last_price"]  # tick atlanırsa son bilinen fiyat
+                # Karar kuralı DEĞİŞMEZ; sadece bayatlığı işaretle ve bir kez uyar.
+                stale_sec = now - float(pos.get("price_ts") or pos["opened_ts"])
+                if stale_sec > STALE_PRICE_WARN_SEC and not pos.get("price_stale"):
+                    pos["price_stale"] = True
+                    log.warning(
+                        "MOMENTUM STALE %s: %.0fsn'dir taze fiyat yok, "
+                        "son bilinen fiyatla izleniyor (stop bu fiyatla tetiklenemez)",
+                        pos["pair"], stale_sec,
+                    )
+            else:
+                pos["price_ts"] = now
+                if pos.get("price_stale"):
+                    pos["price_stale"] = False
+                    log.warning("MOMENTUM STALE %s: taze fiyat geri geldi", pos["pair"])
             pos["last_price"] = price
             entry = pos["entry_price"]
             pnl_pct = (price / entry - 1) * 100 if entry > 0 else 0.0
@@ -341,16 +507,14 @@ class MomentumEngine:
         gas = GAS_COST_USD.get(pos["chain"], 0.1)
         proceeds = gross - gas
         pnl = proceeds - cost
-        self.balance += proceeds
-        self.realized_pnl += pnl
-        try:
-            self.positions.remove(pos)
-        except ValueError:
-            pass
         hold_sec = round(now - pos["opened_ts"], 1)
         pnl_pct = (eff_price / pos["entry_price"] - 1) * 100 if pos["entry_price"] > 0 else 0.0
-        friction_pct = round(pos["entry_slip_pct"] + slip * 100, 4)  # round-trip slippage
+        friction_pct = round(pos.get("entry_slip_pct", 0.0) + slip * 100, 4)  # round-trip slippage
 
+        # Sıra kritik: ÖNCE trade kaydı, SONRA state mutasyonu, hemen ardından
+        # _save. Trades yazımı patlarsa pozisyon açık kalır ve sonraki tick
+        # yeniden dener; böylece "state değişti ama kayıt yok" ve restart
+        # sonrası çift kapanış / çift sayım penceresi kapanır.
         self._append(TRADES_FILE, {
             "trade_id": pos["trade_id"],
             "pair": pos["pair"],
@@ -376,6 +540,33 @@ class MomentumEngine:
             "opened_at": pos["opened_at"],
             "closed_at": _now_iso(),
         })
+        self.balance += proceeds
+        self.realized_pnl += pnl
+        self._day_realized_add(pnl, now)
+        # Token cooldown: stop_2 60dk, diğer sebepler 15dk (token bazlı, tüm havuzlar)
+        cd_sec = COOLDOWN_STOP_SEC if reason == "stop_2" else COOLDOWN_EXIT_SEC
+        if cd_sec > 0 and pos.get("token_address"):
+            self._cooldown_until[pos["token_address"]] = now + cd_sec
+        try:
+            self.positions.remove(pos)
+        except ValueError:
+            pass
+        self._save()  # mutasyon anında diske: restart çift-kapanış penceresi minimal
+        # EXITS gözlem kaydıdır: yazımı patlasa da trade akışını kırmasın
+        try:
+            self._append_exits_row(pos, eff_price, hold_sec, reason)
+        except Exception:
+            log.error("momentum exits kaydı yazılamadı (trade kaydı sağlam)", exc_info=True)
+        log.warning("MOMENTUM SELL %s pnl $%.2f (%.2f%%) — %s, hold %.0fs (peak mfe %.1f%%)",
+                    pos["pair"], pnl, pnl_pct, reason, hold_sec, pos["mfe_pct"])
+        # Pasif: kapanan pozisyonu 20dk fiyat izine al (in-memory, hata kırmaz)
+        try:
+            self._register_shadow(pos, price, eff_price, reason, now)
+        except Exception:
+            log.debug("momentum shadow kayıt hatası", exc_info=True)
+
+    def _append_exits_row(self, pos: dict, eff_price: float, hold_sec: float,
+                          reason: str) -> None:
         self._append(EXITS_FILE, {
             "trade_id": pos["trade_id"],
             "pair": pos["pair"],
@@ -394,13 +585,6 @@ class MomentumEngine:
             "hold_sec": hold_sec,
             "exit_reason": reason,
         })
-        log.warning("MOMENTUM SELL %s pnl $%.2f (%.2f%%) — %s, hold %.0fs (peak mfe %.1f%%)",
-                    pos["pair"], pnl, pnl_pct, reason, hold_sec, pos["mfe_pct"])
-        # Pasif: kapanan pozisyonu 20dk fiyat izine al (in-memory, hata kırmaz)
-        try:
-            self._register_shadow(pos, price, eff_price, reason, now)
-        except Exception:
-            log.debug("momentum shadow kayıt hatası", exc_info=True)
 
     # ==== PASİF GÖZLEM (motor kararlarına sıfır etki) =========================
 
