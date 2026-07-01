@@ -34,6 +34,7 @@ LOGS_DIR = Path(os.getenv("TELEMETRY_LOGS_DIR", "logs"))
 ATTRIBUTION_FILE = "attribution.jsonl"
 DECISIONS_FILE = "decisions.jsonl"
 EXITS_FILE = "exits.jsonl"  # kapanış anı tepe/dip + erken-tick profili (trades.jsonl'den ayrı)
+SHADOW_EXITS_FILE = "shadow_exits.jsonl"  # kapanış sonrası 20dk fiyat izi (counterfactual, pasif)
 
 
 def telemetry_enabled() -> bool:
@@ -75,6 +76,15 @@ def log_exit(row: dict) -> None:
     trades.jsonl append-only kalır; bu dosya counterfactual/ölçüm alanlarını taşır.
     """
     _append(DATA_DIR / EXITS_FILE, row)
+
+
+def log_shadow_exit(row: dict) -> None:
+    """Kapanış sonrası 20dk fiyat izi — saf gözlem, trade'i etkilemez.
+
+    exits.jsonl/trades.jsonl'a dokunmaz; ayrı counterfactual ölçüm dosyası.
+    "Beklemek zararı küçültür müydü" sorusunu ileride forward ölçmek için.
+    """
+    _append(DATA_DIR / SHADOW_EXITS_FILE, row)
 
 
 def log_event(kind: str, message: str, **fields) -> None:

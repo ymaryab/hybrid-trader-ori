@@ -91,6 +91,8 @@ class Engine:
         self._safety_cache: dict[str, tuple[float, SafetyReport]] = {}
         self._last_prices: dict[str, float] = {}
         self._missing_ticks: dict[str, int] = {}
+        # Shadow exit tracker: kapanış sonrası 20dk fiyat izi (pasif gözlem, trade'e etkisiz)
+        self._shadow_watch: dict[str, dict] = {}
         self._daily_pnl: float = 0.0
         self._daily_date = date.today()
         self._macro_avg: float | None = None
@@ -515,6 +517,7 @@ class Engine:
             )
             if pos.pool_address not in {p.pool_address for p in self.broker.positions}:
                 self._log_exit_profile(pos, trade)  # tam kapanış (kısmi satışta yazma)
+                self._register_shadow_exit(pos, trade)  # kapanış sonrası 20dk izi (pasif)
 
     def _apply_pair_cooldown(self, pos: Position, pnl_usd: float) -> None:
         cd = PAIR_COOLDOWN_LOSS_SEC if pnl_usd <= 0 else PAIR_COOLDOWN_ANY_SEC
@@ -599,6 +602,84 @@ class Engine:
             })
         except Exception:
             log.debug("exit profile log hatası", exc_info=True)
+
+    # ---- Shadow exit tracker (kapanış sonrası 20dk fiyat izi, saf gözlem) ----
+    def _register_shadow_exit(self, pos: Position, trade) -> None:
+        """Tam kapanışta token'ı 20dk izleme listesine al. Trade'e sıfır etki."""
+        try:
+            exit_price = getattr(trade, "exit_price", None) or pos.entry_price
+            now = time.time()
+            self._shadow_watch[pos.trade_id] = {
+                "trade_id": pos.trade_id,
+                "pair": pos.pair_name,
+                "chain": pos.chain,
+                "token_address": pos.token_address,
+                "pool_address": pos.pool_address,
+                "exit_price": exit_price,
+                "exit_ts": now,
+                "samples": {},  # sec_mark(int) -> price
+                "wmax": exit_price,
+                "wmax_ts": int(now * 1000),
+                "wmin": exit_price,
+                "wmin_ts": int(now * 1000),
+            }
+        except Exception:
+            log.debug("shadow exit kayıt hatası", exc_info=True)
+
+    def _poll_shadow_exits(self) -> None:
+        """Her tick: izlenen tokenların fiyatını mevcut akıştan örnekle (30s cadence).
+
+        Milestone (+1/+5/+10/+15/+20 dk) fiyatları + pencere max/min toplar, 20dk
+        dolunca data/shadow_exits.jsonl'a yazar. Pasif: broker/pozisyona dokunmaz.
+        """
+        if not self._shadow_watch:
+            return
+        from hibrit_trader.live_sim import fetch_pool_price
+
+        marks = (60, 300, 600, 900, 1200)  # saniye: +1/+5/+10/+15/+20 dk
+        now = time.time()
+        try:
+            with httpx.Client() as client:
+                for tid in list(self._shadow_watch.keys()):
+                    w = self._shadow_watch[tid]
+                    elapsed = now - w["exit_ts"]
+                    price = fetch_pool_price(client, w["chain"], w["pool_address"])
+                    if price is not None and price > 0:
+                        now_ms = int(now * 1000)
+                        if price > w["wmax"]:
+                            w["wmax"], w["wmax_ts"] = price, now_ms
+                        if price < w["wmin"]:
+                            w["wmin"], w["wmin_ts"] = price, now_ms
+                        for m in marks:
+                            if elapsed >= m and m not in w["samples"]:
+                                w["samples"][m] = price
+                    if elapsed >= marks[-1]:
+                        self._flush_shadow_exit(w)
+                        del self._shadow_watch[tid]
+        except Exception:
+            log.debug("shadow exit poll hatası", exc_info=True)
+
+    def _flush_shadow_exit(self, w: dict) -> None:
+        s = w["samples"]
+        telemetry.log_shadow_exit({
+            "trade_id": w["trade_id"],
+            "pair": w["pair"],
+            "chain": w["chain"],
+            "token_address": w["token_address"],
+            "pool_address": w["pool_address"],
+            "exit_price": w["exit_price"],
+            "exit_ts_ms": int(w["exit_ts"] * 1000),
+            "t60": s.get(60),
+            "t300": s.get(300),
+            "t600": s.get(600),
+            "t900": s.get(900),
+            "t1200": s.get(1200),
+            "window_max": w["wmax"],
+            "window_max_ts_ms": w["wmax_ts"],
+            "window_min": w["wmin"],
+            "window_min_ts_ms": w["wmin_ts"],
+            "samples_taken": len(s),
+        })
 
     def _pair_features(self, pair: Pair) -> dict:
         """Aday/giriş için ham sayısal özellikler — eşik kalibrasyonu için."""
@@ -1000,6 +1081,9 @@ class Engine:
             "liquidity": round(pair.liquidity_usd, 2),
             "market_cap": round(pair.market_cap_usd, 2),
             "traders_h1": pair.txns_h1,
+            "chg_m5": round(pair.chg_m5, 2),
+            "chg_h1": round(pair.chg_h1, 2),
+            "chg_h24": round(pair.chg_h24, 2),
             "smart_money_count": sm_count,
             "cex_hold": round(cex_hold, 1),
             "position_usd": round(position_usd, 2),
@@ -1107,6 +1191,7 @@ class Engine:
     def tick(self) -> None:
         try:
             self._tick_started_ts = time.time()
+            self._poll_shadow_exits()  # kapanış sonrası 20dk fiyat izi (pasif, trade'e etkisiz)
             self._reset_daily_if_needed()
             self._refresh_macro_if_needed()
             self._refresh_brain_if_needed()
