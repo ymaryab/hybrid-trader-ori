@@ -1,18 +1,18 @@
-"""GÖLGE senaryo testi — v2 ile YAN YANA koşan tamamen sanal alternatif strateji.
+"""GÖLGE senaryo testi — v2/v3 ile YAN YANA koşan tamamen sanal alternatif strateji.
 
-v2 motoruna, kurallarına, state'ine SIFIR dokunuş. Sadece şu dosyalara yazar:
+v2/v3 motorlarına, kurallarına, state'lerine SIFIR dokunuş. Sadece şu dosyalara yazar:
   data/golge_state.json   (sanal bakiye + açık pozisyonlar)
   data/golge_trades.jsonl (her sanal kapanışta kayıt)
 
-v2'den İKİ farkı var, gerisi birebir aynı:
-  FARK 1 GİRİŞ : m5>0 ve h1 5..50 yerine TEK şart chg_h1 >= 10.
-                 Sıralama en yüksek chg_h1'den. Korunanlar: liq >= $40k,
-                 safety, cooldown (kayıp çıkışı 60dk / diğer 15dk), rejim
-                 filtresi (SOL h1 < 0 giriş yok), 5 slot, eşit bölüşüm, $1000.
-  FARK 2 ÇIKIŞ : -%2 stop YOK. Girişin altına düşen pozisyon 20 dakika izlenir;
-                 giriş üstüne dönerse sayaç sıfırlanır, 20dk boyunca altta
-                 kalırsa satılır (sabir_20). Breakeven (+%3 kilidi), trail
-                 (+%5 sonrası tepeden -%3) ve timeout_60 v2 ile birebir aynı.
+Kurallar (2026-07-02 akşam revizyonu, v1 verisi data/backup_golge_v1/ altında):
+  GİRİŞ : liq >= $100k VE chg_h1 >= 10. Sıralama en yüksek chg_h1 önce.
+          Korunanlar: safety, cooldown (kayıp çıkışı 60dk / diğer 15dk),
+          rejim filtresi (SOL h1 < 0 giriş yok), 5 slot, eşit bölüşüm, $1000.
+  ÇIKIŞ : tp_2       : giriş fiyatının +%2 üstünü görünce SAT (kâr al)
+          stop_gec   : ilk 30dk aşağıda stop YOK (sabır); 30dk sonrası
+                       fiyat girişin -%2 altındaysa SAT
+          timeout_60 : 60dk tavan, koşulsuz kapat
+          Trail/breakeven YOK; çıkış sadece bu üç dal.
 
 Fill'ler sanal: gerçek fiyat + v2'nin likidite-slippage modeli + gas.
 Kadans: v2 ile AYNI (SCAN_INTERVAL_SEC, varsayılan 30sn); adil kıyas.
@@ -45,17 +45,15 @@ from hibrit_trader.scanner import scan_all
 log = logging.getLogger(__name__)
 
 # ---- Gölge eşikleri (v2 ile paylaşılanlar momentum_session'dan import edilir) ----
-CHG_H1_MIN = float(os.getenv("GOLGE_CHG_H1_MIN", "10"))   # TEK giriş şartı (liq hariç)
-LIQ_MIN_USD = float(os.getenv("MOM_LIQ_MIN_USD", "40000"))  # v2 ile aynı taban
+CHG_H1_MIN = float(os.getenv("GOLGE_CHG_H1_MIN", "10"))       # giriş şartı 1
+LIQ_MIN_USD = float(os.getenv("GOLGE_LIQ_MIN_USD", "100000"))  # giriş şartı 2 (yeni taban)
 MAX_SLOTS = 5
 START_BALANCE = float(os.getenv("GOLGE_START_BALANCE", "1000"))
-BE_ARM_PCT = 3.0        # v2 ile birebir
-BE_STOP_PCT = 0.75      # v2 ile birebir
-TRAIL_ARM_PCT = 5.0     # v2 ile birebir
-TRAIL_PCT = 3.0         # v2 ile birebir
-CEILING_SEC = 60 * 60   # v2 ile birebir
-PATIENCE_SEC = 20 * 60  # FARK 2: girişin altında kesintisiz 20dk -> sat
-SOL_H1_MIN = float(os.getenv("MOM_SOL_H1_MIN", "0"))      # rejim eşiği v2 ile aynı
+TP_PCT = 2.0            # giriş +%2 görülünce kâr al
+GRACE_SEC = 30 * 60     # ilk 30dk aşağıda stop yok (sabır penceresi)
+LATE_STOP_PCT = -2.0    # 30dk sonrası: girişin -%2 altı SAT
+CEILING_SEC = 60 * 60   # v2 ile aynı güvenlik tavanı
+SOL_H1_MIN = float(os.getenv("MOM_SOL_H1_MIN", "0"))          # rejim eşiği v2 ile aynı
 COOLDOWN_LOSS_SEC = float(os.getenv("MOM_COOLDOWN_STOP_MIN", "60")) * 60
 COOLDOWN_EXIT_SEC = float(os.getenv("MOM_COOLDOWN_EXIT_MIN", "15")) * 60
 
@@ -64,7 +62,7 @@ TRADES_FILE = "golge_trades.jsonl"
 
 
 class GolgeEngine:
-    """Sanal senaryo motoru. Kendi dosyaları, v2'ye sıfır dokunuş."""
+    """Sanal senaryo motoru. Kendi dosyaları, v2/v3'e sıfır dokunuş."""
 
     def __init__(self, settings) -> None:
         self.settings = settings
@@ -150,9 +148,10 @@ class GolgeEngine:
         if not self._acquire_lock():
             return
         log.warning(
-            "GOLGE senaryo başladı — sanal $%.2f · slot %d · TEK giriş şartı chg_h1>=%.0f "
-            "(liq>=$%.0f) · stop YOK, sabır %dm · be/trail/timeout v2 ile aynı",
-            self.balance, MAX_SLOTS, CHG_H1_MIN, LIQ_MIN_USD, PATIENCE_SEC // 60,
+            "GOLGE senaryo başladı — sanal $%.2f · slot %d · giriş liq>=$%.0f + chg_h1>=%.0f "
+            "· çıkış tp+%.0f%% / %dm sonrası stop%%%.0f / tavan %dm (trail/be YOK)",
+            self.balance, MAX_SLOTS, LIQ_MIN_USD, CHG_H1_MIN,
+            TP_PCT, GRACE_SEC // 60, LATE_STOP_PCT, CEILING_SEC // 60,
         )
         self._save()
         time.sleep(SCAN_INTERVAL_SEC / 2)  # v2 ile faz kaydır, API yükünü yay
@@ -184,7 +183,7 @@ class GolgeEngine:
         self._sol_h1_cache = (time.time(), val)
         return val
 
-    # ---- Giriş (FARK 1: tek şart chg_h1 >= 10) --------------------------------
+    # ---- Giriş (liq >= $100k VE chg_h1 >= 10, en yüksek h1 önce) --------------
     def _enter(self, client: httpx.Client) -> None:
         empty = MAX_SLOTS - len(self.positions)
         if empty <= 0 or self.balance <= 1.0:
@@ -210,7 +209,7 @@ class GolgeEngine:
                 continue
             if pr.liquidity_usd < LIQ_MIN_USD:
                 continue
-            if getattr(pr, "chg_h1", 0.0) < CHG_H1_MIN:  # TEK şart
+            if getattr(pr, "chg_h1", 0.0) < CHG_H1_MIN:
                 continue
             cands.append(pr)
         cands.sort(key=lambda pr: pr.chg_h1, reverse=True)  # en güçlü trend önce
@@ -267,13 +266,9 @@ class GolgeEngine:
             "chg_h1": round(pair.chg_h1, 2),
             "liq_entry": round(pair.liquidity_usd, 2),
             "entry_slip_pct": round(slip * 100, 4),
-            "peak_price": eff_price,
-            "be_armed": False,
-            "trail_armed": False,
             "mfe_pct": 0.0,
             "mae_pct": 0.0,
             "last_price": eff_price,
-            "dip_since": None,      # FARK 2: girişin altına düştüğü an (sabır sayacı)
         }
         self.balance -= (usd + gas)
         self.positions.append(pos)
@@ -282,7 +277,7 @@ class GolgeEngine:
                     pair.name, usd, eff_price, pair.chg_h1, pair.liquidity_usd)
         return True
 
-    # ---- Çıkış (FARK 2: stop yok, 20dk sabır; be/trail/timeout v2 ile aynı) ----
+    # ---- Çıkış: tp_2 / stop_gec (30dk sonrası -%2) / timeout_60 ---------------
     def _manage_exits(self, client: httpx.Client) -> None:
         now = time.time()
         for pos in list(self.positions):
@@ -296,29 +291,15 @@ class GolgeEngine:
                 pos["mfe_pct"] = round(pnl_pct, 4)
             if pnl_pct < pos["mae_pct"]:
                 pos["mae_pct"] = round(pnl_pct, 4)
-            if price > pos["peak_price"]:
-                pos["peak_price"] = price
-            if pnl_pct >= BE_ARM_PCT:
-                pos["be_armed"] = True
-            if pnl_pct >= TRAIL_ARM_PCT:
-                pos["trail_armed"] = True
-            # Sabır sayacı: girişin altındaysa işlet, üstüne dönünce sıfırla
-            if price < entry:
-                if pos.get("dip_since") is None:
-                    pos["dip_since"] = now
-            else:
-                pos["dip_since"] = None
             age = now - pos["opened_ts"]
 
             reason = None
-            if pos["trail_armed"] and price <= pos["peak_price"] * (1 - TRAIL_PCT / 100):
-                reason = "trail"
-            elif pos["be_armed"] and price <= entry * (1 + BE_STOP_PCT / 100):
-                reason = "breakeven"
-            elif pos.get("dip_since") and now - pos["dip_since"] >= PATIENCE_SEC and price < entry:
-                reason = "sabir_20"   # 20dk kesintisiz girişin altında: sat
+            if pnl_pct >= TP_PCT:
+                reason = "tp_2"           # giriş +%2 görüldü: kârı al
+            elif age >= GRACE_SEC and pnl_pct <= LATE_STOP_PCT:
+                reason = "stop_gec"       # 30dk doldu ve girişin -%2 altı: kes
             elif age >= CEILING_SEC:
-                reason = "timeout_60"
+                reason = "timeout_60"     # tavan, koşulsuz kapat
             if reason:
                 self._close_position(pos, price, reason, now)
 
@@ -358,7 +339,7 @@ class GolgeEngine:
         })
         self.balance += proceeds
         self.realized_pnl += pnl
-        cd = COOLDOWN_LOSS_SEC if reason == "sabir_20" else COOLDOWN_EXIT_SEC
+        cd = COOLDOWN_LOSS_SEC if reason == "stop_gec" else COOLDOWN_EXIT_SEC
         if pos.get("token_address"):
             self._cooldown_until[pos["token_address"]] = now + cd
         try:
