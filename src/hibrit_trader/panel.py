@@ -91,6 +91,11 @@ def _start_engine() -> None:
         from hibrit_trader.momentum_session import MomentumEngine
         mom = MomentumEngine(settings)
         threading.Thread(target=mom.run_forever, daemon=True).start()
+        if os.getenv("GOLGE_ENABLED", "1") != "0":
+            # Gölge senaryo: tamamen sanal, golge_* dosyalarına yazar (v2'ye dokunmaz)
+            from hibrit_trader.golge_session import GolgeEngine
+            golge = GolgeEngine(settings)
+            threading.Thread(target=golge.run_forever, daemon=True).start()
         return
     _restore_phantom_session()
     sorunlar = settings.validate()
@@ -417,6 +422,77 @@ def api_momentum_equity(minutes: int = Query(0, ge=0)) -> dict:
     }
 
 
+@app.get("/api/golge")
+def api_golge(limit: int = Query(50)) -> dict:
+    """Gölge senaryo gözlemi — golge_* dosyalarından okur, v2 ile yan yana kıyas."""
+    data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
+    state: dict = {}
+    sp = data_dir / "golge_state.json"
+    if sp.exists():
+        try:
+            state = json.loads(sp.read_text())
+        except Exception:
+            state = {}
+    trades: list[dict] = []
+    tp = data_dir / "golge_trades.jsonl"
+    if tp.exists():
+        for ln in tp.read_text().splitlines():
+            if not ln.strip():
+                continue
+            try:
+                trades.append(json.loads(ln))
+            except ValueError:
+                continue
+    positions = list(state.get("positions", []))
+    for p in positions:
+        entry = float(p.get("entry_price") or 0.0)
+        last = float(p.get("last_price") or entry)
+        p["pnl_pct_live"] = round((last / entry - 1) * 100, 2) if entry > 0 else 0.0
+        p["age_min"] = round((time.time() - float(p.get("opened_ts") or time.time())) / 60, 1)
+    balance = float(state.get("balance") or 0.0)
+    pos_value = sum(
+        float(p.get("amount_token") or 0.0) * float(p.get("last_price") or 0.0)
+        for p in positions
+    )
+    created_ts = float(state.get("created_ts") or 0.0)
+    # v2'nin AYNI donemdeki realized PnL'i (golge basladigindan beri): adil kiyas
+    v2_since = 0.0
+    mp = data_dir / "momentum_trades.jsonl"
+    if mp.exists() and created_ts > 0:
+        for ln in mp.read_text().splitlines():
+            if not ln.strip():
+                continue
+            try:
+                t = json.loads(ln)
+                if float(t.get("ts") or 0.0) >= created_ts:
+                    v2_since += float(t.get("pnl_usd") or 0.0)
+            except ValueError:
+                continue
+    reasons: dict[str, int] = {}
+    for t in trades:
+        r = t.get("exit_reason", "?")
+        reasons[r] = reasons.get(r, 0) + 1
+    wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
+    return {
+        "summary": {
+            "balance": round(balance, 2),
+            "start_balance": state.get("start_balance"),
+            "realized_pnl": round(float(state.get("realized_pnl") or 0.0), 2),
+            "equity": round(balance + pos_value, 2),
+            "open_slots": len(positions),
+            "trades_total": len(trades),
+            "wins": wins,
+            "win_rate_pct": round(wins / len(trades) * 100, 1) if trades else None,
+            "exit_reasons": reasons,
+            "since": state.get("updated_at"),
+            "created_ts": created_ts,
+            "v2_realized_since": round(v2_since, 2),
+        },
+        "positions": positions,
+        "trades": list(reversed(trades[-min(limit, 200):])),
+    }
+
+
 @app.get("/momentum", response_class=HTMLResponse)
 def momentum_page() -> str:
     """Momentum modu mini paneli — /api/momentum'u 5sn'de bir yeniler."""
@@ -447,6 +523,11 @@ def momentum_page() -> str:
 <table id="tr"><thead><tr><th>pair</th><th>chain</th><th>exit_reason</th><th>pnl $</th>
 <th>pnl%</th><th>friction%</th><th>chg_m5</th><th>chg_h1</th><th>liq $</th>
 <th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table>
+<h2>Gölge Senaryo (sanal, h1&ge;10 + stop yok/sabır 20dk)</h2>
+<div id="gsum">yükleniyor…</div>
+<table id="gtr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
+<th>mfe%</th><th>mae%</th><th>chg_h1</th><th>hold sn</th><th>kapanış</th></tr></thead>
+<tbody></tbody></table>
 <h2>Equity</h2>
 <div id="eqbtns"></div>
 <div id="eqwrap"><canvas id="eqchart"></canvas></div>
@@ -477,6 +558,24 @@ async function tick(){
     `<td>${f(t.liq_entry,0)}</td><td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
 }
 tick(); setInterval(tick,5000);
+
+// ---- Golge senaryo --------------------------------------------------------
+async function gtick(){
+  let d; try{const r=await fetch("/api/golge?limit=30"); d=await r.json();}catch(e){return;}
+  const s=d.summary; const gPnl=s.realized_pnl, v2Pnl=s.v2_realized_since;
+  document.getElementById("gsum").innerHTML=
+    `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
+    `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
+    `<span>açık ${s.open_slots}/5</span>`+
+    `<span style="margin-left:12px">aynı dönem kümülatif: gölge <b class="${cls(gPnl)}">$${f(gPnl)}</b> vs v2 <b class="${cls(v2Pnl)}">$${f(v2Pnl)}</b></span>`+
+    `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
+  document.querySelector("#gtr tbody").innerHTML=(d.trades||[]).map(t=>
+    `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
+    `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
+    `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_h1,1)}</td>`+
+    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=9>henüz yok</td></tr>";
+}
+gtick(); setInterval(gtick,5000);
 
 // ---- Equity chart ---------------------------------------------------------
 const EQWINS=[["5dk",5],["15dk",15],["30dk",30],["1s",60],["2s",120],["5s",300],
