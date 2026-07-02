@@ -191,6 +191,56 @@ def test_cooldown_blocks_reentry_then_expires(mom_data_dir, monkeypatch):
     assert eng.positions[0]["token_address"] == "TOK_A"
 
 
+def _enter_with_regime(eng, monkeypatch, sol_h1):
+    """Tek adaylı _enter kurulumu: sol_chg_h1 sabitlenir, giriş sonucu döner."""
+    target = _pair(pool="POOL_R", token="TOK_R")
+    monkeypatch.setattr(ms, "scan_all", lambda chains: [target])
+    monkeypatch.setattr(
+        ms, "check_token", lambda client, chain, token: SimpleNamespace(ok=True)
+    )
+    monkeypatch.setattr(ms.time, "sleep", lambda s: None)
+    if isinstance(sol_h1, Exception):
+        def raiser(client):
+            raise sol_h1
+        monkeypatch.setattr(eng, "_sol_chg_h1", raiser)
+    else:
+        monkeypatch.setattr(eng, "_sol_chg_h1", lambda client: sol_h1)
+    eng._enter(client=SimpleNamespace())
+    return eng.positions
+
+
+def test_regime_filter_blocks_entries_and_logs_reject(mom_data_dir, monkeypatch):
+    eng = MomentumEngine(_settings())
+    assert _enter_with_regime(eng, monkeypatch, sol_h1=-0.5) == []
+    rej = [
+        json.loads(ln)
+        for ln in (mom_data_dir / ms.REJECTS_FILE).read_text().splitlines()
+    ]
+    assert any(r.get("reason") == "rejim" for r in rej)
+    # 30dk recheck kuyruğuna girmiş olmalı (kaçan fırsat ölçümü)
+    assert any(w["reason"] == "rejim" for w in eng._reject_watch.values())
+
+
+def test_regime_filter_allows_when_sol_positive(mom_data_dir, monkeypatch):
+    eng = MomentumEngine(_settings())
+    assert len(_enter_with_regime(eng, monkeypatch, sol_h1=0.3)) == 1
+
+
+def test_regime_filter_fail_open_on_api_error(mom_data_dir, monkeypatch):
+    # sol_chg_h1 alınamazsa filtre atlanır, giriş davranışı değişmez
+    eng = MomentumEngine(_settings())
+    assert len(_enter_with_regime(eng, monkeypatch, sol_h1=RuntimeError("api"))) == 1
+
+
+def test_regime_filter_none_means_open(mom_data_dir, monkeypatch):
+    eng = MomentumEngine(_settings())
+    assert len(_enter_with_regime(eng, monkeypatch, sol_h1=None)) == 1
+
+
+def test_regime_default_threshold():
+    assert ms.SOL_H1_MIN == 0.0  # MOM_SOL_H1_MIN varsayilani
+
+
 def test_cooldown_default_durations():
     # Sadece bu kural eklendi, süreler spesifikasyon ile birebir: 60dk / 15dk
     assert ms.COOLDOWN_STOP_SEC == 3600.0

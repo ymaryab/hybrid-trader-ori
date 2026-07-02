@@ -67,6 +67,12 @@ STALE_PRICE_WARN_SEC = 300  # taze fiyat gelmeyeli bu kadar olduysa uyar (karar 
 COOLDOWN_STOP_SEC = float(os.getenv("MOM_COOLDOWN_STOP_MIN", "60")) * 60
 COOLDOWN_EXIT_SEC = float(os.getenv("MOM_COOLDOWN_EXIT_MIN", "15")) * 60
 
+# ---- Rejim filtresi (2026-07-02): SOL saatlik düşüşteyken YENİ giriş yok ----
+# Veri: SOL h1 negatifken 21 işlem -$43.88, yatay/yukarıyken 33 işlem +$81.31.
+# Yalnız girişleri keser; açık pozisyon yönetimi ve çıkışlar normal sürer.
+# sol_chg_h1 alınamazsa (API hatası) filtre ATLANIR (fail-open, davranış korunur).
+SOL_H1_MIN = float(os.getenv("MOM_SOL_H1_MIN", "0"))
+
 # ---- Canlı-hazırlık korkulukları (VARSAYILAN KAPALI, paper davranışı değişmez) ----
 # 0 = kapalı. Açılırsa yalnız YENİ girişleri keser; açık pozisyon yönetimi sürer.
 DAILY_LOSS_LIMIT_USD = float(os.getenv("MOM_DAILY_LOSS_LIMIT_USD", "0"))
@@ -133,6 +139,7 @@ class MomentumEngine:
         self._day_realized: float = 0.0             # gün içi realized PnL (limit için)
         self._kill_logged = False                   # kill-switch uyarısı tek sefer
         self._limit_logged = False                  # zarar limiti uyarısı tek sefer
+        self._regime_logged = False                 # rejim uyarısı tek sefer
         self._load()
         self._restore_day_realized()
 
@@ -360,6 +367,28 @@ class MomentumEngine:
                 LIQ_MIN_USD, CHG_M5_MIN, CHG_H1_MIN, CHG_H1_MAX, len(pairs),
             )
             return
+        # Rejim filtresi: SOL h1 < eşik ise bu tick YENİ giriş yok; adaylar
+        # "rejim" sebebiyle rejects'e düşer ve 30dk recheck'e girer (kaçan
+        # fırsat ölçümü). sol_chg_h1 alınamazsa filtre atlanır (fail-open).
+        sol_h1 = None
+        try:
+            sol_h1 = self._sol_chg_h1(client)
+        except Exception:
+            log.debug("momentum rejim: sol_chg_h1 alınamadı, filtre atlandı", exc_info=True)
+        if sol_h1 is not None and sol_h1 < SOL_H1_MIN:
+            if not self._regime_logged:
+                self._regime_logged = True
+                log.warning(
+                    "MOMENTUM REJIM: sol_chg_h1 %.2f%% < %.2f%%, yeni giriş yok "
+                    "(çıkışlar sürüyor)", sol_h1, SOL_H1_MIN,
+                )
+            for pr in cands:
+                self._log_reject(pr, "rejim")
+            return
+        if sol_h1 is not None and self._regime_logged:
+            self._regime_logged = False
+            log.warning("MOMENTUM REJIM: sol_chg_h1 %.2f%% >= %.2f%%, girişler serbest",
+                        sol_h1, SOL_H1_MIN)
         budget_each = self.balance / empty  # boş slotlara eşit dağıt (~bakiye/5)
         if MAX_POS_USD > 0:  # canlı-hazırlık tavanı, varsayılan kapalı (0)
             budget_each = min(budget_each, MAX_POS_USD)
