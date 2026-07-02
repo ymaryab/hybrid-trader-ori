@@ -96,6 +96,11 @@ def _start_engine() -> None:
             from hibrit_trader.golge_session import GolgeEngine
             golge = GolgeEngine(settings)
             threading.Thread(target=golge.run_forever, daemon=True).start()
+        if os.getenv("V3_ENABLED", "1") != "0":
+            # V3 senaryo: tamamen sanal, v3_* dosyalarına yazar (v2 + gölgeye dokunmaz)
+            from hibrit_trader.v3_session import V3Engine
+            v3 = V3Engine(settings)
+            threading.Thread(target=v3.run_forever, daemon=True).start()
         return
     _restore_phantom_session()
     sorunlar = settings.validate()
@@ -493,6 +498,83 @@ def api_golge(limit: int = Query(50)) -> dict:
     }
 
 
+@app.get("/api/v3")
+def api_v3(limit: int = Query(50)) -> dict:
+    """V3 senaryo gözlemi — v3_* dosyalarından okur + üç yönlü kıyas (v2/v3/gölge)."""
+    data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
+    state: dict = {}
+    sp = data_dir / "v3_state.json"
+    if sp.exists():
+        try:
+            state = json.loads(sp.read_text())
+        except Exception:
+            state = {}
+    trades: list[dict] = []
+    tp = data_dir / "v3_trades.jsonl"
+    if tp.exists():
+        for ln in tp.read_text().splitlines():
+            if not ln.strip():
+                continue
+            try:
+                trades.append(json.loads(ln))
+            except ValueError:
+                continue
+    positions = list(state.get("positions", []))
+    for p in positions:
+        entry = float(p.get("entry_price") or 0.0)
+        last = float(p.get("last_price") or entry)
+        p["pnl_pct_live"] = round((last / entry - 1) * 100, 2) if entry > 0 else 0.0
+        p["age_min"] = round((time.time() - float(p.get("opened_ts") or time.time())) / 60, 1)
+    balance = float(state.get("balance") or 0.0)
+    pos_value = sum(
+        float(p.get("amount_token") or 0.0) * float(p.get("last_price") or 0.0)
+        for p in positions
+    )
+    created_ts = float(state.get("created_ts") or 0.0)
+
+    # Üç yönlü kıyas: V3'ün başladığı andan itibaren kümülatif realized PnL
+    def _pnl_since(path: Path) -> float:
+        total = 0.0
+        if path.exists() and created_ts > 0:
+            for ln in path.read_text().splitlines():
+                if not ln.strip():
+                    continue
+                try:
+                    t = json.loads(ln)
+                    if float(t.get("ts") or 0.0) >= created_ts:
+                        total += float(t.get("pnl_usd") or 0.0)
+                except ValueError:
+                    continue
+        return total
+
+    v2_since = _pnl_since(data_dir / "momentum_trades.jsonl")
+    golge_since = _pnl_since(data_dir / "golge_trades.jsonl")
+    reasons: dict[str, int] = {}
+    for t in trades:
+        r = t.get("exit_reason", "?")
+        reasons[r] = reasons.get(r, 0) + 1
+    wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
+    return {
+        "summary": {
+            "balance": round(balance, 2),
+            "start_balance": state.get("start_balance"),
+            "realized_pnl": round(float(state.get("realized_pnl") or 0.0), 2),
+            "equity": round(balance + pos_value, 2),
+            "open_slots": len(positions),
+            "trades_total": len(trades),
+            "wins": wins,
+            "win_rate_pct": round(wins / len(trades) * 100, 1) if trades else None,
+            "exit_reasons": reasons,
+            "since": state.get("updated_at"),
+            "created_ts": created_ts,
+            "v2_realized_since": round(v2_since, 2),
+            "golge_realized_since": round(golge_since, 2),
+        },
+        "positions": positions,
+        "trades": list(reversed(trades[-min(limit, 200):])),
+    }
+
+
 @app.get("/momentum", response_class=HTMLResponse)
 def momentum_page() -> str:
     """Momentum modu mini paneli — /api/momentum'u 5sn'de bir yeniler."""
@@ -528,6 +610,12 @@ def momentum_page() -> str:
 <table id="gtr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
 <th>mfe%</th><th>mae%</th><th>chg_h1</th><th>hold sn</th><th>kapanış</th></tr></thead>
 <tbody></tbody></table>
+<h2>V3 Senaryo (sanal, h1 5..15 düşük önce · rejim&ge;0.5 · BE+1.5 · cooldown 45dk)</h2>
+<div id="v3sum">yükleniyor…</div>
+<div id="v3cmp" style="margin:4px 0 8px"></div>
+<table id="v3tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
+<th>mfe%</th><th>mae%</th><th>chg_m5</th><th>chg_h1</th><th>sol_h1</th><th>hold sn</th>
+<th>kapanış</th></tr></thead><tbody></tbody></table>
 <h2>Equity</h2>
 <div id="eqbtns"></div>
 <div id="eqwrap"><canvas id="eqchart"></canvas></div>
@@ -576,6 +664,30 @@ async function gtick(){
     `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=9>henüz yok</td></tr>";
 }
 gtick(); setInterval(gtick,5000);
+
+// ---- V3 senaryo -------------------------------------------------------------
+async function v3tick(){
+  let d; try{const r=await fetch("/api/v3?limit=30"); d=await r.json();}catch(e){return;}
+  const s=d.summary;
+  document.getElementById("v3sum").innerHTML=
+    `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
+    `<span>realized <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`+
+    `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
+    `<span>açık ${s.open_slots}/5</span>`+
+    `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
+  document.getElementById("v3cmp").innerHTML=
+    `<span>V3 başlangıcından beri kümülatif PnL: `+
+    `v2 <b class="${cls(s.v2_realized_since)}">$${f(s.v2_realized_since)}</b> · `+
+    `v3 <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b> · `+
+    `gölge <b class="${cls(s.golge_realized_since)}">$${f(s.golge_realized_since)}</b></span>`;
+  document.querySelector("#v3tr tbody").innerHTML=(d.trades||[]).map(t=>
+    `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
+    `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
+    `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_m5,1)}</td>`+
+    `<td>${f(t.chg_h1,1)}</td><td>${f(t.sol_chg_h1,2)}</td>`+
+    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
+}
+v3tick(); setInterval(v3tick,5000);
 
 // ---- Equity chart ---------------------------------------------------------
 const EQWINS=[["5dk",5],["15dk",15],["30dk",30],["1s",60],["2s",120],["5s",300],
