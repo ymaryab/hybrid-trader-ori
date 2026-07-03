@@ -318,7 +318,7 @@ def api_momentum(limit: int = Query(100)) -> dict:
         reasons[r] = reasons.get(r, 0) + 1
     wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
     if state:
-        _mom_equity_append(data_dir, round(balance + pos_value, 2))
+        _equity_append(data_dir, "momentum", round(balance + pos_value, 2))
     return {
         "summary": {
             "balance": round(balance, 2),
@@ -337,56 +337,55 @@ def api_momentum(limit: int = Query(100)) -> dict:
     }
 
 
-_mom_eq_last_write = 0.0
-_mom_eq_lock = threading.Lock()
+_eq_last_write: dict[str, float] = {}
+_eq_lock = threading.Lock()
 
 
 _MOM_EQ_ROTATE_BYTES = 10 * 1024 * 1024  # 10MB üstünde arşive al (silme YOK)
 
 
-def _mom_equity_rotate(path: Path) -> None:
+def _equity_rotate(path: Path) -> None:
     """Dosya tavanı aşınca eskisini arşiv adına taşı; veri kaybı sıfır (rename atomik)."""
     if not path.exists() or path.stat().st_size < _MOM_EQ_ROTATE_BYTES:
         return
     stamp = time.strftime("%Y-%m-%d", time.gmtime())
-    target = path.with_name(f"momentum_equity_arsiv_{stamp}.jsonl")
+    base = path.name.removesuffix(".jsonl")  # momentum_equity / golge_equity / v3_equity
+    target = path.with_name(f"{base}_arsiv_{stamp}.jsonl")
     n = 1
     while target.exists():  # aynı gün ikinci rotasyon: sayaçla, üzerine YAZMA
         n += 1
-        target = path.with_name(f"momentum_equity_arsiv_{stamp}.{n}.jsonl")
+        target = path.with_name(f"{base}_arsiv_{stamp}.{n}.jsonl")
     path.rename(target)
 
 
-def _mom_equity_append(data_dir: Path, equity: float) -> None:
+def _equity_append(data_dir: Path, prefix: str, equity: float) -> None:
     """Panel poll'unda equity örneklemini biriktir (append-only, motora dokunmaz)."""
-    global _mom_eq_last_write
     try:
-        with _mom_eq_lock:
+        with _eq_lock:
             now = time.time()
-            if now - _mom_eq_last_write < 4.0:  # çoklu sekme şişirmesin
+            if now - _eq_last_write.get(prefix, 0.0) < 4.0:  # çoklu sekme şişirmesin
                 return
-            _mom_eq_last_write = now
-            p = data_dir / "momentum_equity.jsonl"
-            _mom_equity_rotate(p)
+            _eq_last_write[prefix] = now
+            p = data_dir / f"{prefix}_equity.jsonl"
+            _equity_rotate(p)
             with p.open("a") as fh:
                 fh.write(json.dumps({"ts": round(now, 1), "eq": equity}) + "\n")
     except Exception:
         pass
 
 
-@app.get("/api/momentum/equity")
-def api_momentum_equity(minutes: int = Query(0, ge=0)) -> dict:
+def _equity_series(prefix: str, minutes: int) -> dict:
     """Equity serisi — trades kümülatifi + panel örneklemleri (salt-okunur birleşim)."""
     data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
     start_bal = 1000.0
-    sp = data_dir / "momentum_state.json"
+    sp = data_dir / f"{prefix}_state.json"
     if sp.exists():
         try:
             start_bal = float(json.loads(sp.read_text()).get("start_balance") or 1000.0)
         except Exception:
             pass
     points: list[tuple[float, float]] = []
-    tp = data_dir / "momentum_trades.jsonl"
+    tp = data_dir / f"{prefix}_trades.jsonl"
     if tp.exists():
         cum = start_bal
         for ln in tp.read_text().splitlines():
@@ -403,7 +402,7 @@ def api_momentum_equity(minutes: int = Query(0, ge=0)) -> dict:
                 points.append((ts, round(cum, 2)))
             except Exception:
                 continue
-    ep = data_dir / "momentum_equity.jsonl"
+    ep = data_dir / f"{prefix}_equity.jsonl"
     if ep.exists():
         for ln in ep.read_text().splitlines():
             if not ln.strip():
@@ -425,6 +424,23 @@ def api_momentum_equity(minutes: int = Query(0, ge=0)) -> dict:
         "start_balance": start_bal,
         "points": [[round(ts * 1000), eq] for ts, eq in points],
     }
+
+
+@app.get("/api/momentum/equity")
+def api_momentum_equity(minutes: int = Query(0, ge=0)) -> dict:
+    return _equity_series("momentum", minutes)
+
+
+@app.get("/api/golge/equity")
+def api_golge_equity(minutes: int = Query(0, ge=0)) -> dict:
+    return _equity_series("golge", minutes)
+
+
+@app.get("/api/v3/equity")
+def api_v3_equity(minutes: int = Query(0, ge=0)) -> dict:
+    return _equity_series("v3", minutes)
+
+
 
 
 @app.get("/api/golge")
@@ -478,6 +494,8 @@ def api_golge(limit: int = Query(50)) -> dict:
         r = t.get("exit_reason", "?")
         reasons[r] = reasons.get(r, 0) + 1
     wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
+    if state:
+        _equity_append(data_dir, "golge", round(balance + pos_value, 2))
     return {
         "summary": {
             "balance": round(balance, 2),
@@ -554,6 +572,8 @@ def api_v3(limit: int = Query(50)) -> dict:
         r = t.get("exit_reason", "?")
         reasons[r] = reasons.get(r, 0) + 1
     wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
+    if state:
+        _equity_append(data_dir, "v3", round(balance + pos_value, 2))
     return {
         "summary": {
             "balance": round(balance, 2),
@@ -588,12 +608,12 @@ def momentum_page() -> str:
  th{background:#161b22;color:#8b949e} td:first-child,th:first-child{text-align:left}
  .chip{display:inline-block;padding:0 6px;border-radius:8px;background:#21262d}
  #sum span{margin-right:18px}
- #eqbtns{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0 8px}
- #eqbtns button{background:#21262d;color:#8b949e;border:1px solid #30363d;border-radius:6px;
+ .eqbtns{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0 8px}
+ .eqbtns button{background:#21262d;color:#8b949e;border:1px solid #30363d;border-radius:6px;
    padding:2px 10px;cursor:pointer;font:inherit}
- #eqbtns button.act{background:#1f6feb;color:#fff;border-color:#1f6feb}
- #eqwrap{position:relative;width:100%;height:280px;margin-bottom:16px}
- @media(max-width:600px){#eqwrap{height:220px}}
+ .eqbtns button.act{background:#1f6feb;color:#fff;border-color:#1f6feb}
+ .eqwrap{position:relative;width:100%;height:280px;margin-bottom:16px}
+ @media(max-width:600px){.eqwrap{height:220px}}
 </style></head><body>
 <h2>MOMENTUM v2 — slot 5 · liq&ge;$40k · m5&gt;0 · h1 5..50 · stop-2/BE+3/trail 5/-3 · 60dk</h2>
 <div id="sum">yükleniyor…</div>
@@ -605,20 +625,26 @@ def momentum_page() -> str:
 <table id="tr"><thead><tr><th>pair</th><th>chain</th><th>exit_reason</th><th>pnl $</th>
 <th>pnl%</th><th>friction%</th><th>chg_m5</th><th>chg_h1</th><th>liq $</th>
 <th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table>
+<h2>Equity (MOMENTUM v2)</h2>
+<div class="eqbtns" id="eqv2btns"></div>
+<div class="eqwrap"><canvas id="eqv2chart"></canvas></div>
 <h2>Gölge Senaryo (sanal, liq&ge;$100k + h1&ge;10 · TP+2 · 30dk sabır sonrası stop-2 · 60dk tavan)</h2>
 <div id="gsum">yükleniyor…</div>
 <table id="gtr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
 <th>mfe%</th><th>mae%</th><th>chg_h1</th><th>hold sn</th><th>kapanış</th></tr></thead>
 <tbody></tbody></table>
+<h2>Equity (GÖLGE)</h2>
+<div class="eqbtns" id="eqgbtns"></div>
+<div class="eqwrap"><canvas id="eqgchart"></canvas></div>
 <h2>V3 Senaryo (sanal, h1 5..15 düşük önce · rejim&ge;0.5 · BE+1.5 · cooldown 45dk)</h2>
 <div id="v3sum">yükleniyor…</div>
 <div id="v3cmp" style="margin:4px 0 8px"></div>
 <table id="v3tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
 <th>mfe%</th><th>mae%</th><th>chg_m5</th><th>chg_h1</th><th>sol_h1</th><th>hold sn</th>
 <th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>Equity</h2>
-<div id="eqbtns"></div>
-<div id="eqwrap"><canvas id="eqchart"></canvas></div>
+<h2>Equity (V3)</h2>
+<div class="eqbtns" id="eqv3btns"></div>
+<div class="eqwrap"><canvas id="eqv3chart"></canvas></div>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script>
@@ -689,56 +715,62 @@ async function v3tick(){
 }
 v3tick(); setInterval(v3tick,5000);
 
-// ---- Equity chart ---------------------------------------------------------
+// ---- Equity chart'lari (v2 / gölge / v3, aynı görsel dil) -------------------
 const EQWINS=[["5dk",5],["15dk",15],["30dk",30],["1s",60],["2s",120],["5s",300],
   ["12s",720],["24s",1440],["48s",2880],["1h",10080],["2h",20160],["Tümü",0]];
-let eqWin=0, eqChart=null, eqStart=1000;
-const eqRefLine={id:"eqref",afterDatasetsDraw(c){
-  const y=c.scales.y.getPixelForValue(eqStart),a=c.chartArea;
-  if(!a||isNaN(y)||y<a.top||y>a.bottom)return;
-  const x=c.ctx;x.save();x.strokeStyle="#8b949e";x.setLineDash([4,4]);x.lineWidth=1;
-  x.beginPath();x.moveTo(a.left,y);x.lineTo(a.right,y);x.stroke();x.restore();}};
-function eqButtons(){
-  document.getElementById("eqbtns").innerHTML=EQWINS.map(([l,m],i)=>
-    `<button data-m="${m}" class="${m===eqWin?"act":""}">${l}</button>`).join("");
-  document.querySelectorAll("#eqbtns button").forEach(b=>b.onclick=()=>{
-    eqWin=Number(b.dataset.m);eqButtons();eqTick();});
-}
-async function eqTick(){
-  let d;
-  try{const r=await fetch(`/api/momentum/equity?minutes=${eqWin}`);d=await r.json();}
-  catch(e){return;}
-  eqStart=d.start_balance||1000;
-  const pts=(d.points||[]).map(p=>({x:p[0],y:p[1]}));
-  const now=Date.now();
-  const xmin=eqWin>0?now-eqWin*60000:undefined;
-  if(!eqChart){
-    eqChart=new Chart(document.getElementById("eqchart"),{type:"line",
-      data:{datasets:[{data:pts,borderColor:"#58a6ff",borderWidth:1.5,pointRadius:0,
-        pointHitRadius:10,tension:0,
-        fill:{target:{value:eqStart},above:"rgba(63,185,80,.13)",below:"rgba(248,81,73,.13)"}}]},
-      options:{responsive:true,maintainAspectRatio:false,animation:false,
-        interaction:{mode:"nearest",axis:"x",intersect:false},
-        plugins:{legend:{display:false},tooltip:{
-          backgroundColor:"#161b22",borderColor:"#30363d",borderWidth:1,
-          titleColor:"#c9d1d9",bodyColor:"#58a6ff",displayColors:false,
-          callbacks:{title:it=>new Date(it[0].parsed.x).toLocaleString("tr-TR"),
-            label:it=>" $"+it.parsed.y.toFixed(2)}}},
-        scales:{x:{type:"time",min:xmin,max:now,
-            time:{displayFormats:{millisecond:"HH:mm:ss",second:"HH:mm:ss",minute:"HH:mm",
-              hour:"dd.MM HH:mm",day:"dd.MM"}},
-            ticks:{color:"#8b949e",maxTicksLimit:8,maxRotation:0},grid:{color:"#21262d"}},
-          y:{ticks:{color:"#8b949e",callback:v=>"$"+v},grid:{color:"#21262d"}}}},
-      plugins:[eqRefLine]});
-  }else{
-    eqChart.data.datasets[0].data=pts;
-    eqChart.data.datasets[0].fill.target.value=eqStart;
-    eqChart.options.scales.x.min=xmin;
-    eqChart.options.scales.x.max=now;
-    eqChart.update("none");
+function mkEqChart(prefix, api){
+  const st={win:0, chart:null, start:1000};
+  const refLine={id:prefix+"ref",afterDatasetsDraw(c){
+    const y=c.scales.y.getPixelForValue(st.start),a=c.chartArea;
+    if(!a||isNaN(y)||y<a.top||y>a.bottom)return;
+    const x=c.ctx;x.save();x.strokeStyle="#8b949e";x.setLineDash([4,4]);x.lineWidth=1;
+    x.beginPath();x.moveTo(a.left,y);x.lineTo(a.right,y);x.stroke();x.restore();}};
+  function buttons(){
+    const el=document.getElementById(prefix+"btns");
+    el.innerHTML=EQWINS.map(([l,m])=>
+      `<button data-m="${m}" class="${m===st.win?"act":""}">${l}</button>`).join("");
+    el.querySelectorAll("button").forEach(b=>b.onclick=()=>{
+      st.win=Number(b.dataset.m);buttons();tick();});
   }
+  async function tick(){
+    let d;
+    try{const r=await fetch(`${api}?minutes=${st.win}`);d=await r.json();}
+    catch(e){return;}
+    st.start=d.start_balance||1000;
+    const pts=(d.points||[]).map(p=>({x:p[0],y:p[1]}));
+    const now=Date.now();
+    const xmin=st.win>0?now-st.win*60000:undefined;
+    if(!st.chart){
+      st.chart=new Chart(document.getElementById(prefix+"chart"),{type:"line",
+        data:{datasets:[{data:pts,borderColor:"#58a6ff",borderWidth:1.5,pointRadius:0,
+          pointHitRadius:10,tension:0,
+          fill:{target:{value:st.start},above:"rgba(63,185,80,.13)",below:"rgba(248,81,73,.13)"}}]},
+        options:{responsive:true,maintainAspectRatio:false,animation:false,
+          interaction:{mode:"nearest",axis:"x",intersect:false},
+          plugins:{legend:{display:false},tooltip:{
+            backgroundColor:"#161b22",borderColor:"#30363d",borderWidth:1,
+            titleColor:"#c9d1d9",bodyColor:"#58a6ff",displayColors:false,
+            callbacks:{title:it=>new Date(it[0].parsed.x).toLocaleString("tr-TR"),
+              label:it=>" $"+it.parsed.y.toFixed(2)}}},
+          scales:{x:{type:"time",min:xmin,max:now,
+              time:{displayFormats:{millisecond:"HH:mm:ss",second:"HH:mm:ss",minute:"HH:mm",
+                hour:"dd.MM HH:mm",day:"dd.MM"}},
+              ticks:{color:"#8b949e",maxTicksLimit:8,maxRotation:0},grid:{color:"#21262d"}},
+            y:{ticks:{color:"#8b949e",callback:v=>"$"+v},grid:{color:"#21262d"}}}},
+        plugins:[refLine]});
+    }else{
+      st.chart.data.datasets[0].data=pts;
+      st.chart.data.datasets[0].fill.target.value=st.start;
+      st.chart.options.scales.x.min=xmin;
+      st.chart.options.scales.x.max=now;
+      st.chart.update("none");
+    }
+  }
+  buttons(); tick(); setInterval(tick,5000);
 }
-eqButtons(); eqTick(); setInterval(eqTick,5000);
+mkEqChart("eqv2","/api/momentum/equity");
+mkEqChart("eqg","/api/golge/equity");
+mkEqChart("eqv3","/api/v3/equity");
 </script></body></html>"""
 
 
