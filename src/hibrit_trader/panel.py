@@ -101,6 +101,11 @@ def _start_engine() -> None:
             from hibrit_trader.v3_session import V3Engine
             v3 = V3Engine(settings)
             threading.Thread(target=v3.run_forever, daemon=True).start()
+        if os.getenv("V4_ENABLED", "1") != "0":
+            # V4 melez senaryo: tamamen sanal, v4_* dosyalarına yazar
+            from hibrit_trader.v4_session import V4Engine
+            v4 = V4Engine(settings)
+            threading.Thread(target=v4.run_forever, daemon=True).start()
         return
     _restore_phantom_session()
     sorunlar = settings.validate()
@@ -441,6 +446,9 @@ def api_v3_equity(minutes: int = Query(0, ge=0)) -> dict:
     return _equity_series("v3", minutes)
 
 
+@app.get("/api/v4/equity")
+def api_v4_equity(minutes: int = Query(0, ge=0)) -> dict:
+    return _equity_series("v4", minutes)
 
 
 @app.get("/api/golge")
@@ -595,6 +603,81 @@ def api_v3(limit: int = Query(50)) -> dict:
     }
 
 
+@app.get("/api/v4")
+def api_v4(limit: int = Query(50)) -> dict:
+    """V4 melez senaryo gözlemi — v4_* dosyalarından okur + dörtlü kıyas.
+
+    Kıyas satırı: her motorun KENDİ başlangıç anından bu yana realized PnL'i
+    (her state dosyasındaki kümülatif realized_pnl).
+    """
+    data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
+    state: dict = {}
+    sp = data_dir / "v4_state.json"
+    if sp.exists():
+        try:
+            state = json.loads(sp.read_text())
+        except Exception:
+            state = {}
+    trades: list[dict] = []
+    tp = data_dir / "v4_trades.jsonl"
+    if tp.exists():
+        for ln in tp.read_text().splitlines():
+            if not ln.strip():
+                continue
+            try:
+                trades.append(json.loads(ln))
+            except ValueError:
+                continue
+    positions = list(state.get("positions", []))
+    for p in positions:
+        entry = float(p.get("entry_price") or 0.0)
+        last = float(p.get("last_price") or entry)
+        p["pnl_pct_live"] = round((last / entry - 1) * 100, 2) if entry > 0 else 0.0
+        p["age_min"] = round((time.time() - float(p.get("opened_ts") or time.time())) / 60, 1)
+    balance = float(state.get("balance") or 0.0)
+    pos_value = sum(
+        float(p.get("amount_token") or 0.0) * float(p.get("last_price") or 0.0)
+        for p in positions
+    )
+
+    def _realized_of(name: str) -> float | None:
+        p = data_dir / name
+        if not p.exists():
+            return None
+        try:
+            return round(float(json.loads(p.read_text()).get("realized_pnl") or 0.0), 2)
+        except Exception:
+            return None
+
+    reasons: dict[str, int] = {}
+    for t in trades:
+        r = t.get("exit_reason", "?")
+        reasons[r] = reasons.get(r, 0) + 1
+    wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
+    if state:
+        _equity_append(data_dir, "v4", round(balance + pos_value, 2))
+    return {
+        "summary": {
+            "balance": round(balance, 2),
+            "start_balance": state.get("start_balance"),
+            "realized_pnl": round(float(state.get("realized_pnl") or 0.0), 2),
+            "equity": round(balance + pos_value, 2),
+            "open_slots": len(positions),
+            "trades_total": len(trades),
+            "wins": wins,
+            "win_rate_pct": round(wins / len(trades) * 100, 1) if trades else None,
+            "exit_reasons": reasons,
+            "since": state.get("updated_at"),
+            "created_ts": float(state.get("created_ts") or 0.0),
+            "v2_realized": _realized_of("momentum_state.json"),
+            "v3_realized": _realized_of("v3_state.json"),
+            "golge_realized": _realized_of("golge_state.json"),
+        },
+        "positions": positions,
+        "trades": list(reversed(trades[-min(limit, 200):])),
+    }
+
+
 @app.get("/momentum", response_class=HTMLResponse)
 def momentum_page() -> str:
     """Momentum modu mini paneli — /api/momentum'u 5sn'de bir yeniler."""
@@ -645,6 +728,15 @@ def momentum_page() -> str:
 <h2>Equity (V3)</h2>
 <div class="eqbtns" id="eqv3btns"></div>
 <div class="eqwrap"><canvas id="eqv3chart"></canvas></div>
+<h2>V4 Melez Senaryo (sanal, v3 girişi h1 5..15 · kademeli trail -3/-6 · karda 120dk tavan)</h2>
+<div id="v4sum">yükleniyor…</div>
+<div id="v4cmp" style="margin:4px 0 8px"></div>
+<table id="v4tr"><thead><tr><th>pair</th><th>exit_reason</th><th>kademe</th><th>pnl $</th>
+<th>pnl%</th><th>mfe%</th><th>mae%</th><th>chg_m5</th><th>chg_h1</th><th>sol_h1</th>
+<th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table>
+<h2>Equity (V4)</h2>
+<div class="eqbtns" id="eqv4btns"></div>
+<div class="eqwrap"><canvas id="eqv4chart"></canvas></div>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script>
@@ -715,6 +807,32 @@ async function v3tick(){
 }
 v3tick(); setInterval(v3tick,5000);
 
+// ---- V4 melez senaryo --------------------------------------------------------
+async function v4tick(){
+  let d; try{const r=await fetch("/api/v4?limit=30"); d=await r.json();}catch(e){return;}
+  const s=d.summary;
+  document.getElementById("v4sum").innerHTML=
+    `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
+    `<span>realized <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`+
+    `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
+    `<span>açık ${s.open_slots}/5</span>`+
+    `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
+  document.getElementById("v4cmp").innerHTML=
+    `<span>Kümülatif realized PnL (her motor kendi başlangıcından): `+
+    `v2 <b class="${cls(s.v2_realized)}">$${f(s.v2_realized)}</b> · `+
+    `v3 <b class="${cls(s.v3_realized)}">$${f(s.v3_realized)}</b> · `+
+    `gölge <b class="${cls(s.golge_realized)}">$${f(s.golge_realized)}</b> · `+
+    `v4 <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`;
+  document.querySelector("#v4tr tbody").innerHTML=(d.trades||[]).map(t=>
+    `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
+    `<td>${t.trail_kademe==null?"-":t.trail_kademe}</td>`+
+    `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
+    `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_m5,1)}</td>`+
+    `<td>${f(t.chg_h1,1)}</td><td>${f(t.sol_chg_h1,2)}</td>`+
+    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=12>henüz yok</td></tr>";
+}
+v4tick(); setInterval(v4tick,5000);
+
 // ---- Equity chart'lari (v2 / gölge / v3, aynı görsel dil) -------------------
 const EQWINS=[["5dk",5],["15dk",15],["30dk",30],["1s",60],["2s",120],["5s",300],
   ["12s",720],["24s",1440],["48s",2880],["1h",10080],["2h",20160],["Tümü",0]];
@@ -771,6 +889,7 @@ function mkEqChart(prefix, api){
 mkEqChart("eqv2","/api/momentum/equity");
 mkEqChart("eqg","/api/golge/equity");
 mkEqChart("eqv3","/api/v3/equity");
+mkEqChart("eqv4","/api/v4/equity");
 </script></body></html>"""
 
 
