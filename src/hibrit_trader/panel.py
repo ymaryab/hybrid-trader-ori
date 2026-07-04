@@ -132,6 +132,11 @@ def _start_engine() -> None:
             from hibrit_trader.v9_session import V9Engine
             v9 = V9Engine(settings)
             threading.Thread(target=v9.run_forever, daemon=True).start()
+        if os.getenv("EKG_ENABLED", "1") != "0":
+            # Koşucu EKG: pasif gözlemci, işlem yok, kosucu_ekg* dosyalarına yazar
+            from hibrit_trader.kosucu_ekg import KosucuEkg
+            ekg = KosucuEkg(settings)
+            threading.Thread(target=ekg.run_forever, daemon=True).start()
         return
     _restore_phantom_session()
     sorunlar = settings.validate()
