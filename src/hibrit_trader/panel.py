@@ -88,9 +88,10 @@ def _start_engine() -> None:
     if os.getenv("STRATEGY", "").strip().lower() == "momentum":
         # AYRI kod yolu: momentum paper modu. Normal engine döngüsü BAŞLATILMAZ
         # (paper_state'e yazılmaz); sadece momentum_* dosyalarına yazar.
-        from hibrit_trader.momentum_session import MomentumEngine
-        mom = MomentumEngine(settings)
-        threading.Thread(target=mom.run_forever, daemon=True).start()
+        if os.getenv("V2_ENABLED", "1") != "0":
+            from hibrit_trader.momentum_session import MomentumEngine
+            mom = MomentumEngine(settings)
+            threading.Thread(target=mom.run_forever, daemon=True).start()
         if os.getenv("GOLGE_ENABLED", "1") != "0":
             # Gölge senaryo: tamamen sanal, golge_* dosyalarına yazar (v2'ye dokunmaz)
             from hibrit_trader.golge_session import GolgeEngine
@@ -869,19 +870,16 @@ def momentum_page() -> str:
  .eqwrap{position:relative;width:100%;height:280px;margin-bottom:16px}
  @media(max-width:600px){.eqwrap{height:220px}}
 </style></head><body>
-<h2>MOMENTUM v2 — slot 5 · liq&ge;$40k · m5&gt;0 · h1 5..50 · stop-2/BE+3/trail 5/-3 · 60dk</h2>
-<div id="sum">yükleniyor…</div>
-<h2>Açık Pozisyonlar</h2>
-<table id="pos"><thead><tr><th>pair</th><th>chain</th><th>giriş</th><th>son</th>
-<th>pnl%</th><th>peak mfe%</th><th>stop modu</th><th>chg_m5</th><th>chg_h1</th>
-<th>liq $</th><th>yaş dk</th><th>maliyet $</th></tr></thead><tbody></tbody></table>
-<h2>Kapanan İşlemler (son 100)</h2>
-<table id="tr"><thead><tr><th>pair</th><th>chain</th><th>exit_reason</th><th>pnl $</th>
-<th>pnl%</th><th>friction%</th><th>chg_m5</th><th>chg_h1</th><th>liq $</th>
+<h2>AKTİF YARIŞ · v4 / gölge / v6</h2>
+<div id="cmp3" style="margin:4px 0 12px">yükleniyor…</div>
+<h2>V4 Melez Senaryo (sanal, v3 girişi h1 5..15 · kademeli trail -3/-6 · karda 120dk tavan)</h2>
+<div id="v4sum">yükleniyor…</div>
+<table id="v4tr"><thead><tr><th>pair</th><th>exit_reason</th><th>kademe</th><th>pnl $</th>
+<th>pnl%</th><th>mfe%</th><th>mae%</th><th>chg_m5</th><th>chg_h1</th><th>sol_h1</th>
 <th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>Equity (MOMENTUM v2)</h2>
-<div class="eqbtns" id="eqv2btns"></div>
-<div class="eqwrap"><canvas id="eqv2chart"></canvas></div>
+<h2>Equity (V4)</h2>
+<div class="eqbtns" id="eqv4btns"></div>
+<div class="eqwrap"><canvas id="eqv4chart"></canvas></div>
 <h2>Gölge Senaryo (sanal, liq&ge;$100k + h1&ge;10 · TP+2 · 30dk sabır sonrası stop-2 · 60dk tavan)</h2>
 <div id="gsum">yükleniyor…</div>
 <table id="gtr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
@@ -890,49 +888,117 @@ def momentum_page() -> str:
 <h2>Equity (GÖLGE)</h2>
 <div class="eqbtns" id="eqgbtns"></div>
 <div class="eqwrap"><canvas id="eqgchart"></canvas></div>
-<h2>V3 Senaryo (sanal, h1 5..15 düşük önce · rejim&ge;0.5 · BE+1.5 · cooldown 45dk)</h2>
-<div id="v3sum">yükleniyor…</div>
-<div id="v3cmp" style="margin:4px 0 8px"></div>
-<table id="v3tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
-<th>mfe%</th><th>mae%</th><th>chg_m5</th><th>chg_h1</th><th>sol_h1</th><th>hold sn</th>
-<th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>Equity (V3)</h2>
-<div class="eqbtns" id="eqv3btns"></div>
-<div class="eqwrap"><canvas id="eqv3chart"></canvas></div>
-<h2>V4 Melez Senaryo (sanal, v3 girişi h1 5..15 · kademeli trail -3/-6 · karda 120dk tavan)</h2>
-<div id="v4sum">yükleniyor…</div>
-<div id="v4cmp" style="margin:4px 0 8px"></div>
-<table id="v4tr"><thead><tr><th>pair</th><th>exit_reason</th><th>kademe</th><th>pnl $</th>
-<th>pnl%</th><th>mfe%</th><th>mae%</th><th>chg_m5</th><th>chg_h1</th><th>sol_h1</th>
-<th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>Equity (V4)</h2>
-<div class="eqbtns" id="eqv4btns"></div>
-<div class="eqwrap"><canvas id="eqv4chart"></canvas></div>
-<h2>V5 Senaryo (sanal, gölge zemini + taban -%8 · tp yarım + koşucu trail -3/be+1.5)</h2>
-<div id="v5sum">yükleniyor…</div>
-<div id="v5cmp" style="margin:4px 0 8px"></div>
-<table id="v5tr"><thead><tr><th>pair</th><th>exit_reason</th><th>koşucu</th><th>pnl $</th>
-<th>pnl%</th><th>mfe%</th><th>mae%</th><th>chg_h1</th><th>liq $</th><th>hold sn</th>
-<th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>Equity (V5)</h2>
-<div class="eqbtns" id="eqv5btns"></div>
-<div class="eqwrap"><canvas id="eqv5chart"></canvas></div>
 <h2>V6 Senaryo (sanal, arındırılmış gölge: liq&ge;$100k + h1 10..50 · tp+2 · 30dk sabır · stop-2 · 60dk)</h2>
 <div id="v6sum">yükleniyor…</div>
-<div id="v6cmp" style="margin:4px 0 8px"></div>
 <table id="v6tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
 <th>mfe%</th><th>mae%</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th><th>hold sn</th>
 <th>kapanış</th></tr></thead><tbody></tbody></table>
 <h2>Equity (V6)</h2>
 <div class="eqbtns" id="eqv6btns"></div>
 <div class="eqwrap"><canvas id="eqv6chart"></canvas></div>
+<details id="arsivBox" style="margin-top:28px;border-top:1px solid #30363d;padding-top:8px">
+<summary style="cursor:pointer;color:#8b949e"><b>ARŞİV · durdurulan motorlar (v2 · v3 · v5) · tıkla aç</b></summary>
+<div id="arsivIc">
+<h2>MOMENTUM v2 (durduruldu — slot 5 · liq&ge;$40k · m5&gt;0 · h1 5..50 · stop-2/BE+3/trail 5/-3 · 60dk)</h2>
+<div id="sum">arşiv, açınca yüklenir…</div>
+<table id="pos"><thead><tr><th>pair</th><th>chain</th><th>giriş</th><th>son</th>
+<th>pnl%</th><th>peak mfe%</th><th>stop modu</th><th>chg_m5</th><th>chg_h1</th>
+<th>liq $</th><th>yaş dk</th><th>maliyet $</th></tr></thead><tbody></tbody></table>
+<table id="tr"><thead><tr><th>pair</th><th>chain</th><th>exit_reason</th><th>pnl $</th>
+<th>pnl%</th><th>friction%</th><th>chg_m5</th><th>chg_h1</th><th>liq $</th>
+<th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table>
+<h2>Equity (MOMENTUM v2)</h2>
+<div class="eqbtns" id="eqv2btns"></div>
+<div class="eqwrap"><canvas id="eqv2chart"></canvas></div>
+<h2>V3 Senaryo (durduruldu — h1 5..15 düşük önce · rejim&ge;0.5 · BE+1.5 · cooldown 45dk)</h2>
+<div id="v3sum">arşiv, açınca yüklenir…</div>
+<table id="v3tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
+<th>mfe%</th><th>mae%</th><th>chg_m5</th><th>chg_h1</th><th>sol_h1</th><th>hold sn</th>
+<th>kapanış</th></tr></thead><tbody></tbody></table>
+<h2>Equity (V3)</h2>
+<div class="eqbtns" id="eqv3btns"></div>
+<div class="eqwrap"><canvas id="eqv3chart"></canvas></div>
+<h2>V5 Senaryo (durduruldu — gölge zemini + taban -%8 · tp yarım + koşucu trail -3/be+1.5)</h2>
+<div id="v5sum">arşiv, açınca yüklenir…</div>
+<table id="v5tr"><thead><tr><th>pair</th><th>exit_reason</th><th>koşucu</th><th>pnl $</th>
+<th>pnl%</th><th>mfe%</th><th>mae%</th><th>chg_h1</th><th>liq $</th><th>hold sn</th>
+<th>kapanış</th></tr></thead><tbody></tbody></table>
+<h2>Equity (V5)</h2>
+<div class="eqbtns" id="eqv5btns"></div>
+<div class="eqwrap"><canvas id="eqv5chart"></canvas></div>
+</div>
+</details>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script>
 const f=(x,d=2)=>x==null?"-":Number(x).toFixed(d);
 const cls=x=>x>0?"pos":(x<0?"neg":"");
-async function tick(){
-  const r=await fetch("/api/momentum?limit=100"); const d=await r.json();
+
+// ---- AKTIF: Golge -----------------------------------------------------------
+async function gtick(){
+  let d; try{const r=await fetch("/api/golge?limit=30"); d=await r.json();}catch(e){return;}
+  const s=d.summary;
+  document.getElementById("gsum").innerHTML=
+    `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
+    `<span>realized <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`+
+    `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
+    `<span>açık ${s.open_slots}/5</span>`+
+    `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
+  document.querySelector("#gtr tbody").innerHTML=(d.trades||[]).map(t=>
+    `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
+    `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
+    `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_h1,1)}</td>`+
+    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=9>henüz yok</td></tr>";
+}
+gtick(); setInterval(gtick,5000);
+
+// ---- AKTIF: V4 melez ----------------------------------------------------------
+async function v4tick(){
+  let d; try{const r=await fetch("/api/v4?limit=30"); d=await r.json();}catch(e){return;}
+  const s=d.summary;
+  document.getElementById("v4sum").innerHTML=
+    `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
+    `<span>realized <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`+
+    `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
+    `<span>açık ${s.open_slots}/5</span>`+
+    `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
+  document.querySelector("#v4tr tbody").innerHTML=(d.trades||[]).map(t=>
+    `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
+    `<td>${t.trail_kademe==null?"-":t.trail_kademe}</td>`+
+    `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
+    `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_m5,1)}</td>`+
+    `<td>${f(t.chg_h1,1)}</td><td>${f(t.sol_chg_h1,2)}</td>`+
+    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=12>henüz yok</td></tr>";
+}
+v4tick(); setInterval(v4tick,5000);
+
+// ---- AKTIF: V6 (arindirilmis golge) + uclu kiyas satiri --------------------------
+async function v6tick(){
+  let d; try{const r=await fetch("/api/v6?limit=30"); d=await r.json();}catch(e){return;}
+  const s=d.summary;
+  document.getElementById("v6sum").innerHTML=
+    `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
+    `<span>realized <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`+
+    `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
+    `<span>açık ${s.open_slots}/5</span>`+
+    `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
+  document.getElementById("cmp3").innerHTML=
+    `<span>Kümülatif realized PnL (her motor kendi başlangıcından): `+
+    `v4 <b class="${cls(s.v4_realized)}">$${f(s.v4_realized)}</b> · `+
+    `gölge <b class="${cls(s.golge_realized)}">$${f(s.golge_realized)}</b> · `+
+    `v6 <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`;
+  document.querySelector("#v6tr tbody").innerHTML=(d.trades||[]).map(t=>
+    `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
+    `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
+    `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_h1,1)}</td>`+
+    `<td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
+    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
+}
+v6tick(); setInterval(v6tick,5000);
+
+// ---- ARSIV: v2/v3/v5, katlanir bolum acilinca BIR kez yuklenir (donuk) ----------
+async function arsivV2(){
+  let d; try{const r=await fetch("/api/momentum?limit=100"); d=await r.json();}catch(e){return;}
   const s=d.summary;
   document.getElementById("sum").innerHTML=
     `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
@@ -952,41 +1018,14 @@ async function tick(){
     `<td>${f(t.friction_pct)}</td><td>${f(t.chg_m5,1)}</td><td>${f(t.chg_h1,1)}</td>`+
     `<td>${f(t.liq_entry,0)}</td><td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
 }
-tick(); setInterval(tick,5000);
-
-// ---- Golge senaryo --------------------------------------------------------
-async function gtick(){
-  let d; try{const r=await fetch("/api/golge?limit=30"); d=await r.json();}catch(e){return;}
-  const s=d.summary; const gPnl=s.realized_pnl, v2Pnl=s.v2_realized_since;
-  document.getElementById("gsum").innerHTML=
-    `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
-    `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
-    `<span>açık ${s.open_slots}/5</span>`+
-    `<span style="margin-left:12px">aynı dönem kümülatif: gölge <b class="${cls(gPnl)}">$${f(gPnl)}</b> vs v2 <b class="${cls(v2Pnl)}">$${f(v2Pnl)}</b></span>`+
-    `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
-  document.querySelector("#gtr tbody").innerHTML=(d.trades||[]).map(t=>
-    `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
-    `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
-    `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_h1,1)}</td>`+
-    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=9>henüz yok</td></tr>";
-}
-gtick(); setInterval(gtick,5000);
-
-// ---- V3 senaryo -------------------------------------------------------------
-async function v3tick(){
+async function arsivV3(){
   let d; try{const r=await fetch("/api/v3?limit=30"); d=await r.json();}catch(e){return;}
   const s=d.summary;
   document.getElementById("v3sum").innerHTML=
     `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
     `<span>realized <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`+
     `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
-    `<span>açık ${s.open_slots}/5</span>`+
     `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
-  document.getElementById("v3cmp").innerHTML=
-    `<span>V3 başlangıcından beri kümülatif PnL: `+
-    `v2 <b class="${cls(s.v2_realized_since)}">$${f(s.v2_realized_since)}</b> · `+
-    `v3 <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b> · `+
-    `gölge <b class="${cls(s.golge_realized_since)}">$${f(s.golge_realized_since)}</b></span>`;
   document.querySelector("#v3tr tbody").innerHTML=(d.trades||[]).map(t=>
     `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
     `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
@@ -994,51 +1033,14 @@ async function v3tick(){
     `<td>${f(t.chg_h1,1)}</td><td>${f(t.sol_chg_h1,2)}</td>`+
     `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
 }
-v3tick(); setInterval(v3tick,5000);
-
-// ---- V4 melez senaryo --------------------------------------------------------
-async function v4tick(){
-  let d; try{const r=await fetch("/api/v4?limit=30"); d=await r.json();}catch(e){return;}
-  const s=d.summary;
-  document.getElementById("v4sum").innerHTML=
-    `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
-    `<span>realized <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`+
-    `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
-    `<span>açık ${s.open_slots}/5</span>`+
-    `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
-  document.getElementById("v4cmp").innerHTML=
-    `<span>Kümülatif realized PnL (her motor kendi başlangıcından): `+
-    `v2 <b class="${cls(s.v2_realized)}">$${f(s.v2_realized)}</b> · `+
-    `v3 <b class="${cls(s.v3_realized)}">$${f(s.v3_realized)}</b> · `+
-    `gölge <b class="${cls(s.golge_realized)}">$${f(s.golge_realized)}</b> · `+
-    `v4 <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`;
-  document.querySelector("#v4tr tbody").innerHTML=(d.trades||[]).map(t=>
-    `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
-    `<td>${t.trail_kademe==null?"-":t.trail_kademe}</td>`+
-    `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
-    `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_m5,1)}</td>`+
-    `<td>${f(t.chg_h1,1)}</td><td>${f(t.sol_chg_h1,2)}</td>`+
-    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=12>henüz yok</td></tr>";
-}
-v4tick(); setInterval(v4tick,5000);
-
-// ---- V5 senaryo ---------------------------------------------------------------
-async function v5tick(){
+async function arsivV5(){
   let d; try{const r=await fetch("/api/v5?limit=30"); d=await r.json();}catch(e){return;}
   const s=d.summary;
   document.getElementById("v5sum").innerHTML=
     `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
     `<span>realized <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`+
     `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
-    `<span>açık ${s.open_slots}/5</span>`+
     `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
-  document.getElementById("v5cmp").innerHTML=
-    `<span>Kümülatif realized PnL (her motor kendi başlangıcından): `+
-    `v2 <b class="${cls(s.v2_realized)}">$${f(s.v2_realized)}</b> · `+
-    `v3 <b class="${cls(s.v3_realized)}">$${f(s.v3_realized)}</b> · `+
-    `v4 <b class="${cls(s.v4_realized)}">$${f(s.v4_realized)}</b> · `+
-    `gölge <b class="${cls(s.golge_realized)}">$${f(s.golge_realized)}</b> · `+
-    `v5 <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`;
   document.querySelector("#v5tr tbody").innerHTML=(d.trades||[]).map(t=>
     `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
     `<td>${t.runner?"evet":"-"}</td>`+
@@ -1047,39 +1049,20 @@ async function v5tick(){
     `<td>${f(t.liq_entry,0)}</td>`+
     `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
 }
-v5tick(); setInterval(v5tick,5000);
-
-// ---- V6 senaryo (arindirilmis golge) -------------------------------------------
-async function v6tick(){
-  let d; try{const r=await fetch("/api/v6?limit=30"); d=await r.json();}catch(e){return;}
-  const s=d.summary;
-  document.getElementById("v6sum").innerHTML=
-    `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
-    `<span>realized <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`+
-    `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
-    `<span>açık ${s.open_slots}/5</span>`+
-    `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
-  document.getElementById("v6cmp").innerHTML=
-    `<span>Kümülatif realized PnL (her motor kendi başlangıcından): `+
-    `v2 <b class="${cls(s.v2_realized)}">$${f(s.v2_realized)}</b> · `+
-    `v3 <b class="${cls(s.v3_realized)}">$${f(s.v3_realized)}</b> · `+
-    `v4 <b class="${cls(s.v4_realized)}">$${f(s.v4_realized)}</b> · `+
-    `v5 <b class="${cls(s.v5_realized)}">$${f(s.v5_realized)}</b> · `+
-    `gölge <b class="${cls(s.golge_realized)}">$${f(s.golge_realized)}</b> · `+
-    `v6 <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`;
-  document.querySelector("#v6tr tbody").innerHTML=(d.trades||[]).map(t=>
-    `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
-    `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
-    `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_h1,1)}</td>`+
-    `<td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
-    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
-}
-v6tick(); setInterval(v6tick,5000);
+let arsivYuklendi=false;
+document.getElementById("arsivBox").addEventListener("toggle",e=>{
+  if(!e.target.open||arsivYuklendi)return;
+  arsivYuklendi=true;  // BIR kez: donuk ozet + donuk chartlar (interval yok)
+  arsivV2(); arsivV3(); arsivV5();
+  mkEqChart("eqv2","/api/momentum/equity",false);
+  mkEqChart("eqv3","/api/v3/equity",false);
+  mkEqChart("eqv5","/api/v5/equity",false);
+});
 
 // ---- Equity chart'lari (v2 / gölge / v3, aynı görsel dil) -------------------
 const EQWINS=[["5dk",5],["15dk",15],["30dk",30],["1s",60],["2s",120],["5s",300],
   ["12s",720],["24s",1440],["48s",2880],["1h",10080],["2h",20160],["Tümü",0]];
-function mkEqChart(prefix, api){
+function mkEqChart(prefix, api, live=true){
   const st={win:0, chart:null, start:1000};
   const refLine={id:prefix+"ref",afterDatasetsDraw(c){
     const y=c.scales.y.getPixelForValue(st.start),a=c.chartArea;
@@ -1127,13 +1110,10 @@ function mkEqChart(prefix, api){
       st.chart.update("none");
     }
   }
-  buttons(); tick(); setInterval(tick,5000);
+  buttons(); tick(); if(live) setInterval(tick,5000);
 }
-mkEqChart("eqv2","/api/momentum/equity");
-mkEqChart("eqg","/api/golge/equity");
-mkEqChart("eqv3","/api/v3/equity");
 mkEqChart("eqv4","/api/v4/equity");
-mkEqChart("eqv5","/api/v5/equity");
+mkEqChart("eqg","/api/golge/equity");
 mkEqChart("eqv6","/api/v6/equity");
 </script></body></html>"""
 
