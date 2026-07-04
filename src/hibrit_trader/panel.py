@@ -117,6 +117,11 @@ def _start_engine() -> None:
             from hibrit_trader.v6_session import V6Engine
             v6 = V6Engine(settings)
             threading.Thread(target=v6.run_forever, daemon=True).start()
+        if os.getenv("V7_ENABLED", "1") != "0":
+            # V7 senaryo: v6 + -%10 felaket freni, v7_* dosyalarına yazar
+            from hibrit_trader.v7_session import V7Engine
+            v7 = V7Engine(settings)
+            threading.Thread(target=v7.run_forever, daemon=True).start()
         return
     _restore_phantom_session()
     sorunlar = settings.validate()
@@ -470,6 +475,11 @@ def api_v5_equity(minutes: int = Query(0, ge=0)) -> dict:
 @app.get("/api/v6/equity")
 def api_v6_equity(minutes: int = Query(0, ge=0)) -> dict:
     return _equity_series("v6", minutes)
+
+
+@app.get("/api/v7/equity")
+def api_v7_equity(minutes: int = Query(0, ge=0)) -> dict:
+    return _equity_series("v7", minutes)
 
 
 @app.get("/api/golge")
@@ -850,6 +860,80 @@ def api_v6(limit: int = Query(50)) -> dict:
     }
 
 
+@app.get("/api/v7")
+def api_v7(limit: int = Query(50)) -> dict:
+    """V7 senaryo gözlemi (v6 + -%10 fren) — v7_* dosyalarından okur + aktif kıyas.
+
+    Kıyas: her aktif motorun KENDİ başlangıç anından bu yana realized PnL'i.
+    """
+    data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
+    state: dict = {}
+    sp = data_dir / "v7_state.json"
+    if sp.exists():
+        try:
+            state = json.loads(sp.read_text())
+        except Exception:
+            state = {}
+    trades: list[dict] = []
+    tp = data_dir / "v7_trades.jsonl"
+    if tp.exists():
+        for ln in tp.read_text().splitlines():
+            if not ln.strip():
+                continue
+            try:
+                trades.append(json.loads(ln))
+            except ValueError:
+                continue
+    positions = list(state.get("positions", []))
+    for p in positions:
+        entry = float(p.get("entry_price") or 0.0)
+        last = float(p.get("last_price") or entry)
+        p["pnl_pct_live"] = round((last / entry - 1) * 100, 2) if entry > 0 else 0.0
+        p["age_min"] = round((time.time() - float(p.get("opened_ts") or time.time())) / 60, 1)
+    balance = float(state.get("balance") or 0.0)
+    pos_value = sum(
+        float(p.get("amount_token") or 0.0) * float(p.get("last_price") or 0.0)
+        for p in positions
+    )
+
+    def _realized_of(name: str) -> float | None:
+        p = data_dir / name
+        if not p.exists():
+            return None
+        try:
+            return round(float(json.loads(p.read_text()).get("realized_pnl") or 0.0), 2)
+        except Exception:
+            return None
+
+    reasons: dict[str, int] = {}
+    for t in trades:
+        r = t.get("exit_reason", "?")
+        reasons[r] = reasons.get(r, 0) + 1
+    wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
+    if state:
+        _equity_append(data_dir, "v7", round(balance + pos_value, 2))
+    return {
+        "summary": {
+            "balance": round(balance, 2),
+            "start_balance": state.get("start_balance"),
+            "realized_pnl": round(float(state.get("realized_pnl") or 0.0), 2),
+            "equity": round(balance + pos_value, 2),
+            "open_slots": len(positions),
+            "trades_total": len(trades),
+            "wins": wins,
+            "win_rate_pct": round(wins / len(trades) * 100, 1) if trades else None,
+            "exit_reasons": reasons,
+            "since": state.get("updated_at"),
+            "created_ts": float(state.get("created_ts") or 0.0),
+            "v4_realized": _realized_of("v4_state.json"),
+            "v6_realized": _realized_of("v6_state.json"),
+            "golge_realized": _realized_of("golge_state.json"),
+        },
+        "positions": positions,
+        "trades": list(reversed(trades[-min(limit, 200):])),
+    }
+
+
 @app.get("/momentum", response_class=HTMLResponse)
 def momentum_page() -> str:
     """Momentum modu mini paneli — /api/momentum'u 5sn'de bir yeniler."""
@@ -871,7 +955,7 @@ def momentum_page() -> str:
  .eqlabel{color:#8b949e;margin:8px 0 2px} .eqlabel b{color:#c9d1d9}
  @media(max-width:600px){.eqwrap{height:220px}}
 </style></head><body>
-<h2>AKTİF YARIŞ · v4 / gölge / v6</h2>
+<h2>AKTİF YARIŞ · v4 / gölge / v6 / v7</h2>
 <div id="cmp3" style="margin:4px 0 12px">yükleniyor…</div>
 <h2>V4 Melez Senaryo (sanal, v3 girişi h1 5..15 · kademeli trail -3/-6 · karda 120dk tavan)</h2>
 <div id="v4sum">yükleniyor…</div>
@@ -888,7 +972,12 @@ def momentum_page() -> str:
 <table id="v6tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
 <th>mfe%</th><th>mae%</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th><th>hold sn</th>
 <th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>CANLI KIYAS · senkron equity (v4 · gölge · v6)</h2>
+<h2>V7 Senaryo (sanal, v6 + TEK fark: -%10 felaket freni · sabır iptal, anında sat)</h2>
+<div id="v7sum">yükleniyor…</div>
+<table id="v7tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
+<th>mfe%</th><th>mae%</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th><th>hold sn</th>
+<th>kapanış</th></tr></thead><tbody></tbody></table>
+<h2>CANLI KIYAS · senkron equity (v4 · gölge · v6 · v7)</h2>
 <div class="eqbtns" id="eqsyncbtns"></div>
 <div id="eqv4label" class="eqlabel">V4 MELEZ</div>
 <div class="eqwrap"><canvas id="eqv4chart"></canvas></div>
@@ -896,6 +985,8 @@ def momentum_page() -> str:
 <div class="eqwrap"><canvas id="eqgchart"></canvas></div>
 <div id="eqv6label" class="eqlabel">V6</div>
 <div class="eqwrap"><canvas id="eqv6chart"></canvas></div>
+<div id="eqv7label" class="eqlabel">V7</div>
+<div class="eqwrap"><canvas id="eqv7chart"></canvas></div>
 <details id="arsivBox" style="margin-top:28px;border-top:1px solid #30363d;padding-top:8px">
 <summary style="cursor:pointer;color:#8b949e"><b>ARŞİV · durdurulan motorlar (v2 · v3 · v5) · tıkla aç</b></summary>
 <div id="arsivIc">
@@ -986,11 +1077,6 @@ async function v6tick(){
     `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
     `<span>açık ${s.open_slots}/5</span>`+
     `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
-  document.getElementById("cmp3").innerHTML=
-    `<span>Kümülatif realized PnL (her motor kendi başlangıcından): `+
-    `v4 <b class="${cls(s.v4_realized)}">$${f(s.v4_realized)}</b> · `+
-    `gölge <b class="${cls(s.golge_realized)}">$${f(s.golge_realized)}</b> · `+
-    `v6 <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`;
   document.getElementById("eqv6label").innerHTML=
     `V6 · equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b>`;
   document.querySelector("#v6tr tbody").innerHTML=(d.trades||[]).map(t=>
@@ -1001,6 +1087,33 @@ async function v6tick(){
     `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
 }
 v6tick(); setInterval(v6tick,5000);
+
+// ---- AKTIF: V7 (v6 + -%10 fren) + dortlu kiyas satiri ---------------------------
+async function v7tick(){
+  let d; try{const r=await fetch("/api/v7?limit=30"); d=await r.json();}catch(e){return;}
+  const s=d.summary;
+  document.getElementById("v7sum").innerHTML=
+    `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
+    `<span>realized <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`+
+    `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
+    `<span>açık ${s.open_slots}/5</span>`+
+    `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
+  document.getElementById("cmp3").innerHTML=
+    `<span>Kümülatif realized PnL (her motor kendi başlangıcından): `+
+    `v4 <b class="${cls(s.v4_realized)}">$${f(s.v4_realized)}</b> · `+
+    `gölge <b class="${cls(s.golge_realized)}">$${f(s.golge_realized)}</b> · `+
+    `v6 <b class="${cls(s.v6_realized)}">$${f(s.v6_realized)}</b> · `+
+    `v7 <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`;
+  document.getElementById("eqv7label").innerHTML=
+    `V7 · equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b>`;
+  document.querySelector("#v7tr tbody").innerHTML=(d.trades||[]).map(t=>
+    `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
+    `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
+    `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_h1,1)}</td>`+
+    `<td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
+    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
+}
+v7tick(); setInterval(v7tick,5000);
 
 // ---- ARSIV: v2/v3/v5, katlanir bolum acilinca BIR kez yuklenir (donuk) ----------
 async function arsivV2(){
@@ -1131,6 +1244,7 @@ const eqSyncTicks=[
   mkEqChart("eqv4","/api/v4/equity",true,true),
   mkEqChart("eqg","/api/golge/equity",true,true),
   mkEqChart("eqv6","/api/v6/equity",true,true),
+  mkEqChart("eqv7","/api/v7/equity",true,true),
 ];
 function eqSyncButtons(){
   const el=document.getElementById("eqsyncbtns");
