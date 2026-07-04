@@ -868,6 +868,7 @@ def momentum_page() -> str:
    padding:2px 10px;cursor:pointer;font:inherit}
  .eqbtns button.act{background:#1f6feb;color:#fff;border-color:#1f6feb}
  .eqwrap{position:relative;width:100%;height:280px;margin-bottom:16px}
+ .eqlabel{color:#8b949e;margin:8px 0 2px} .eqlabel b{color:#c9d1d9}
  @media(max-width:600px){.eqwrap{height:220px}}
 </style></head><body>
 <h2>AKTİF YARIŞ · v4 / gölge / v6</h2>
@@ -877,24 +878,23 @@ def momentum_page() -> str:
 <table id="v4tr"><thead><tr><th>pair</th><th>exit_reason</th><th>kademe</th><th>pnl $</th>
 <th>pnl%</th><th>mfe%</th><th>mae%</th><th>chg_m5</th><th>chg_h1</th><th>sol_h1</th>
 <th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>Equity (V4)</h2>
-<div class="eqbtns" id="eqv4btns"></div>
-<div class="eqwrap"><canvas id="eqv4chart"></canvas></div>
 <h2>Gölge Senaryo (sanal, liq&ge;$100k + h1&ge;10 · TP+2 · 30dk sabır sonrası stop-2 · 60dk tavan)</h2>
 <div id="gsum">yükleniyor…</div>
 <table id="gtr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
 <th>mfe%</th><th>mae%</th><th>chg_h1</th><th>hold sn</th><th>kapanış</th></tr></thead>
 <tbody></tbody></table>
-<h2>Equity (GÖLGE)</h2>
-<div class="eqbtns" id="eqgbtns"></div>
-<div class="eqwrap"><canvas id="eqgchart"></canvas></div>
 <h2>V6 Senaryo (sanal, arındırılmış gölge: liq&ge;$100k + h1 10..50 · tp+2 · 30dk sabır · stop-2 · 60dk)</h2>
 <div id="v6sum">yükleniyor…</div>
 <table id="v6tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
 <th>mfe%</th><th>mae%</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th><th>hold sn</th>
 <th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>Equity (V6)</h2>
-<div class="eqbtns" id="eqv6btns"></div>
+<h2>CANLI KIYAS · senkron equity (v4 · gölge · v6)</h2>
+<div class="eqbtns" id="eqsyncbtns"></div>
+<div id="eqv4label" class="eqlabel">V4 MELEZ</div>
+<div class="eqwrap"><canvas id="eqv4chart"></canvas></div>
+<div id="eqglabel" class="eqlabel">GÖLGE</div>
+<div class="eqwrap"><canvas id="eqgchart"></canvas></div>
+<div id="eqv6label" class="eqlabel">V6</div>
 <div class="eqwrap"><canvas id="eqv6chart"></canvas></div>
 <details id="arsivBox" style="margin-top:28px;border-top:1px solid #30363d;padding-top:8px">
 <summary style="cursor:pointer;color:#8b949e"><b>ARŞİV · durdurulan motorlar (v2 · v3 · v5) · tıkla aç</b></summary>
@@ -944,6 +944,8 @@ async function gtick(){
     `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
     `<span>açık ${s.open_slots}/5</span>`+
     `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
+  document.getElementById("eqglabel").innerHTML=
+    `GÖLGE · equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b>`;
   document.querySelector("#gtr tbody").innerHTML=(d.trades||[]).map(t=>
     `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
     `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
@@ -962,6 +964,8 @@ async function v4tick(){
     `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
     `<span>açık ${s.open_slots}/5</span>`+
     `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
+  document.getElementById("eqv4label").innerHTML=
+    `V4 MELEZ · equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b>`;
   document.querySelector("#v4tr tbody").innerHTML=(d.trades||[]).map(t=>
     `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
     `<td>${t.trail_kademe==null?"-":t.trail_kademe}</td>`+
@@ -987,6 +991,8 @@ async function v6tick(){
     `v4 <b class="${cls(s.v4_realized)}">$${f(s.v4_realized)}</b> · `+
     `gölge <b class="${cls(s.golge_realized)}">$${f(s.golge_realized)}</b> · `+
     `v6 <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`;
+  document.getElementById("eqv6label").innerHTML=
+    `V6 · equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b>`;
   document.querySelector("#v6tr tbody").innerHTML=(d.trades||[]).map(t=>
     `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
     `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
@@ -1062,8 +1068,10 @@ document.getElementById("arsivBox").addEventListener("toggle",e=>{
 // ---- Equity chart'lari (v2 / gölge / v3, aynı görsel dil) -------------------
 const EQWINS=[["5dk",5],["15dk",15],["30dk",30],["1s",60],["2s",120],["5s",300],
   ["12s",720],["24s",1440],["48s",2880],["1h",10080],["2h",20160],["Tümü",0]];
-function mkEqChart(prefix, api, live=true){
+function mkEqChart(prefix, api, live=true, shared=false){
+  // shared=true: kendi buton seridi yok, pencereyi ortak eqSyncWin belirler
   const st={win:0, chart:null, start:1000};
+  const getWin=()=>shared?eqSyncWin:st.win;
   const refLine={id:prefix+"ref",afterDatasetsDraw(c){
     const y=c.scales.y.getPixelForValue(st.start),a=c.chartArea;
     if(!a||isNaN(y)||y<a.top||y>a.bottom)return;
@@ -1071,19 +1079,21 @@ function mkEqChart(prefix, api, live=true){
     x.beginPath();x.moveTo(a.left,y);x.lineTo(a.right,y);x.stroke();x.restore();}};
   function buttons(){
     const el=document.getElementById(prefix+"btns");
+    if(!el)return;
     el.innerHTML=EQWINS.map(([l,m])=>
       `<button data-m="${m}" class="${m===st.win?"act":""}">${l}</button>`).join("");
     el.querySelectorAll("button").forEach(b=>b.onclick=()=>{
       st.win=Number(b.dataset.m);buttons();tick();});
   }
   async function tick(){
+    const win=getWin();
     let d;
-    try{const r=await fetch(`${api}?minutes=${st.win}`);d=await r.json();}
+    try{const r=await fetch(`${api}?minutes=${win}`);d=await r.json();}
     catch(e){return;}
     st.start=d.start_balance||1000;
     const pts=(d.points||[]).map(p=>({x:p[0],y:p[1]}));
     const now=Date.now();
-    const xmin=st.win>0?now-st.win*60000:undefined;
+    const xmin=win>0?now-win*60000:undefined;
     if(!st.chart){
       st.chart=new Chart(document.getElementById(prefix+"chart"),{type:"line",
         data:{datasets:[{data:pts,borderColor:"#58a6ff",borderWidth:1.5,pointRadius:0,
@@ -1110,11 +1120,28 @@ function mkEqChart(prefix, api, live=true){
       st.chart.update("none");
     }
   }
-  buttons(); tick(); if(live) setInterval(tick,5000);
+  if(!shared) buttons();
+  tick(); if(live) setInterval(tick,5000);
+  return tick;
 }
-mkEqChart("eqv4","/api/v4/equity");
-mkEqChart("eqg","/api/golge/equity");
-mkEqChart("eqv6","/api/v6/equity");
+
+// ---- Canli Kiyas: uc chart, TEK ortak zaman filtresi seridi (senkron) ---------
+let eqSyncWin=0;
+const eqSyncTicks=[
+  mkEqChart("eqv4","/api/v4/equity",true,true),
+  mkEqChart("eqg","/api/golge/equity",true,true),
+  mkEqChart("eqv6","/api/v6/equity",true,true),
+];
+function eqSyncButtons(){
+  const el=document.getElementById("eqsyncbtns");
+  el.innerHTML=EQWINS.map(([l,m])=>
+    `<button data-m="${m}" class="${m===eqSyncWin?"act":""}">${l}</button>`).join("");
+  el.querySelectorAll("button").forEach(b=>b.onclick=()=>{
+    eqSyncWin=Number(b.dataset.m);eqSyncButtons();
+    eqSyncTicks.forEach(t=>t());  // uc chart birden ayni pencereye
+  });
+}
+eqSyncButtons();
 </script></body></html>"""
 
 
