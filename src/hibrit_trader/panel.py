@@ -137,6 +137,11 @@ def _start_engine() -> None:
             from hibrit_trader.x1_session import X1Engine
             x1 = X1Engine(settings)
             threading.Thread(target=x1.run_forever, daemon=True).start()
+        if os.getenv("V10_ENABLED", "1") != "0":
+            # V10 senaryo: saf tp_2 (stop/timeout/rejim/cooldown yok), v10_* dosyalarina yazar
+            from hibrit_trader.v10_session import V10Engine
+            v10 = V10Engine(settings)
+            threading.Thread(target=v10.run_forever, daemon=True).start()
         if os.getenv("EKG_ENABLED", "1") != "0":
             # Koşucu EKG: pasif gözlemci, işlem yok, kosucu_ekg* dosyalarına yazar
             from hibrit_trader.kosucu_ekg import KosucuEkg
@@ -515,6 +520,11 @@ def api_v9_equity(minutes: int = Query(0, ge=0)) -> dict:
 @app.get("/api/x1/equity")
 def api_x1_equity(minutes: int = Query(0, ge=0)) -> dict:
     return _equity_series("x1", minutes)
+
+
+@app.get("/api/v10/equity")
+def api_v10_equity(minutes: int = Query(0, ge=0)) -> dict:
+    return _equity_series("v10", minutes)
 
 
 @app.get("/api/golge")
@@ -1199,6 +1209,84 @@ def api_x1(limit: int = Query(50)) -> dict:
     }
 
 
+@app.get("/api/v10")
+def api_v10(limit: int = Query(50)) -> dict:
+    """V10 senaryo gözlemi (saf tp_2) - v10_* dosyalarından okur + aktif kıyas.
+
+    Kıyas: her aktif motorun KENDİ başlangıç anından bu yana realized PnL'i.
+    """
+    data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
+    state: dict = {}
+    sp = data_dir / "v10_state.json"
+    if sp.exists():
+        try:
+            state = json.loads(sp.read_text())
+        except Exception:
+            state = {}
+    trades: list[dict] = []
+    tp = data_dir / "v10_trades.jsonl"
+    if tp.exists():
+        for ln in tp.read_text().splitlines():
+            if not ln.strip():
+                continue
+            try:
+                trades.append(json.loads(ln))
+            except ValueError:
+                continue
+    positions = list(state.get("positions", []))
+    for p in positions:
+        entry = float(p.get("entry_price") or 0.0)
+        last = float(p.get("last_price") or entry)
+        p["pnl_pct_live"] = round((last / entry - 1) * 100, 2) if entry > 0 else 0.0
+        p["age_min"] = round((time.time() - float(p.get("opened_ts") or time.time())) / 60, 1)
+    balance = float(state.get("balance") or 0.0)
+    pos_value = sum(
+        float(p.get("amount_token") or 0.0) * float(p.get("last_price") or 0.0)
+        for p in positions
+    )
+
+    def _realized_of(name: str) -> float | None:
+        p = data_dir / name
+        if not p.exists():
+            return None
+        try:
+            return round(float(json.loads(p.read_text()).get("realized_pnl") or 0.0), 2)
+        except Exception:
+            return None
+
+    reasons: dict[str, int] = {}
+    for t in trades:
+        r = t.get("exit_reason", "?")
+        reasons[r] = reasons.get(r, 0) + 1
+    wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
+    if state:
+        _equity_append(data_dir, "v10", round(balance + pos_value, 2))
+    return {
+        "summary": {
+            "balance": round(balance, 2),
+            "start_balance": state.get("start_balance"),
+            "realized_pnl": round(float(state.get("realized_pnl") or 0.0), 2),
+            "equity": round(balance + pos_value, 2),
+            "open_slots": len(positions),
+            "trades_total": len(trades),
+            "wins": wins,
+            "win_rate_pct": round(wins / len(trades) * 100, 1) if trades else None,
+            "exit_reasons": reasons,
+            "since": state.get("updated_at"),
+            "created_ts": float(state.get("created_ts") or 0.0),
+            "v4_realized": _realized_of("v4_state.json"),
+            "v6_realized": _realized_of("v6_state.json"),
+            "v7_realized": _realized_of("v7_state.json"),
+            "v8_realized": _realized_of("v8_state.json"),
+            "v9_realized": _realized_of("v9_state.json"),
+            "x1_realized": _realized_of("x1_state.json"),
+            "golge_realized": _realized_of("golge_state.json"),
+        },
+        "positions": positions,
+        "trades": list(reversed(trades[-min(limit, 200):])),
+    }
+
+
 @app.get("/momentum", response_class=HTMLResponse)
 def momentum_page() -> str:
     """Momentum modu mini paneli — /api/momentum'u 5sn'de bir yeniler."""
@@ -1220,7 +1308,7 @@ def momentum_page() -> str:
  .eqlabel{color:#8b949e;margin:8px 0 2px} .eqlabel b{color:#c9d1d9}
  @media(max-width:600px){.eqwrap{height:220px}}
 </style></head><body>
-<h2>AKTİF YARIŞ · v4 / gölge / v6 / v7 / v8 / v9 / x1</h2>
+<h2>AKTİF YARIŞ · v4 / gölge / v6 / v7 / v8 / v9 / x1 / v10</h2>
 <div id="cmp3" style="margin:4px 0 12px">yükleniyor…</div>
 <h2>V4 Melez Senaryo (sanal, v3 girişi h1 5..15 · kademeli trail -3/-6 · karda 120dk tavan)</h2>
 <div id="v4sum">yükleniyor…</div>
@@ -1257,7 +1345,12 @@ def momentum_page() -> str:
 <table id="x1tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
 <th>mfe%</th><th>mae%</th><th>nefes</th><th>en derin%</th><th>chg_m5</th><th>chg_h1</th>
 <th>liq $</th><th>hold dk</th><th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>CANLI KIYAS · senkron equity (v4 · gölge · v6 · v7 · v8 · v9 · x1)</h2>
+<h2>V10 Senaryo (sanal, saf tp+2: liq&ge;$300k + h1 10..50 · stop/timeout/rejim/cooldown YOK)</h2>
+<div id="v10sum">yükleniyor…</div>
+<table id="v10tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
+<th>mfe%</th><th>mae%</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th><th>hold sn</th>
+<th>kapanış</th></tr></thead><tbody></tbody></table>
+<h2>CANLI KIYAS · senkron equity (v4 · gölge · v6 · v7 · v8 · v9 · x1 · v10)</h2>
 <div class="eqbtns" id="eqsyncbtns"></div>
 <div id="eqv4label" class="eqlabel">V4 MELEZ</div>
 <div class="eqwrap"><canvas id="eqv4chart"></canvas></div>
@@ -1273,6 +1366,8 @@ def momentum_page() -> str:
 <div class="eqwrap"><canvas id="eqv9chart"></canvas></div>
 <div id="eqx1label" class="eqlabel">X1</div>
 <div class="eqwrap"><canvas id="eqx1chart"></canvas></div>
+<div id="eqv10label" class="eqlabel">V10</div>
+<div class="eqwrap"><canvas id="eqv10chart"></canvas></div>
 <details id="arsivBox" style="margin-top:28px;border-top:1px solid #30363d;padding-top:8px">
 <summary style="cursor:pointer;color:#8b949e"><b>ARŞİV · durdurulan motorlar (v2 · v3 · v5) · tıkla aç</b></summary>
 <div id="arsivIc">
@@ -1437,7 +1532,7 @@ async function v9tick(){
 }
 v9tick(); setInterval(v9tick,5000);
 
-// ---- AKTIF: X1 (kosucu avcisi) + yedili kiyas satiri --------------------------------
+// ---- AKTIF: X1 (kosucu avcisi) ------------------------------------------------------
 async function x1tick(){
   let d; try{const r=await fetch("/api/x1?limit=30"); d=await r.json();}catch(e){return;}
   const s=d.summary;
@@ -1447,15 +1542,6 @@ async function x1tick(){
     `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
     `<span>açık ${s.open_slots}/3</span>`+
     `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
-  document.getElementById("cmp3").innerHTML=
-    `<span>Kümülatif realized PnL (her motor kendi başlangıcından): `+
-    `v4 <b class="${cls(s.v4_realized)}">$${f(s.v4_realized)}</b> · `+
-    `gölge <b class="${cls(s.golge_realized)}">$${f(s.golge_realized)}</b> · `+
-    `v6 <b class="${cls(s.v6_realized)}">$${f(s.v6_realized)}</b> · `+
-    `v7 <b class="${cls(s.v7_realized)}">$${f(s.v7_realized)}</b> · `+
-    `v8 <b class="${cls(s.v8_realized)}">$${f(s.v8_realized)}</b> · `+
-    `v9 <b class="${cls(s.v9_realized)}">$${f(s.v9_realized)}</b> · `+
-    `x1 <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`;
   document.getElementById("eqx1label").innerHTML=
     `X1 · equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b>`;
   document.querySelector("#x1tr tbody").innerHTML=(d.trades||[]).map(t=>
@@ -1467,6 +1553,37 @@ async function x1tick(){
     `<td>${f(t.hold_sec/60,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=13>henüz yok</td></tr>";
 }
 x1tick(); setInterval(x1tick,5000);
+
+// ---- AKTIF: V10 (saf tp_2) + sekizli kiyas satiri -----------------------------------
+async function v10tick(){
+  let d; try{const r=await fetch("/api/v10?limit=30"); d=await r.json();}catch(e){return;}
+  const s=d.summary;
+  document.getElementById("v10sum").innerHTML=
+    `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
+    `<span>realized <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`+
+    `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
+    `<span>açık ${s.open_slots}/5</span>`+
+    `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
+  document.getElementById("cmp3").innerHTML=
+    `<span>Kümülatif realized PnL (her motor kendi başlangıcından): `+
+    `v4 <b class="${cls(s.v4_realized)}">$${f(s.v4_realized)}</b> · `+
+    `gölge <b class="${cls(s.golge_realized)}">$${f(s.golge_realized)}</b> · `+
+    `v6 <b class="${cls(s.v6_realized)}">$${f(s.v6_realized)}</b> · `+
+    `v7 <b class="${cls(s.v7_realized)}">$${f(s.v7_realized)}</b> · `+
+    `v8 <b class="${cls(s.v8_realized)}">$${f(s.v8_realized)}</b> · `+
+    `v9 <b class="${cls(s.v9_realized)}">$${f(s.v9_realized)}</b> · `+
+    `x1 <b class="${cls(s.x1_realized)}">$${f(s.x1_realized)}</b> · `+
+    `v10 <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`;
+  document.getElementById("eqv10label").innerHTML=
+    `V10 · equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b>`;
+  document.querySelector("#v10tr tbody").innerHTML=(d.trades||[]).map(t=>
+    `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
+    `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
+    `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_h1,1)}</td>`+
+    `<td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
+    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
+}
+v10tick(); setInterval(v10tick,5000);
 
 // ---- ARSIV: v2/v3/v5, katlanir bolum acilinca BIR kez yuklenir (donuk) ----------
 async function arsivV2(){
@@ -1612,6 +1729,7 @@ const eqSyncTicks=[
   mkEqChart("eqv8","/api/v8/equity",true,true),
   mkEqChart("eqv9","/api/v9/equity",true,true),
   mkEqChart("eqx1","/api/x1/equity",true,true),
+  mkEqChart("eqv10","/api/v10/equity",true,true),
 ];
 function eqSyncButtons(){
   const el=document.getElementById("eqsyncbtns");
