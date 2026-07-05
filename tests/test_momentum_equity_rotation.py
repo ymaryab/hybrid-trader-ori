@@ -80,6 +80,64 @@ def test_throttle_is_per_prefix(tmp_path):
     assert len((tmp_path / "golge_equity.jsonl").read_text().splitlines()) == 1
 
 
+def test_live_equity_definition():
+    state = {
+        "balance": 800.0,
+        "positions": [
+            {"amount_token": 100.0, "last_price": 1.5},
+            {"amount_token": 10.0, "last_price": 2.0},
+        ],
+    }
+    assert panel._live_equity(state) == 970.0
+    assert panel._live_equity({"balance": 500.0}) == 500.0
+    assert panel._live_equity({}) == 0.0
+
+
+def test_equity_series_live_tip_from_state(tmp_path, monkeypatch):
+    import time as _time
+
+    monkeypatch.setenv("MOMENTUM_DATA_DIR", str(tmp_path))
+    state = {
+        "start_balance": 1000.0,
+        "balance": 800.0,
+        "positions": [{"amount_token": 100.0, "last_price": 1.5}],
+    }
+    (tmp_path / "v10_state.json").write_text(json.dumps(state))
+    (tmp_path / "v10_equity.jsonl").write_text(
+        json.dumps({"ts": 200.0, "eq": 990.0}) + "\n"
+    )
+    out = panel._equity_series("v10", 0)
+    ts_ms, eq = out["points"][-1]
+    # canli uc nokta: ust ozetle ayni formul, istek aninda
+    assert eq == panel._live_equity(state) == 950.0
+    assert abs(ts_ms / 1000 - _time.time()) < 5
+
+
+def test_api_summary_equity_equals_series_tip(tmp_path, monkeypatch):
+    monkeypatch.setenv("MOMENTUM_DATA_DIR", str(tmp_path))
+    state = {
+        "start_balance": 1000.0,
+        "balance": 800.0,
+        "realized_pnl": 5.0,
+        "positions": [{"amount_token": 100.0, "last_price": 1.5}],
+    }
+    (tmp_path / "v10_state.json").write_text(json.dumps(state))
+    out = panel.api_v10(limit=5)
+    series = panel._equity_series("v10", 0)
+    assert out["summary"]["equity"] == 950.0
+    assert series["points"][-1][1] == 950.0
+
+
+def test_equity_series_no_live_tip_without_balance(tmp_path, monkeypatch):
+    monkeypatch.setenv("MOMENTUM_DATA_DIR", str(tmp_path))
+    (tmp_path / "v9_state.json").write_text(json.dumps({"start_balance": 1000.0}))
+    (tmp_path / "v9_equity.jsonl").write_text(
+        json.dumps({"ts": 200.0, "eq": 990.0}) + "\n"
+    )
+    out = panel._equity_series("v9", 0)
+    assert out["points"] == [[200000, 990.0]]
+
+
 def test_equity_series_reads_prefix_sources(tmp_path, monkeypatch):
     monkeypatch.setenv("MOMENTUM_DATA_DIR", str(tmp_path))
     (tmp_path / "golge_state.json").write_text(json.dumps({"start_balance": 1000.0}))

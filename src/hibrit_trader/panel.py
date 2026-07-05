@@ -354,23 +354,19 @@ def api_momentum(limit: int = Query(100)) -> dict:
             except ValueError:
                 continue
     balance = float(state.get("balance") or 0.0)
-    pos_value = sum(
-        float(p.get("amount_token") or 0.0) * float(p.get("last_price") or 0.0)
-        for p in positions
-    )
     reasons: dict[str, int] = {}
     for t in trades:
         r = t.get("exit_reason", "?")
         reasons[r] = reasons.get(r, 0) + 1
     wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
     if state:
-        _equity_append(data_dir, "momentum", round(balance + pos_value, 2))
+        _equity_append(data_dir, "momentum", _live_equity(state))
     return {
         "summary": {
             "balance": round(balance, 2),
             "start_balance": state.get("start_balance"),
             "realized_pnl": state.get("realized_pnl"),
-            "equity": round(balance + pos_value, 2),
+            "equity": _live_equity(state),
             "open_slots": len(positions),
             "trades_total": len(trades),
             "wins": wins,
@@ -404,6 +400,20 @@ def _equity_rotate(path: Path) -> None:
     path.rename(target)
 
 
+def _live_equity(state: dict) -> float:
+    """TEK GERCEK KAYNAK: equity = nakit + acik pozisyonlarin anlik degeri.
+
+    Tum motor ozetleri ve equity serilerinin canli uc noktasi bu formulden gecer;
+    ust rakam ile chart ucu ayni hesap olsun diye tek fonksiyonda toplandi.
+    """
+    balance = float(state.get("balance") or 0.0)
+    pos_value = sum(
+        float(p.get("amount_token") or 0.0) * float(p.get("last_price") or 0.0)
+        for p in state.get("positions") or []
+    )
+    return round(balance + pos_value, 2)
+
+
 def _equity_append(data_dir: Path, prefix: str, equity: float) -> None:
     """Panel poll'unda equity örneklemini biriktir (append-only, motora dokunmaz)."""
     try:
@@ -421,15 +431,21 @@ def _equity_append(data_dir: Path, prefix: str, equity: float) -> None:
 
 
 def _equity_series(prefix: str, minutes: int) -> dict:
-    """Equity serisi — trades kümülatifi + panel örneklemleri (salt-okunur birleşim)."""
+    """Equity serisi: trades kumulatifi + panel orneklemleri + canli uc nokta.
+
+    Uc nokta istek aninda state'ten _live_equity ile hesaplanir; ust ozetle
+    ayni formul, ayni kaynak. Seri boylece hicbir zaman bayat bitmez.
+    """
     data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
     start_bal = 1000.0
+    state: dict = {}
     sp = data_dir / f"{prefix}_state.json"
     if sp.exists():
         try:
-            start_bal = float(json.loads(sp.read_text()).get("start_balance") or 1000.0)
+            state = json.loads(sp.read_text())
+            start_bal = float(state.get("start_balance") or 1000.0)
         except Exception:
-            pass
+            state = {}
     points: list[tuple[float, float]] = []
     tp = data_dir / f"{prefix}_trades.jsonl"
     if tp.exists():
@@ -458,6 +474,8 @@ def _equity_series(prefix: str, minutes: int) -> dict:
                 points.append((float(d["ts"]), float(d["eq"])))
             except Exception:
                 continue
+    if "balance" in state:  # canli uc nokta: ust ozetle AYNI hesap (_live_equity)
+        points.append((time.time(), _live_equity(state)))
     points.sort(key=lambda p: p[0])
     if minutes > 0:
         cutoff = time.time() - minutes * 60
@@ -555,10 +573,6 @@ def api_golge(limit: int = Query(50)) -> dict:
         p["pnl_pct_live"] = round((last / entry - 1) * 100, 2) if entry > 0 else 0.0
         p["age_min"] = round((time.time() - float(p.get("opened_ts") or time.time())) / 60, 1)
     balance = float(state.get("balance") or 0.0)
-    pos_value = sum(
-        float(p.get("amount_token") or 0.0) * float(p.get("last_price") or 0.0)
-        for p in positions
-    )
     created_ts = float(state.get("created_ts") or 0.0)
     # v2'nin AYNI donemdeki realized PnL'i (golge basladigindan beri): adil kiyas
     v2_since = 0.0
@@ -579,13 +593,13 @@ def api_golge(limit: int = Query(50)) -> dict:
         reasons[r] = reasons.get(r, 0) + 1
     wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
     if state:
-        _equity_append(data_dir, "golge", round(balance + pos_value, 2))
+        _equity_append(data_dir, "golge", _live_equity(state))
     return {
         "summary": {
             "balance": round(balance, 2),
             "start_balance": state.get("start_balance"),
             "realized_pnl": round(float(state.get("realized_pnl") or 0.0), 2),
-            "equity": round(balance + pos_value, 2),
+            "equity": _live_equity(state),
             "open_slots": len(positions),
             "trades_total": len(trades),
             "wins": wins,
@@ -628,10 +642,6 @@ def api_v3(limit: int = Query(50)) -> dict:
         p["pnl_pct_live"] = round((last / entry - 1) * 100, 2) if entry > 0 else 0.0
         p["age_min"] = round((time.time() - float(p.get("opened_ts") or time.time())) / 60, 1)
     balance = float(state.get("balance") or 0.0)
-    pos_value = sum(
-        float(p.get("amount_token") or 0.0) * float(p.get("last_price") or 0.0)
-        for p in positions
-    )
     created_ts = float(state.get("created_ts") or 0.0)
 
     # Üç yönlü kıyas: V3'ün başladığı andan itibaren kümülatif realized PnL
@@ -657,13 +667,13 @@ def api_v3(limit: int = Query(50)) -> dict:
         reasons[r] = reasons.get(r, 0) + 1
     wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
     if state:
-        _equity_append(data_dir, "v3", round(balance + pos_value, 2))
+        _equity_append(data_dir, "v3", _live_equity(state))
     return {
         "summary": {
             "balance": round(balance, 2),
             "start_balance": state.get("start_balance"),
             "realized_pnl": round(float(state.get("realized_pnl") or 0.0), 2),
-            "equity": round(balance + pos_value, 2),
+            "equity": _live_equity(state),
             "open_slots": len(positions),
             "trades_total": len(trades),
             "wins": wins,
@@ -711,10 +721,6 @@ def api_v4(limit: int = Query(50)) -> dict:
         p["pnl_pct_live"] = round((last / entry - 1) * 100, 2) if entry > 0 else 0.0
         p["age_min"] = round((time.time() - float(p.get("opened_ts") or time.time())) / 60, 1)
     balance = float(state.get("balance") or 0.0)
-    pos_value = sum(
-        float(p.get("amount_token") or 0.0) * float(p.get("last_price") or 0.0)
-        for p in positions
-    )
 
     def _realized_of(name: str) -> float | None:
         p = data_dir / name
@@ -731,13 +737,13 @@ def api_v4(limit: int = Query(50)) -> dict:
         reasons[r] = reasons.get(r, 0) + 1
     wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
     if state:
-        _equity_append(data_dir, "v4", round(balance + pos_value, 2))
+        _equity_append(data_dir, "v4", _live_equity(state))
     return {
         "summary": {
             "balance": round(balance, 2),
             "start_balance": state.get("start_balance"),
             "realized_pnl": round(float(state.get("realized_pnl") or 0.0), 2),
-            "equity": round(balance + pos_value, 2),
+            "equity": _live_equity(state),
             "open_slots": len(positions),
             "trades_total": len(trades),
             "wins": wins,
@@ -785,10 +791,6 @@ def api_v5(limit: int = Query(50)) -> dict:
         p["pnl_pct_live"] = round((last / entry - 1) * 100, 2) if entry > 0 else 0.0
         p["age_min"] = round((time.time() - float(p.get("opened_ts") or time.time())) / 60, 1)
     balance = float(state.get("balance") or 0.0)
-    pos_value = sum(
-        float(p.get("amount_token") or 0.0) * float(p.get("last_price") or 0.0)
-        for p in positions
-    )
 
     def _realized_of(name: str) -> float | None:
         p = data_dir / name
@@ -805,13 +807,13 @@ def api_v5(limit: int = Query(50)) -> dict:
         reasons[r] = reasons.get(r, 0) + 1
     wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
     if state:
-        _equity_append(data_dir, "v5", round(balance + pos_value, 2))
+        _equity_append(data_dir, "v5", _live_equity(state))
     return {
         "summary": {
             "balance": round(balance, 2),
             "start_balance": state.get("start_balance"),
             "realized_pnl": round(float(state.get("realized_pnl") or 0.0), 2),
-            "equity": round(balance + pos_value, 2),
+            "equity": _live_equity(state),
             "open_slots": len(positions),
             "trades_total": len(trades),
             "wins": wins,
@@ -860,10 +862,6 @@ def api_v6(limit: int = Query(50)) -> dict:
         p["pnl_pct_live"] = round((last / entry - 1) * 100, 2) if entry > 0 else 0.0
         p["age_min"] = round((time.time() - float(p.get("opened_ts") or time.time())) / 60, 1)
     balance = float(state.get("balance") or 0.0)
-    pos_value = sum(
-        float(p.get("amount_token") or 0.0) * float(p.get("last_price") or 0.0)
-        for p in positions
-    )
 
     def _realized_of(name: str) -> float | None:
         p = data_dir / name
@@ -880,13 +878,13 @@ def api_v6(limit: int = Query(50)) -> dict:
         reasons[r] = reasons.get(r, 0) + 1
     wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
     if state:
-        _equity_append(data_dir, "v6", round(balance + pos_value, 2))
+        _equity_append(data_dir, "v6", _live_equity(state))
     return {
         "summary": {
             "balance": round(balance, 2),
             "start_balance": state.get("start_balance"),
             "realized_pnl": round(float(state.get("realized_pnl") or 0.0), 2),
-            "equity": round(balance + pos_value, 2),
+            "equity": _live_equity(state),
             "open_slots": len(positions),
             "trades_total": len(trades),
             "wins": wins,
@@ -936,10 +934,6 @@ def api_v7(limit: int = Query(50)) -> dict:
         p["pnl_pct_live"] = round((last / entry - 1) * 100, 2) if entry > 0 else 0.0
         p["age_min"] = round((time.time() - float(p.get("opened_ts") or time.time())) / 60, 1)
     balance = float(state.get("balance") or 0.0)
-    pos_value = sum(
-        float(p.get("amount_token") or 0.0) * float(p.get("last_price") or 0.0)
-        for p in positions
-    )
 
     def _realized_of(name: str) -> float | None:
         p = data_dir / name
@@ -956,13 +950,13 @@ def api_v7(limit: int = Query(50)) -> dict:
         reasons[r] = reasons.get(r, 0) + 1
     wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
     if state:
-        _equity_append(data_dir, "v7", round(balance + pos_value, 2))
+        _equity_append(data_dir, "v7", _live_equity(state))
     return {
         "summary": {
             "balance": round(balance, 2),
             "start_balance": state.get("start_balance"),
             "realized_pnl": round(float(state.get("realized_pnl") or 0.0), 2),
-            "equity": round(balance + pos_value, 2),
+            "equity": _live_equity(state),
             "open_slots": len(positions),
             "trades_total": len(trades),
             "wins": wins,
@@ -1010,10 +1004,6 @@ def api_v8(limit: int = Query(50)) -> dict:
         p["pnl_pct_live"] = round((last / entry - 1) * 100, 2) if entry > 0 else 0.0
         p["age_min"] = round((time.time() - float(p.get("opened_ts") or time.time())) / 60, 1)
     balance = float(state.get("balance") or 0.0)
-    pos_value = sum(
-        float(p.get("amount_token") or 0.0) * float(p.get("last_price") or 0.0)
-        for p in positions
-    )
 
     def _realized_of(name: str) -> float | None:
         p = data_dir / name
@@ -1030,13 +1020,13 @@ def api_v8(limit: int = Query(50)) -> dict:
         reasons[r] = reasons.get(r, 0) + 1
     wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
     if state:
-        _equity_append(data_dir, "v8", round(balance + pos_value, 2))
+        _equity_append(data_dir, "v8", _live_equity(state))
     return {
         "summary": {
             "balance": round(balance, 2),
             "start_balance": state.get("start_balance"),
             "realized_pnl": round(float(state.get("realized_pnl") or 0.0), 2),
-            "equity": round(balance + pos_value, 2),
+            "equity": _live_equity(state),
             "open_slots": len(positions),
             "trades_total": len(trades),
             "wins": wins,
@@ -1085,10 +1075,6 @@ def api_v9(limit: int = Query(50)) -> dict:
         p["pnl_pct_live"] = round((last / entry - 1) * 100, 2) if entry > 0 else 0.0
         p["age_min"] = round((time.time() - float(p.get("opened_ts") or time.time())) / 60, 1)
     balance = float(state.get("balance") or 0.0)
-    pos_value = sum(
-        float(p.get("amount_token") or 0.0) * float(p.get("last_price") or 0.0)
-        for p in positions
-    )
 
     def _realized_of(name: str) -> float | None:
         p = data_dir / name
@@ -1105,13 +1091,13 @@ def api_v9(limit: int = Query(50)) -> dict:
         reasons[r] = reasons.get(r, 0) + 1
     wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
     if state:
-        _equity_append(data_dir, "v9", round(balance + pos_value, 2))
+        _equity_append(data_dir, "v9", _live_equity(state))
     return {
         "summary": {
             "balance": round(balance, 2),
             "start_balance": state.get("start_balance"),
             "realized_pnl": round(float(state.get("realized_pnl") or 0.0), 2),
-            "equity": round(balance + pos_value, 2),
+            "equity": _live_equity(state),
             "open_slots": len(positions),
             "trades_total": len(trades),
             "wins": wins,
@@ -1163,10 +1149,6 @@ def api_x1(limit: int = Query(50)) -> dict:
         p["dd_pct_live"] = round((last / peak - 1) * 100, 2) if peak > 0 else 0.0
         p["age_min"] = round((time.time() - float(p.get("opened_ts") or time.time())) / 60, 1)
     balance = float(state.get("balance") or 0.0)
-    pos_value = sum(
-        float(p.get("amount_token") or 0.0) * float(p.get("last_price") or 0.0)
-        for p in positions
-    )
 
     def _realized_of(name: str) -> float | None:
         p = data_dir / name
@@ -1183,13 +1165,13 @@ def api_x1(limit: int = Query(50)) -> dict:
         reasons[r] = reasons.get(r, 0) + 1
     wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
     if state:
-        _equity_append(data_dir, "x1", round(balance + pos_value, 2))
+        _equity_append(data_dir, "x1", _live_equity(state))
     return {
         "summary": {
             "balance": round(balance, 2),
             "start_balance": state.get("start_balance"),
             "realized_pnl": round(float(state.get("realized_pnl") or 0.0), 2),
-            "equity": round(balance + pos_value, 2),
+            "equity": _live_equity(state),
             "open_slots": len(positions),
             "trades_total": len(trades),
             "wins": wins,
@@ -1240,10 +1222,6 @@ def api_v10(limit: int = Query(50)) -> dict:
         p["pnl_pct_live"] = round((last / entry - 1) * 100, 2) if entry > 0 else 0.0
         p["age_min"] = round((time.time() - float(p.get("opened_ts") or time.time())) / 60, 1)
     balance = float(state.get("balance") or 0.0)
-    pos_value = sum(
-        float(p.get("amount_token") or 0.0) * float(p.get("last_price") or 0.0)
-        for p in positions
-    )
 
     def _realized_of(name: str) -> float | None:
         p = data_dir / name
@@ -1260,13 +1238,13 @@ def api_v10(limit: int = Query(50)) -> dict:
         reasons[r] = reasons.get(r, 0) + 1
     wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
     if state:
-        _equity_append(data_dir, "v10", round(balance + pos_value, 2))
+        _equity_append(data_dir, "v10", _live_equity(state))
     return {
         "summary": {
             "balance": round(balance, 2),
             "start_balance": state.get("start_balance"),
             "realized_pnl": round(float(state.get("realized_pnl") or 0.0), 2),
-            "equity": round(balance + pos_value, 2),
+            "equity": _live_equity(state),
             "open_slots": len(positions),
             "trades_total": len(trades),
             "wins": wins,
@@ -1404,6 +1382,7 @@ def momentum_page() -> str:
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script>
 const f=(x,d=2)=>x==null?"-":Number(x).toFixed(d);
+const eqCharts={};  // canli chartlar: motor tick'i ayni poll'un equity'sini uca basar
 const cls=x=>x>0?"pos":(x<0?"neg":"");
 
 // ---- ARSIV: Golge (donuk, acilinca bir kez) -----------------------------------
@@ -1435,6 +1414,7 @@ async function v4tick(){
     `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
   document.getElementById("eqv4label").innerHTML=
     `V4 MELEZ · equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b>`;
+  eqCharts.eqv4&&eqCharts.eqv4.setLive(s.equity);
   document.querySelector("#v4tr tbody").innerHTML=(d.trades||[]).map(t=>
     `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
     `<td>${t.trail_kademe==null?"-":t.trail_kademe}</td>`+
@@ -1475,6 +1455,7 @@ async function v7tick(){
     `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
   document.getElementById("eqv7label").innerHTML=
     `V7 · equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b>`;
+  eqCharts.eqv7&&eqCharts.eqv7.setLive(s.equity);
   document.querySelector("#v7tr tbody").innerHTML=(d.trades||[]).map(t=>
     `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
     `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
@@ -1514,6 +1495,7 @@ async function v9tick(){
     `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
   document.getElementById("eqv9label").innerHTML=
     `V9 · equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b>`;
+  eqCharts.eqv9&&eqCharts.eqv9.setLive(s.equity);
   document.querySelector("#v9tr tbody").innerHTML=(d.trades||[]).map(t=>
     `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
     `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
@@ -1535,6 +1517,7 @@ async function x1tick(){
     `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
   document.getElementById("eqx1label").innerHTML=
     `X1 · equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b>`;
+  eqCharts.eqx1&&eqCharts.eqx1.setLive(s.equity);
   document.querySelector("#x1tr tbody").innerHTML=(d.trades||[]).map(t=>
     `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
     `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
@@ -1564,6 +1547,7 @@ async function v10tick(){
     `x1 <b class="${cls(s.x1_realized)}">$${f(s.x1_realized)}</b></span>`;
   document.getElementById("eqv10label").innerHTML=
     `V10 · equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b>`;
+  eqCharts.eqv10&&eqCharts.eqv10.setLive(s.equity);
   document.querySelector("#v10tr tbody").innerHTML=(d.trades||[]).map(t=>
     `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
     `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
@@ -1644,7 +1628,7 @@ const EQWINS=[["5dk",5],["15dk",15],["30dk",30],["1s",60],["2s",120],["5s",300],
   ["12s",720],["24s",1440],["48s",2880],["1h",10080],["2h",20160],["Tümü",0]];
 function mkEqChart(prefix, api, live=true, shared=false){
   // shared=true: kendi buton seridi yok, pencereyi ortak eqSyncWin belirler
-  const st={win:0, chart:null, start:1000};
+  const st={win:0, chart:null, start:1000, pts:[], live:null};
   const getWin=()=>shared?eqSyncWin:st.win;
   const refLine={id:prefix+"ref",afterDatasetsDraw(c){
     const y=c.scales.y.getPixelForValue(st.start),a=c.chartArea;
@@ -1665,7 +1649,21 @@ function mkEqChart(prefix, api, live=true, shared=false){
     try{const r=await fetch(`${api}?minutes=${win}`);d=await r.json();}
     catch(e){return;}
     st.start=d.start_balance||1000;
-    const pts=(d.points||[]).map(p=>({x:p[0],y:p[1]}));
+    st.pts=(d.points||[]).map(p=>({x:p[0],y:p[1]}));
+    render();
+  }
+  function setLive(eq){
+    // ust ozetle AYNI poll'un equity'si chartin son noktasi olur (tek gercek kaynak)
+    if(eq==null)return;
+    st.live={x:Date.now(),y:Number(eq)};
+    if(st.chart)render();
+  }
+  function render(){
+    const win=getWin();
+    let pts=st.pts;
+    if(st.live){
+      pts=pts.filter(p=>p.x<st.live.x).concat([st.live]);
+    }
     const now=Date.now();
     const xmin=win>0?now-win*60000:undefined;
     // dikey olcek: gorunur veri + referans ($start) HER ZAMAN kadrajda, %3 pay
@@ -1707,18 +1705,17 @@ function mkEqChart(prefix, api, live=true, shared=false){
   }
   if(!shared) buttons();
   tick(); if(live) setInterval(tick,5000);
-  return tick;
+  return {tick,setLive};
 }
 
-// ---- Canli Kiyas: uc chart, TEK ortak zaman filtresi seridi (senkron) ---------
+// ---- Canli Kiyas: bes chart, TEK ortak zaman filtresi seridi (senkron) --------
 let eqSyncWin=0;
-const eqSyncTicks=[
-  mkEqChart("eqv4","/api/v4/equity",true,true),
-  mkEqChart("eqv7","/api/v7/equity",true,true),
-  mkEqChart("eqv9","/api/v9/equity",true,true),
-  mkEqChart("eqx1","/api/x1/equity",true,true),
-  mkEqChart("eqv10","/api/v10/equity",true,true),
-];
+eqCharts.eqv4=mkEqChart("eqv4","/api/v4/equity",true,true);
+eqCharts.eqv7=mkEqChart("eqv7","/api/v7/equity",true,true);
+eqCharts.eqv9=mkEqChart("eqv9","/api/v9/equity",true,true);
+eqCharts.eqx1=mkEqChart("eqx1","/api/x1/equity",true,true);
+eqCharts.eqv10=mkEqChart("eqv10","/api/v10/equity",true,true);
+const eqSyncTicks=Object.values(eqCharts).map(c=>c.tick);
 function eqSyncButtons(){
   const el=document.getElementById("eqsyncbtns");
   el.innerHTML=EQWINS.map(([l,m])=>
