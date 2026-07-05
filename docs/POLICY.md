@@ -60,10 +60,12 @@ Yapisal tuzak: runner = dusuk-likidite; dusuk-likidite = yuksek-friction. Runner
 
 Sonuc: gercekci friction'da bu konsept (yuksek-frekans pump_fun runner-avi) mevcut veride hicbir giris seciminiyle pozitif beklentiye ulasmiyor. Eksik olan bir filtre degil, yapinin kendisi. Gercek kaldiraclar: (a) gercek execution friction'ini olc (%5.27 botun tahmini, tek sayi degil), (b) dusuk-frekans + yuksek-likidite pair'lere kay, ya da yuksek-frekans pump_fun'dan vazgec.
 
-## V-serisi final (05 Tem 2026)
+## V-serisi final (05 Tem 2026, rakamlar 06 Tem 01:45 kesimiyle yeniden hesaplandi)
 
-- Fren kanitlandi: +$66, 3/3 dogru.
-- Tavansizlik faturasi: -$298.
-- 20dk mutlak tavan curudu: -$154.
-- Ortak kaybettiren parametre: sol_h1 0-0.4 bandi (v7 rejim esigi 0.5'e cekildi).
+Tum rakamlar data/*_trades.jsonl'den, kesim noktasi karar commit'i a8da524 (2026-07-06 01:45 +03). Pencere/tanim her maddede belirtilir.
+
+- Fren (v7 stop_felaket, -%10 aninda sat): 15 tetik, fren islemlerinin kendi neti -$346.3 (v7 tum omru, dogum 04 Tem 23:30 +03 .. kesim). Ikiz test (ayni token, +-2 saat, v6'da karsiligi olan 12/15 tetik): v7 tarafi -$289.8, v6 ikiz tarafi -$286.1, fark -$3.7. Ayni pencerede toplam ikiz kiyas: v6 48 islem -$73.7, v7 58 islem -$96.1, fark -$22.4. Sonuc: fren notr ile hafif negatif arasi, "kanitlandi" degil; kayiplari erken realize ediyor ama kurtarma sansini da kesiyor.
+- Tavansizlik faturasi (golge, h1 ust siniri yok): golge'nin h1>50 girisleri 8 islem net -$160.4 (pencere: v6 dogumu 04 Tem 18:15 +03 .. kesim; tanim: chg_h1 > 50 olan girisler, v6'nin reddedip golge'nin aldigi kume). Ayni pencerede toplam: golge 68 islem -$318.0, v6 ikiz 71 islem -$91.0, fark -$227. Tavansizligin dogrudan faturasi -$160, dolayli toplam fark -$227.
+- 20dk mutlak tavan (v8): timeout_20 cikislari 8 islem net -$88.1, 8'in 7'si zararla kapandi (v8 tum omru .. kesim, toplam 11 islem -$54.2). Sonuc: tavan curudu, zarar realize makinesi.
+- Ortak kaybettiren parametre sol_h1 0..0.5 bandi: sol_h1 kaydi olan motorlarda bu banttaki girisler toplam 41 islem net -$136.6 (v6: 22/-$44.7, v7: 16/-$48.1, v8: 3/-$43.8; pencere: her motorun kendi omru .. kesim). v7 rejim esigi bu kanitla 0.5'e cekildi.
 - Aktif filo: v4 / v7 / v9 / v10 / X1. Durdurulan: golge, v6, v8 (state/trades korunur, panel arsivinde).
