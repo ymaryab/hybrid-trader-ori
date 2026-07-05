@@ -57,10 +57,10 @@ def test_entry_accepts_h1_50_and_above_no_upper_band(x1_data_dir, monkeypatch):
     assert len(_enter(eng, monkeypatch, _pair(pool="XP2", token="XT2", h1=459658.0))) == 2
 
 
-def test_entry_rejects_liq_below_50k(x1_data_dir, monkeypatch):
+def test_entry_rejects_liq_below_20k(x1_data_dir, monkeypatch):
     eng = X1Engine(_settings())
-    assert _enter(eng, monkeypatch, _pair(liq=49_000)) == []
-    assert len(_enter(eng, monkeypatch, _pair(liq=50_000))) == 1
+    assert _enter(eng, monkeypatch, _pair(liq=19_000)) == []
+    assert len(_enter(eng, monkeypatch, _pair(liq=20_000))) == 1
 
 
 def test_entry_rejects_dead_run_m5_not_positive(x1_data_dir, monkeypatch):
@@ -82,21 +82,24 @@ def test_candidates_sorted_highest_m5_first(x1_data_dir, monkeypatch):
     assert positions[0]["pool_address"] == "PA"
 
 
-def test_three_slots_max(x1_data_dir, monkeypatch):
+def test_three_slots_max_with_ticket_cap(x1_data_dir, monkeypatch):
     assert x1.MAX_SLOTS == 3
     eng = X1Engine(_settings())
     pairs = [_pair(pool=f"P{i}", token=f"T{i}") for i in range(5)]
     positions = _enter(eng, monkeypatch, pairs)
-    # gas payi nedeniyle tek tick'te en fazla 2 dolar (mevcut model), tavan asilmaz
-    assert 1 <= len(positions) <= 3
-    assert positions[0]["cost_usd"] == pytest.approx(1000 / 3, rel=1e-3)  # esit bolusum
+    # bilet tavani $70: kucuk bilet gas payi birakir, 3 slot tek tick'te dolar
+    assert len(positions) == 3
+    assert all(p["cost_usd"] == pytest.approx(70.0) for p in positions)
     # slotlar doluyken yeni giris yok
-    eng.positions = [
-        {"pool_address": f"D{i}", "token_address": f"DT{i}", "entry_price": 1.0}
-        for i in range(3)
-    ]
     _enter(eng, monkeypatch, _pair(pool="YENI", token="YT"))
     assert len(eng.positions) == 3
+
+
+def test_ticket_uses_balance_third_when_below_cap(x1_data_dir, monkeypatch):
+    eng = X1Engine(_settings())
+    eng.balance = 150.0  # bakiye/3 = 50 < 70 tavani
+    positions = _enter(eng, monkeypatch, _pair())
+    assert positions[0]["cost_usd"] == pytest.approx(50.0)
 
 
 def test_entry_keeps_cooldown(x1_data_dir, monkeypatch):

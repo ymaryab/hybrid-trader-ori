@@ -10,9 +10,11 @@ EKG kalibrasyonu (2026-07-05): nefes medyan -%10, olum medyan -%61,
 oldurup olumlerin %88.6'sini yakaliyordu; kesintili gozlem nefesleri
 sig gosterdigi icin 2 puan pay ile trail -%18.
 
-GIRIS : chg_h1 >= 50 (V serisinin reddettigi bolge) + liq >= $50k +
-        m5 > 0 (kosu hala canli) + safety ZORUNLU + rejim sol_h1 >= 0.
-        Siralama en yuksek m5 once. 3 slot, bakiye/3 esit bolusum.
+GIRIS : chg_h1 >= 50 (V serisinin reddettigi bolge) + liq >= $20k
+        (kosucu habitati, medyan ~$19k) + m5 > 0 (kosu hala canli) +
+        safety ZORUNLU + rejim sol_h1 >= 0. Siralama en yuksek m5 once.
+        3 slot, bilet min(bakiye/3, $70): vahsi sahada kucuk bilet,
+        rug isirigi sinirli.
 CIKIS : sabit tp YOK. trail_18 (tepeden -%18) / stop_giris (+%10 hic
         gorulmemisken -%12) / timeout_360 (6 saat mutlak tavan).
 COOLDOWN: kayip cikis 90dk, karli 30dk.
@@ -50,9 +52,10 @@ log = logging.getLogger(__name__)
 
 # ---- X1 esikleri (EKG-kalibreli kosucu avi) -----------------------------------
 CHG_H1_MIN = float(os.getenv("X1_CHG_H1_MIN", "50"))    # kosucu habitati, ust bant yok
-LIQ_MIN_USD = float(os.getenv("X1_LIQ_MIN_USD", "50000"))  # rug tabani, 100k cok kisitlar
+LIQ_MIN_USD = float(os.getenv("X1_LIQ_MIN_USD", "20000"))  # kosucu habitati (medyan ~$19k)
 MAX_SLOTS = 3           # az pozisyon, genis nefes payi
 START_BALANCE = float(os.getenv("X1_START_BALANCE", "1000"))
+MAX_TICKET_USD = float(os.getenv("X1_MAX_TICKET_USD", "70"))  # vahsi sahada kucuk bilet
 TRAIL_PCT = float(os.getenv("X1_TRAIL_PCT", "-18"))     # tepeden dusus esigi (EKG -20 + 2 puan pay)
 EARLY_STOP_PCT = float(os.getenv("X1_EARLY_STOP_PCT", "-12"))  # yanlis binis freni
 EARLY_MFE_PCT = float(os.getenv("X1_EARLY_MFE_PCT", "10"))     # bu gorulduyse fren devre disi
@@ -153,9 +156,9 @@ class X1Engine:
             return
         log.warning(
             "X1 senaryo basladi (kosucu avcisi) - sanal $%.2f · slot %d · "
-            "giris liq>=$%.0f + h1>=%.0f + m5>0 · cikis trail %%%.0f / "
+            "bilet<=$%.0f · giris liq>=$%.0f + h1>=%.0f + m5>0 · cikis trail %%%.0f / "
             "erken fren %%%.0f (mfe<%.0f) / tavan %dsa",
-            self.balance, MAX_SLOTS, LIQ_MIN_USD, CHG_H1_MIN,
+            self.balance, MAX_SLOTS, MAX_TICKET_USD, LIQ_MIN_USD, CHG_H1_MIN,
             TRAIL_PCT, EARLY_STOP_PCT, EARLY_MFE_PCT, CEILING_SEC // 3600,
         )
         self._save()
@@ -234,7 +237,7 @@ class X1Engine:
             return
         if sol_h1 is not None and self._regime_logged:
             self._regime_logged = False
-        budget_each = self.balance / empty
+        budget_each = min(self.balance / empty, MAX_TICKET_USD)
         for pair in cands:
             if empty <= 0 or budget_each < 1.0:
                 break
