@@ -14,6 +14,8 @@ V7 = V6'NIN BİREBİR KOPYASI + TEK fark (2026-07-04 v6 arındırma analizi):
   GİRİŞ : liq >= $100k VE 10 <= chg_h1 <= 50 (v6 ile birebir).
   ÇIKIŞ : tp_2 / stop_felaket (-%10) / stop_gec (30dk sabır sonrası -%2) /
           timeout_60. sol_chg_h1 kaydı v6 ile aynı.
+  REJİM : V-serisi final (05 Tem): eşik 0 yerine 0.5; sol_h1 < 0.5 iken
+          giriş yok (0-0.4 bandı ortak kaybettiren parametreydi).
 
 Fill'ler sanal: gerçek fiyat + v2'nin likidite-slippage modeli + gas.
 Kadans v2 ile aynı; 5/8 interval faz kaydırmalı (v6:3/8, gölge:1/2,
@@ -57,7 +59,7 @@ GRACE_SEC = 30 * 60     # ilk 30dk aşağıda stop yok (sabır)
 LATE_STOP_PCT = -2.0    # 30dk sonrası: girişin -%2 altı SAT
 DISASTER_PCT = float(os.getenv("V7_DISASTER_PCT", "-10"))  # TEK fark: her an mutlak taban
 CEILING_SEC = 60 * 60   # 60dk tavan
-SOL_H1_MIN = float(os.getenv("MOM_SOL_H1_MIN", "0"))   # rejim eşiği gölge ile aynı
+SOL_H1_MIN = float(os.getenv("V7_SOL_H1_MIN", "0.5"))  # V-final 05 Tem: sol_h1 0-0.4 bandi ortak kaybettirendi
 COOLDOWN_LOSS_SEC = float(os.getenv("MOM_COOLDOWN_STOP_MIN", "60")) * 60
 COOLDOWN_EXIT_SEC = float(os.getenv("MOM_COOLDOWN_EXIT_MIN", "15")) * 60
 

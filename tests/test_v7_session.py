@@ -68,8 +68,9 @@ def test_entry_rejects_h1_below_10(v7_data_dir, monkeypatch):
 def test_entry_golge_rules_preserved(v7_data_dir, monkeypatch):
     eng = V7Engine(_settings())
     assert _enter(eng, monkeypatch, _pair(liq=99_000)) == []          # liq >= 100k
-    assert _enter(eng, monkeypatch, _pair(), sol_h1=-0.5) == []       # rejim < 0
-    assert len(_enter(eng, monkeypatch, _pair(h1=45.0, m5=-5.0))) == 1  # m5 sarti yok
+    assert _enter(eng, monkeypatch, _pair(), sol_h1=-0.5) == []       # rejim < 0.5
+    assert _enter(eng, monkeypatch, _pair(), sol_h1=0.4) == []        # V-final: 0..0.4 bandi da kapali
+    assert len(_enter(eng, monkeypatch, _pair(h1=45.0, m5=-5.0), sol_h1=0.5)) == 1  # esik dahil, m5 sarti yok
 
 
 def test_candidates_sorted_highest_h1_first(v7_data_dir, monkeypatch):

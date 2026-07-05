@@ -59,3 +59,11 @@ Runner tahmini (giris-ani ayrac):
 Yapisal tuzak: runner = dusuk-likidite; dusuk-likidite = yuksek-friction. Runner'i yaratan sey friction'i olduren seyle ayni. Ayni anda yuksek-frekans + dusuk-friction olamiyor.
 
 Sonuc: gercekci friction'da bu konsept (yuksek-frekans pump_fun runner-avi) mevcut veride hicbir giris seciminiyle pozitif beklentiye ulasmiyor. Eksik olan bir filtre degil, yapinin kendisi. Gercek kaldiraclar: (a) gercek execution friction'ini olc (%5.27 botun tahmini, tek sayi degil), (b) dusuk-frekans + yuksek-likidite pair'lere kay, ya da yuksek-frekans pump_fun'dan vazgec.
+
+## V-serisi final (05 Tem 2026)
+
+- Fren kanitlandi: +$66, 3/3 dogru.
+- Tavansizlik faturasi: -$298.
+- 20dk mutlak tavan curudu: -$154.
+- Ortak kaybettiren parametre: sol_h1 0-0.4 bandi (v7 rejim esigi 0.5'e cekildi).
+- Aktif filo: v4 / v7 / v9 / v10 / X1. Durdurulan: golge, v6, v8 (state/trades korunur, panel arsivinde).
