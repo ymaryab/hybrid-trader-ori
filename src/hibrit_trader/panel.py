@@ -1560,6 +1560,15 @@ function mkEqChart(prefix, api, live=true, shared=false){
     const pts=(d.points||[]).map(p=>({x:p[0],y:p[1]}));
     const now=Date.now();
     const xmin=win>0?now-win*60000:undefined;
+    // dikey olcek: gorunur veri + referans ($start) HER ZAMAN kadrajda, %3 pay
+    let lo=st.start,hi=st.start;
+    for(const p of pts){
+      if(xmin&&p.x<xmin)continue;
+      if(p.y<lo)lo=p.y;
+      if(p.y>hi)hi=p.y;
+    }
+    const pad=Math.max((hi-lo)*0.03,hi*0.005,1);
+    const ymin=lo-pad,ymax=hi+pad;
     if(!st.chart){
       st.chart=new Chart(document.getElementById(prefix+"chart"),{type:"line",
         data:{datasets:[{data:pts,borderColor:"#58a6ff",borderWidth:1.5,pointRadius:0,
@@ -1576,13 +1585,15 @@ function mkEqChart(prefix, api, live=true, shared=false){
               time:{displayFormats:{millisecond:"HH:mm:ss",second:"HH:mm:ss",minute:"HH:mm",
                 hour:"dd.MM HH:mm",day:"dd.MM"}},
               ticks:{color:"#8b949e",maxTicksLimit:8,maxRotation:0},grid:{color:"#21262d"}},
-            y:{ticks:{color:"#8b949e",callback:v=>"$"+v},grid:{color:"#21262d"}}}},
+            y:{min:ymin,max:ymax,ticks:{color:"#8b949e",callback:v=>"$"+v},grid:{color:"#21262d"}}}},
         plugins:[refLine]});
     }else{
       st.chart.data.datasets[0].data=pts;
       st.chart.data.datasets[0].fill.target.value=st.start;
       st.chart.options.scales.x.min=xmin;
       st.chart.options.scales.x.max=now;
+      st.chart.options.scales.y.min=ymin;
+      st.chart.options.scales.y.max=ymax;
       st.chart.update("none");
     }
   }
