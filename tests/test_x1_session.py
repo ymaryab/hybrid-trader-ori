@@ -1,4 +1,4 @@
-"""X1 senaryo motoru testleri: kosucu avcisi, tp yok, trail -18, 6sa tavan."""
+"""X1 senaryo motoru testleri: kosucu avcisi, yarim tp mfe>=15, trail -18, 6sa tavan."""
 
 from __future__ import annotations
 
@@ -137,12 +137,55 @@ def _last(data_dir):
     return json.loads((data_dir / x1.TRADES_FILE).read_text().splitlines()[-1])
 
 
-def test_no_tp_holds_through_big_gain(x1_data_dir, monkeypatch):
+def test_no_full_tp_holds_half_through_big_gain(x1_data_dir, monkeypatch):
     eng = X1Engine(_settings())
     pos = _open(eng)
     t0 = pos["opened_ts"]
     _tick_price(eng, pos, pos["entry_price"] * 3.0, t0 + 600, monkeypatch)
-    assert eng.positions == [pos]  # +%200'de bile satis yok
+    assert eng.positions == [pos]  # +%200'de bile tam satis yok, kalan yari kosar
+    assert pos["yarim_satildi"] is True  # ama yarim tp kilitlendi
+    assert pos["cost_usd"] == pytest.approx(50.0)
+
+
+def test_partial_take_at_mfe_15_sells_half_once(x1_data_dir, monkeypatch):
+    eng = X1Engine(_settings())
+    pos = _open(eng)
+    t0 = pos["opened_ts"]
+    e = pos["entry_price"]
+    amount0 = pos["amount_token"]
+    bal0 = eng.balance
+    _tick_price(eng, pos, e * 1.14, t0 + 300, monkeypatch)    # mfe 14: tetiklenmez
+    assert pos["yarim_satildi"] is False
+    _tick_price(eng, pos, e * 1.16, t0 + 600, monkeypatch)    # mfe 16: yarim sat
+    assert eng.positions == [pos]  # pozisyon acik kalir
+    assert pos["yarim_satildi"] is True
+    assert pos["amount_token"] == pytest.approx(amount0 / 2)
+    assert pos["cost_usd"] == pytest.approx(50.0)
+    assert eng.balance > bal0
+    t = _last(x1_data_dir)
+    assert t["exit_reason"] == "tp_yarim_15"
+    assert t["cost_usd"] == pytest.approx(50.0)
+    assert t["pnl_usd"] > 0
+    # ikinci kez tetiklenmez
+    _tick_price(eng, pos, e * 1.5, t0 + 900, monkeypatch)
+    lines = (x1_data_dir / x1.TRADES_FILE).read_text().splitlines()
+    assert len(lines) == 1
+    assert pos["amount_token"] == pytest.approx(amount0 / 2)
+
+
+def test_partial_then_trail_closes_remaining_half(x1_data_dir, monkeypatch):
+    eng = X1Engine(_settings())
+    pos = _open(eng)
+    t0 = pos["opened_ts"]
+    e = pos["entry_price"]
+    _tick_price(eng, pos, e * 2.0, t0 + 600, monkeypatch)     # yarim tp + tepe 2.0x
+    assert pos["yarim_satildi"] is True
+    _tick_price(eng, pos, e * 1.60, t0 + 900, monkeypatch)    # tepeden -20: kalan yari SAT
+    assert eng.positions == []
+    lines = [json.loads(l) for l in (x1_data_dir / x1.TRADES_FILE).read_text().splitlines()]
+    assert [t["exit_reason"] for t in lines] == ["tp_yarim_15", "trail_18"]
+    assert lines[1]["cost_usd"] == pytest.approx(50.0)
+    assert lines[1]["pnl_usd"] > 0  # kalan yari da girisin ustunde cikti
 
 
 def test_trail_18_fires_from_peak(x1_data_dir, monkeypatch):

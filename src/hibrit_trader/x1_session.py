@@ -15,8 +15,12 @@ GIRIS : chg_h1 >= 50 (V serisinin reddettigi bolge) + liq >= $20k
         safety ZORUNLU + rejim sol_h1 >= 0. Siralama en yuksek m5 once.
         3 slot, bilet min(bakiye/3, $70): vahsi sahada kucuk bilet,
         rug isirigi sinirli.
-CIKIS : sabit tp YOK. trail_18 (tepeden -%18) / stop_giris (+%10 hic
-        gorulmemisken -%12) / timeout_360 (6 saat mutlak tavan).
+CIKIS : sabit tam tp YOK. Kismi kar kilidi: mfe >= +%15 gorulunce
+        pozisyonun YARISI satilir (tp_yarim_15, bir kez), kalan yari
+        trail ile kosar. Rug-hizi cokuslerde masadaki para yarilanir
+        (2026-07-05 otopsisi: 4 rug = zararin %66'si).
+        trail_18 (tepeden -%18) / stop_giris (+%10 hic gorulmemisken
+        -%12) / timeout_360 (6 saat mutlak tavan).
 COOLDOWN: kayip cikis 90dk, karli 30dk.
 
 Fill'ler sanal: gercek fiyat + v2'nin likidite-slippage modeli + gas.
@@ -59,6 +63,7 @@ MAX_TICKET_USD = float(os.getenv("X1_MAX_TICKET_USD", "70"))  # vahsi sahada kuc
 TRAIL_PCT = float(os.getenv("X1_TRAIL_PCT", "-18"))     # tepeden dusus esigi (EKG -20 + 2 puan pay)
 EARLY_STOP_PCT = float(os.getenv("X1_EARLY_STOP_PCT", "-12"))  # yanlis binis freni
 EARLY_MFE_PCT = float(os.getenv("X1_EARLY_MFE_PCT", "10"))     # bu gorulduyse fren devre disi
+PARTIAL_MFE_PCT = float(os.getenv("X1_PARTIAL_MFE_PCT", "15"))  # kismi kar kilidi esigi
 CEILING_SEC = 6 * 3600  # kosucular saatlerce kosuyor, 60dk bu ava dar
 SOL_H1_MIN = float(os.getenv("MOM_SOL_H1_MIN", "0"))    # rejim esigi diger motorlarla ayni
 COOLDOWN_LOSS_SEC = float(os.getenv("X1_COOLDOWN_LOSS_MIN", "90")) * 60
@@ -157,9 +162,9 @@ class X1Engine:
         log.warning(
             "X1 senaryo basladi (kosucu avcisi) - sanal $%.2f · slot %d · "
             "bilet<=$%.0f · giris liq>=$%.0f + h1>=%.0f + m5>0 · cikis trail %%%.0f / "
-            "erken fren %%%.0f (mfe<%.0f) / tavan %dsa",
+            "yarim tp mfe>=%%%.0f / erken fren %%%.0f (mfe<%.0f) / tavan %dsa",
             self.balance, MAX_SLOTS, MAX_TICKET_USD, LIQ_MIN_USD, CHG_H1_MIN,
-            TRAIL_PCT, EARLY_STOP_PCT, EARLY_MFE_PCT, CEILING_SEC // 3600,
+            TRAIL_PCT, PARTIAL_MFE_PCT, EARLY_STOP_PCT, EARLY_MFE_PCT, CEILING_SEC // 3600,
         )
         self._save()
         time.sleep(SCAN_INTERVAL_SEC * 3 / 16)
@@ -284,6 +289,7 @@ class X1Engine:
             "trough_price": None,
             "nefes_n": 0,
             "nefes_en_derin_pct": 0.0,
+            "yarim_satildi": False,
         }
         self.balance -= (usd + gas)
         self.positions.append(pos)
@@ -293,7 +299,7 @@ class X1Engine:
                     getattr(pair, "chg_m5", 0.0), pair.liquidity_usd)
         return True
 
-    # ---- Cikis: stop_giris / trail_18 / timeout_360 (tp YOK) ----------------------
+    # ---- Cikis: tp_yarim_15 (kismi) / stop_giris / trail_18 / timeout_360 ---------
     def _manage_exits(self, client: httpx.Client) -> None:
         now = time.time()
         for pos in list(self.positions):
@@ -326,6 +332,10 @@ class X1Engine:
             dd_pct = (price / pos["peak_price"] - 1) * 100
             age = now - pos["opened_ts"]
 
+            # kismi kar kilidi: mfe +%15'e ilk ulasista yarim sat, bir kez
+            if not pos.get("yarim_satildi") and pos["mfe_pct"] >= PARTIAL_MFE_PCT:
+                self._partial_take(pos, price, now)
+
             reason = None
             if pos["mfe_pct"] < EARLY_MFE_PCT and pnl_pct <= EARLY_STOP_PCT:
                 reason = "stop_giris"   # yanlis binis: +%10 hic gorulmedi
@@ -335,6 +345,51 @@ class X1Engine:
                 reason = "timeout_360"
             if reason:
                 self._close_position(pos, price, reason, now)
+
+    def _partial_take(self, pos: dict, price: float, now: float) -> None:
+        half_tokens = pos["amount_token"] / 2
+        half_cost = pos["cost_usd"] / 2
+        slip = _mom_slippage(half_cost, pos["liq_entry"])
+        eff_price = price * (1 - slip)
+        gas = GAS_COST_USD.get(pos["chain"], 0.1)
+        proceeds = half_tokens * eff_price - gas
+        pnl = proceeds - half_cost
+        pnl_pct = (eff_price / pos["entry_price"] - 1) * 100 if pos["entry_price"] > 0 else 0.0
+        self._append_trade({
+            "trade_id": pos["trade_id"],
+            "pair": pos["pair"],
+            "chain": pos["chain"],
+            "token_address": pos["token_address"],
+            "pool_address": pos["pool_address"],
+            "entry_price": pos["entry_price"],
+            "exit_price": eff_price,
+            "chg_m5": pos["chg_m5"],
+            "chg_h1": pos["chg_h1"],
+            "liq_entry": pos["liq_entry"],
+            "sol_chg_h1": pos.get("sol_chg_h1"),
+            "cost_usd": round(half_cost, 4),
+            "proceeds_usd": round(proceeds, 4),
+            "pnl_usd": round(pnl, 4),
+            "pnl_pct": round(pnl_pct, 3),
+            "mfe_pct": pos["mfe_pct"],
+            "mae_pct": pos["mae_pct"],
+            "peak_price": pos["peak_price"],
+            "nefes_n": pos["nefes_n"],
+            "nefes_en_derin_pct": pos["nefes_en_derin_pct"],
+            "hold_sec": round(now - pos["opened_ts"], 1),
+            "exit_reason": "tp_yarim_15",
+            "friction_pct": round(pos.get("entry_slip_pct", 0.0) + slip * 100, 4),
+            "opened_at": pos["opened_at"],
+            "closed_at": _now_iso(),
+        })
+        self.balance += proceeds
+        self.realized_pnl += pnl
+        pos["amount_token"] -= half_tokens
+        pos["cost_usd"] = round(pos["cost_usd"] - half_cost, 4)
+        pos["yarim_satildi"] = True
+        self._save()
+        log.warning("X1 YARIM SAT %s $%.2f kilitlendi @ %.8g (mfe %.1f%%), kalan yari trail ile",
+                    pos["pair"], proceeds, eff_price, pos["mfe_pct"])
 
     def _close_position(self, pos: dict, price: float, reason: str, now: float) -> None:
         cost = pos["cost_usd"]

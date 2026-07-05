@@ -1340,7 +1340,7 @@ def momentum_page() -> str:
 <table id="v9tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
 <th>mfe%</th><th>mae%</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th><th>hold sn</th>
 <th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>X1 Senaryo (sanal, koşucu avcısı: h1&ge;50 + m5&gt;0 + liq&ge;$20k · bilet&le;$70 · tp yok · trail -18 · 6sa tavan)</h2>
+<h2>X1 Senaryo (sanal, koşucu avcısı: h1&ge;50 + m5&gt;0 + liq&ge;$20k · bilet&le;$70 · yarım tp mfe&ge;+15 · trail -18 · 6sa tavan)</h2>
 <div id="x1sum">yükleniyor…</div>
 <table id="x1tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
 <th>mfe%</th><th>mae%</th><th>nefes</th><th>en derin%</th><th>chg_m5</th><th>chg_h1</th>
