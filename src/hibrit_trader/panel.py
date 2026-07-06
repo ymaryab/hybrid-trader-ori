@@ -147,6 +147,11 @@ def _start_engine() -> None:
             from hibrit_trader.m1_session import M1Engine
             m1 = M1Engine(settings)
             threading.Thread(target=m1.run_forever, daemon=True).start()
+        if os.getenv("M2_ENABLED", "1") != "0":
+            # M2 senaryo: major evren + saf tp (v10 iskeleti), m2_* dosyalarina yazar
+            from hibrit_trader.m2_session import M2Engine
+            m2 = M2Engine(settings)
+            threading.Thread(target=m2.run_forever, daemon=True).start()
         if os.getenv("EKG_ENABLED", "1") != "0":
             # Koşucu EKG: pasif gözlemci, işlem yok, kosucu_ekg* dosyalarına yazar
             from hibrit_trader.kosucu_ekg import KosucuEkg
@@ -553,6 +558,11 @@ def api_v10_equity(minutes: int = Query(0, ge=0)) -> dict:
 @app.get("/api/m1/equity")
 def api_m1_equity(minutes: int = Query(0, ge=0)) -> dict:
     return _equity_series("m1", minutes)
+
+
+@app.get("/api/m2/equity")
+def api_m2_equity(minutes: int = Query(0, ge=0)) -> dict:
+    return _equity_series("m2", minutes)
 
 
 @app.get("/api/golge")
@@ -1267,6 +1277,7 @@ def api_v10(limit: int = Query(50)) -> dict:
             "v9_realized": _realized_of("v9_state.json"),
             "x1_realized": _realized_of("x1_state.json"),
             "m1_realized": _realized_of("m1_state.json"),
+            "m2_realized": _realized_of("m2_state.json"),
         },
         "positions": positions,
         "trades": list(reversed(trades[-min(limit, 200):])),
@@ -1337,6 +1348,70 @@ def api_m1(limit: int = Query(50)) -> dict:
     }
 
 
+@app.get("/api/m2")
+def api_m2(limit: int = Query(50)) -> dict:
+    """M2 senaryo gözlemi (major evren, saf tp) - m2_* dosyalarından okur."""
+    data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
+    state: dict = {}
+    sp = data_dir / "m2_state.json"
+    if sp.exists():
+        try:
+            state = json.loads(sp.read_text())
+        except Exception:
+            state = {}
+    trades: list[dict] = []
+    tp = data_dir / "m2_trades.jsonl"
+    if tp.exists():
+        for ln in tp.read_text().splitlines():
+            if not ln.strip():
+                continue
+            try:
+                trades.append(json.loads(ln))
+            except ValueError:
+                continue
+    positions = list(state.get("positions", []))
+    for p in positions:
+        entry = float(p.get("entry_price") or 0.0)
+        last = float(p.get("last_price") or entry)
+        p["pnl_pct_live"] = round((last / entry - 1) * 100, 2) if entry > 0 else 0.0
+        p["age_min"] = round((time.time() - float(p.get("opened_ts") or time.time())) / 60, 1)
+    balance = float(state.get("balance") or 0.0)
+    universe: dict = {}
+    up = data_dir / "m1_universe.json"  # evren M1 ile ortak dosya
+    if up.exists():
+        try:
+            universe = json.loads(up.read_text())
+        except Exception:
+            universe = {}
+    reasons: dict[str, int] = {}
+    for t in trades:
+        r = t.get("exit_reason", "?")
+        reasons[r] = reasons.get(r, 0) + 1
+    wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
+    if state:
+        _equity_append(data_dir, "m2", _live_equity(state))
+    return {
+        "summary": {
+            "balance": round(balance, 2),
+            "start_balance": state.get("start_balance"),
+            "realized_pnl": round(float(state.get("realized_pnl") or 0.0), 2),
+            "equity": _live_equity(state),
+            "open_slots": len(positions),
+            "trades_total": len(trades),
+            "wins": wins,
+            "win_rate_pct": round(wins / len(trades) * 100, 1) if trades else None,
+            "exit_reasons": reasons,
+            "since": state.get("updated_at"),
+            "created_ts": float(state.get("created_ts") or 0.0),
+            "universe_n": len(universe.get("tokens") or []),
+            "universe_at": universe.get("updated_at"),
+            "universe_symbols": [t.get("symbol") for t in (universe.get("tokens") or [])],
+        },
+        "positions": positions,
+        "trades": list(reversed(trades[-min(limit, 200):])),
+    }
+
+
 @app.get("/momentum", response_class=HTMLResponse)
 def momentum_page() -> str:
     """Momentum modu mini paneli — /api/momentum'u 5sn'de bir yeniler."""
@@ -1358,7 +1433,7 @@ def momentum_page() -> str:
  .eqlabel{color:#8b949e;margin:8px 0 2px} .eqlabel b{color:#c9d1d9}
  @media(max-width:600px){.eqwrap{height:220px}}
 </style></head><body>
-<h2>AKTİF YARIŞ · v4 / v7 / v9 / v10 / x1 / m1</h2>
+<h2>AKTİF YARIŞ · v4 / v7 / v9 / v10 / x1 / m1 / m2</h2>
 <div id="cmp3" style="margin:4px 0 12px">yükleniyor…</div>
 <h2>V4 Melez Senaryo (sanal, v3 girişi h1 5..15 · kademeli trail -3/-6 · karda 120dk tavan)</h2>
 <div id="v4sum">yükleniyor…</div>
@@ -1390,7 +1465,12 @@ def momentum_page() -> str:
 <table id="m1tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
 <th>mfe%</th><th>mae%</th><th>chg_m5</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th>
 <th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>CANLI KIYAS · senkron equity (v4 · v7 · v9 · x1 · v10 · m1)</h2>
+<h2>M2 Senaryo (sanal, MAJOR evren: liq&ge;$3M · h1 1.5..15, h1 sıralı · saf tp+1.2 · stop/timeout/rejim/cooldown YOK)</h2>
+<div id="m2sum">yükleniyor…</div>
+<table id="m2tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
+<th>mfe%</th><th>mae%</th><th>chg_m5</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th>
+<th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table>
+<h2>CANLI KIYAS · senkron equity (v4 · v7 · v9 · x1 · v10 · m1 · m2)</h2>
 <div class="eqbtns" id="eqsyncbtns"></div>
 <div id="eqv4label" class="eqlabel">V4 MELEZ</div>
 <div class="eqwrap"><canvas id="eqv4chart"></canvas></div>
@@ -1404,6 +1484,8 @@ def momentum_page() -> str:
 <div class="eqwrap"><canvas id="eqv10chart"></canvas></div>
 <div id="eqm1label" class="eqlabel">M1</div>
 <div class="eqwrap"><canvas id="eqm1chart"></canvas></div>
+<div id="eqm2label" class="eqlabel">M2</div>
+<div class="eqwrap"><canvas id="eqm2chart"></canvas></div>
 <details id="arsivBox" style="margin-top:28px;border-top:1px solid #30363d;padding-top:8px">
 <summary style="cursor:pointer;color:#8b949e"><b>ARŞİV · durdurulan motorlar (v2 · v3 · v5 · gölge · v6 · v8) · tıkla aç</b></summary>
 <div id="arsivIc">
@@ -1627,7 +1709,8 @@ async function v10tick(){
     `v9 <b class="${cls(s.v9_realized)}">$${f(s.v9_realized)}</b> · `+
     `v10 <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b> · `+
     `x1 <b class="${cls(s.x1_realized)}">$${f(s.x1_realized)}</b> · `+
-    `m1 <b class="${cls(s.m1_realized)}">$${f(s.m1_realized)}</b></span>`;
+    `m1 <b class="${cls(s.m1_realized)}">$${f(s.m1_realized)}</b> · `+
+    `m2 <b class="${cls(s.m2_realized)}">$${f(s.m2_realized)}</b></span>`;
   document.getElementById("eqv10label").innerHTML=
     `V10 · equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b>`;
   eqCharts.eqv10&&eqCharts.eqv10.setLive(s.equity);
@@ -1660,6 +1743,27 @@ async function m1tick(){
     `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=12>henüz yok</td></tr>";
 }
 m1tick(); setInterval(m1tick,5000);
+
+async function m2tick(){
+  let d; try{const r=await fetch("/api/m2?limit=30"); d=await r.json();}catch(e){return;}
+  const s=d.summary;
+  document.getElementById("m2sum").innerHTML=
+    `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
+    `<span>realized <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`+
+    `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
+    `<span>açık ${s.open_slots}/5</span><span>evren <b>${s.universe_n}</b> token</span>`+
+    `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
+  document.getElementById("eqm2label").innerHTML=
+    `M2 · equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b>`;
+  eqCharts.eqm2&&eqCharts.eqm2.setLive(s.equity);
+  document.querySelector("#m2tr tbody").innerHTML=(d.trades||[]).map(t=>
+    `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
+    `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
+    `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_m5,2)}</td>`+
+    `<td>${f(t.chg_h1,2)}</td><td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
+    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=12>henüz yok</td></tr>";
+}
+m2tick(); setInterval(m2tick,5000);
 
 // ---- ARSIV: v2/v3/v5, katlanir bolum acilinca BIR kez yuklenir (donuk) ----------
 async function arsivV2(){
@@ -1820,6 +1924,7 @@ eqCharts.eqv9=mkEqChart("eqv9","/api/v9/equity",true,true);
 eqCharts.eqx1=mkEqChart("eqx1","/api/x1/equity",true,true);
 eqCharts.eqv10=mkEqChart("eqv10","/api/v10/equity",true,true);
 eqCharts.eqm1=mkEqChart("eqm1","/api/m1/equity",true,true);
+eqCharts.eqm2=mkEqChart("eqm2","/api/m2/equity",true,true);
 const eqSyncTicks=Object.values(eqCharts).map(c=>c.tick);
 function eqSyncButtons(){
   const el=document.getElementById("eqsyncbtns");
