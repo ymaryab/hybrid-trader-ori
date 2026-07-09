@@ -247,6 +247,32 @@ def test_momentum_sayfasi_tek_poll_ve_upd_etiketi(client):
     assert "arsivM1" in h and "arsivM2" in h
 
 
+def test_momentum_yeni_duzen(client):
+    h = client.get("/momentum").text
+    # ust bar rozetleri
+    for eid in ("feedBadge", "rejimBadge"):
+        assert f'id="{eid}"' in h
+    # besli kart grid: canli + uc bot + v-next, konfigden uretilir
+    assert 'id="kartGrid"' in h
+    for kid in ("kart-canli", "kart-v6", "kart-v7", "kart-x1", "kart-vnext"):
+        assert f'id="{kid}"' in h
+    assert "cüzdan: bağlı değil" in h
+    assert "yakında" in h
+    # kart/chart eslesmesi: her bot kartinin sparkline'i ve charti var
+    for p in ("v6", "v7", "x1"):
+        assert f'id="spark-{p}"' in h
+        assert f'id="eq{p}chart"' in h
+        assert f'id="mtm-{p}"' in h
+    # tek ortak zaman filtresi + birlesik islem tablosu + arsiv aynen
+    assert 'id="eqsyncbtns"' in h
+    assert 'id="isltr"' in h
+    assert "mfeMaeBar" in h
+    assert 'id="arsivBox"' in h
+    # JS konfig sunucudan basildi (tek konfig listesi, elle esleme yok)
+    assert '"__MOTORLAR__"' not in h
+    assert '"id": "v6"' in h
+
+
 def test_momentum_sayfasi_js_syntax_valid(client):
     h = client.get("/momentum").text
     m = re.search(r"<script>(.*?)</script>", h, re.S)

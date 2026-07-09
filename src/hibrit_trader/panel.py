@@ -1216,60 +1216,157 @@ def api_m2(limit: int = Query(50)) -> dict:
     return d
 
 
-@app.get("/momentum", response_class=HTMLResponse)
-def momentum_page() -> str:
-    """Momentum modu mini paneli — aktif filo /api/filo'dan 5sn'de bir, TEK poll."""
-    return """<!doctype html>
-<html lang="tr"><head><meta charset="utf-8"><title>Momentum v2</title>
+# ---- /momentum sayfasi: filo konfigurasyonu -----------------------------------------
+# Kural: kart grid ve chart sutunu BU listeden uretilir (elle esleme yok). Bot
+# eklenince/cikinca kart ve chart otomatik eslesir; JS tarafi ayni listeyi
+# MOTORLAR olarak alir. "canli" ve "vnext" placeholder kartlardir.
+
+_FILO_MOTORLAR: list[dict] = [
+    {"id": "canli", "tip": "canli", "ad": "CANLI", "renk": "#e3b341"},
+    {"id": "v6", "tip": "bot", "ad": "V6", "renk": "#3fb950", "slots": 5,
+     "rozet": "hızlı göz",
+     "desc": "güçlendirilmiş gölge: liq&ge;$100k · h1 10..50 · tp+2 · 30dk sabır, stop-2 · 60dk tavan · rejim sol_h1&ge;0.5 · hızlı göz 2s"},
+    {"id": "v7", "tip": "bot", "ad": "V7", "renk": "#58a6ff", "slots": 5,
+     "rozet": "fren -%10",
+     "desc": "-%10 felaket freni · sabır iptal, anında sat · rejim sol_h1&ge;0.5"},
+    {"id": "x1", "tip": "bot", "ad": "X1", "renk": "#d29922", "slots": 3,
+     "rozet": "koşucu avcısı",
+     "desc": "koşucu avcısı: h1&ge;50 + m5&gt;0 + liq&ge;$20k · bilet&le;$70 · yarım tp mfe&ge;+15 · trail -18 · 6sa tavan"},
+    {"id": "vnext", "tip": "yakinda", "ad": "V-NEXT", "renk": "#8b949e"},
+]
+
+
+def _filo_kart_canli(bagli: bool) -> str:
+    """CANLI karti iki sablonlu: bos-durum (kilitli) / dolu-durum (baglaninca)."""
+    if bagli:
+        return ('<div class="kart" id="kart-canli">'
+                '<div class="khead"><b style="color:#e3b341">CANLI</b>'
+                '<span class="rozet">gerçek para</span></div>'
+                '<div class="mtmbig" id="mtm-canli">-</div>'
+                '<div class="ksub" id="sub-canli">-</div>'
+                '<canvas class="spark" id="spark-canli" height="36"></canvas>'
+                '<div class="kfoot" id="foot-canli">-</div></div>')
+    return ('<div class="kart bos" id="kart-canli">'
+            '<div class="khead"><b>CANLI</b><span class="rozet">kilitli</span></div>'
+            '<div class="kilit">&#128274;</div>'
+            '<div class="bosmetin">Gerçek para. Karne günü kazanan buraya bağlanır.</div>'
+            '<div class="kfoot">cüzdan: bağlı değil</div></div>')
+
+
+def _filo_kart(m: dict) -> str:
+    if m["tip"] == "bot":
+        return (f'<div class="kart" id="kart-{m["id"]}" title="{m["desc"]}">'
+                f'<div class="khead"><b style="color:{m["renk"]}">{m["ad"]}</b>'
+                f'<span class="rozet">{m["rozet"]}</span>'
+                '<span class="rozet liderroz">lider</span></div>'
+                f'<div class="mtmbig" id="mtm-{m["id"]}">yükleniyor…</div>'
+                f'<div class="ksub" id="sub-{m["id"]}">-</div>'
+                f'<canvas class="spark" id="spark-{m["id"]}" height="36"></canvas>'
+                f'<div class="kfoot" id="foot-{m["id"]}">-</div></div>')
+    if m["id"] == "canli":
+        return _filo_kart_canli(bagli=False)
+    return ('<div class="kart bos" id="kart-vnext">'
+            '<div class="khead"><b>V-NEXT</b><span class="rozet">yakında</span></div>'
+            '<div class="bosmetin">Üç botun derslerinden doğacak aday.</div></div>')
+
+
+def _filo_chart(m: dict) -> str:
+    if m["tip"] == "bot":
+        return (f'<div class="chhead"><span class="dot" style="background:{m["renk"]}"></span>'
+                f'<b>{m["ad"]}</b> <span class="chdesc">{m["desc"]}</span>'
+                f'<span id="eq{m["id"]}label" class="eqlabel"></span>'
+                f'<span id="{m["id"]}upd" class="updlabel"></span></div>'
+                f'<div class="eqwrap"><canvas id="eq{m["id"]}chart"></canvas></div>')
+    if m["id"] == "canli":
+        return ('<div class="chhead"><span class="dot" style="background:#e3b341"></span>'
+                '<b>CANLI</b></div>'
+                '<div class="ph">kazanan bağlandığında gerçek para eğrisi burada akacak</div>')
+    return ('<div class="chhead"><span class="dot"></span><b>V-NEXT</b></div>'
+            '<div class="ph">aday bot eklendiğinde eğrisi burada</div>')
+
+
+_MOMENTUM_HTML = """<!doctype html>
+<html lang="tr"><head><meta charset="utf-8"><title>Momentum filo</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
- body{background:#0d1117;color:#c9d1d9;font:13px/1.5 monospace;margin:16px}
- h2{color:#58a6ff;margin:12px 0 6px} .pos{color:#3fb950} .neg{color:#f85149}
+ body{background:#0d1117;color:#c9d1d9;font:13px/1.55 monospace;margin:0 auto;
+   max-width:1400px;padding:18px 20px 40px}
+ h2{color:#58a6ff;margin:22px 0 8px;font-size:15px}
+ .pos{color:#3fb950} .neg{color:#f85149}
  table{border-collapse:collapse;width:100%;margin-bottom:14px}
- th,td{border:1px solid #30363d;padding:3px 8px;text-align:right;white-space:nowrap}
+ th,td{border:1px solid #30363d;padding:4px 9px;text-align:right;white-space:nowrap}
  th{background:#161b22;color:#8b949e} td:first-child,th:first-child{text-align:left}
  .chip{display:inline-block;padding:0 6px;border-radius:8px;background:#21262d}
- #sum span{margin-right:18px}
- .eqbtns{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0 8px}
+ div[id$="sum"] span{margin-right:16px}
+ .tablewrap{overflow-x:auto}
+ #topbar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+ #topbar h1{color:#58a6ff;font-size:19px;margin:0;letter-spacing:1px}
+ .badge{display:inline-block;padding:2px 10px;border-radius:10px;background:#21262d;
+   color:#8b949e;font-size:12px;margin-left:6px;border:1px solid #30363d}
+ .badge.ok{color:#3fb950;border-color:#238636}
+ .badge.err{background:#da3633;color:#fff;border-color:#da3633}
+ #kartGrid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin:16px 0 6px}
+ @media(max-width:1100px){#kartGrid{grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}}
+ .kart{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px 14px;
+   min-height:158px;display:flex;flex-direction:column}
+ .kart.bos{background:transparent;border-style:dashed;color:#8b949e}
+ .kart.lider{border:2px solid #1f6feb;padding:11px 13px}
+ .khead{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+ .rozet{font-size:11px;padding:0 8px;border-radius:10px;background:#21262d;color:#8b949e}
+ .liderroz{display:none;background:#1f6feb;color:#fff}
+ .kart.lider .liderroz{display:inline-block}
+ .mtmbig{font-size:25px;margin:8px 0 2px}
+ .ksub{color:#8b949e}
+ .spark{width:100%;height:36px;margin:8px 0 4px}
+ .kfoot{color:#8b949e;font-size:12px;margin-top:auto}
+ .kilit{font-size:22px;margin:8px 0 4px}
+ .bosmetin{margin:4px 0 8px}
+ .chhead{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:18px 0 4px}
+ .chhead b{font-size:14px}
+ .chdesc{color:#8b949e;font-size:11px}
+ .dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#30363d;
+   align-self:center}
+ .ph{border:1px dashed #30363d;border-radius:10px;min-height:90px;display:flex;
+   align-items:center;justify-content:center;color:#484f58;padding:14px;text-align:center;
+   margin-bottom:8px}
+ .eqbtns{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0 8px}
  .eqbtns button{background:#21262d;color:#8b949e;border:1px solid #30363d;border-radius:6px;
    padding:2px 10px;cursor:pointer;font:inherit}
  .eqbtns button.act{background:#1f6feb;color:#fff;border-color:#1f6feb}
- .eqwrap{position:relative;width:100%;height:280px;margin-bottom:16px}
- .eqlabel{color:#8b949e;margin:8px 0 2px} .eqlabel b{color:#c9d1d9}
+ .eqwrap{position:relative;width:100%;height:260px;margin-bottom:10px}
+ .eqlabel{color:#8b949e} .eqlabel b{color:#c9d1d9}
  .mtm{font-size:24px;margin:2px 0 6px;color:#8b949e}
- .slotbadge{display:inline-block;font-size:12px;vertical-align:middle;margin-left:12px;
+ .slotbadge{display:inline-block;font-size:11px;vertical-align:middle;margin-left:10px;
    padding:1px 8px;border-radius:10px;background:#21262d;color:#8b949e}
  .slotbadge.b24{background:#9e6a03;color:#fff}
  .slotbadge.b48{background:#da3633;color:#fff}
- .updlabel{font-size:11px;font-weight:normal;color:#8b949e;margin-left:10px}
+ .updlabel{font-size:11px;font-weight:normal;color:#8b949e;margin-left:6px}
  .updlabel.stale{color:#f85149}
- @media(max-width:600px){.eqwrap{height:220px}}
+ .exchip{display:inline-block;padding:0 8px;border-radius:8px;background:#21262d;
+   font-size:12px;border:1px solid transparent}
+ .ex-tp{background:rgba(63,185,80,.15);color:#3fb950}
+ .ex-stop{background:transparent;color:#f85149;border-color:#f85149}
+ .ex-to{background:#21262d;color:#8b949e}
+ .ex-amber{background:rgba(210,153,34,.18);color:#d29922}
+ tr.loss td{background:rgba(248,81,73,.06)}
+ @media(max-width:600px){.eqwrap{height:210px}body{padding:12px}}
 </style></head><body>
-<h2>AKTİF YARIŞ · v6 / v7 / x1</h2>
-<div id="cmp3" style="margin:4px 0 12px">yükleniyor…</div>
-<h2>V6 Senaryo (sanal, güçlendirilmiş gölge: liq&ge;$100k · h1 10..50 · tp+2 · 30dk sabır, stop-2 · 60dk tavan · rejim sol_h1&ge;0.5 · hızlı göz 2s) <span id="v6upd" class="updlabel"></span></h2>
-<div id="v6mtm" class="mtm">yükleniyor…</div>
-<div id="v6sum">yükleniyor…</div>
-<table id="v6tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
-<th>mfe%</th><th>mae%</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th><th>hold sn</th>
-<th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>V7 Senaryo (sanal, -%10 felaket freni · sabır iptal, anında sat · rejim sol_h1&ge;0.5) <span id="v7upd" class="updlabel"></span></h2>
-<div id="v7sum">yükleniyor…</div>
-<table id="v7tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
-<th>mfe%</th><th>mae%</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th><th>hold sn</th>
-<th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>X1 Senaryo (sanal, koşucu avcısı: h1&ge;50 + m5&gt;0 + liq&ge;$20k · bilet&le;$70 · yarım tp mfe&ge;+15 · trail -18 · 6sa tavan) <span id="x1upd" class="updlabel"></span></h2>
-<div id="x1sum">yükleniyor…</div>
-<table id="x1tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
-<th>mfe%</th><th>mae%</th><th>nefes</th><th>en derin%</th><th>chg_m5</th><th>chg_h1</th>
-<th>liq $</th><th>hold dk</th><th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>CANLI KIYAS · senkron equity (v6 · v7 · x1)</h2>
+<div id="topbar">
+ <div><h1>AKTİF YARIŞ</h1></div>
+ <div>
+  <span id="feedBadge" class="badge">feed: -</span>
+  <span id="rejimBadge" class="badge">rejim sol_h1: -</span>
+  <span class="badge">paper</span>
+ </div>
+</div>
+<div id="kartGrid"><!--KARTLAR--></div>
+<div id="cmp3" style="color:#8b949e;margin:2px 0 14px">yükleniyor…</div>
 <div class="eqbtns" id="eqsyncbtns"></div>
-<div id="eqv6label" class="eqlabel">V6</div>
-<div class="eqwrap"><canvas id="eqv6chart"></canvas></div>
-<div id="eqv7label" class="eqlabel">V7</div>
-<div class="eqwrap"><canvas id="eqv7chart"></canvas></div>
-<div id="eqx1label" class="eqlabel">X1</div>
-<div class="eqwrap"><canvas id="eqx1chart"></canvas></div>
+<div id="chartCol"><!--CHARTCOL--></div>
+<h2>SON İŞLEMLER · aktif filo</h2>
+<div class="tablewrap"><table id="isltr"><thead><tr><th>bot</th><th>pair</th><th>exit</th>
+<th>pnl $</th><th>pnl%</th><th>mfe/mae</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th>
+<th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table></div>
 <details id="arsivBox" style="margin-top:28px;border-top:1px solid #30363d;padding-top:8px">
 <summary style="cursor:pointer;color:#8b949e"><b>ARŞİV · durdurulan motorlar (m1 · m2 · v2 · v3 · v4 · v5 · gölge · v8 · v9 · v10) · tıkla aç</b></summary>
 <div id="arsivIc">
@@ -1291,7 +1388,7 @@ def momentum_page() -> str:
 <h2>Equity (M2)</h2>
 <div class="eqbtns" id="eqm2btns"></div>
 <div class="eqwrap"><canvas id="eqm2chart"></canvas></div>
-<h2>MOMENTUM v2 (durduruldu — slot 5 · liq&ge;$40k · m5&gt;0 · h1 5..50 · stop-2/BE+3/trail 5/-3 · 60dk)</h2>
+<h2>MOMENTUM v2 (durduruldu · slot 5 · liq&ge;$40k · m5&gt;0 · h1 5..50 · stop-2/BE+3/trail 5/-3 · 60dk)</h2>
 <div id="sum">arşiv, açınca yüklenir…</div>
 <table id="pos"><thead><tr><th>pair</th><th>chain</th><th>giriş</th><th>son</th>
 <th>pnl%</th><th>peak mfe%</th><th>stop modu</th><th>chg_m5</th><th>chg_h1</th>
@@ -1302,7 +1399,7 @@ def momentum_page() -> str:
 <h2>Equity (MOMENTUM v2)</h2>
 <div class="eqbtns" id="eqv2btns"></div>
 <div class="eqwrap"><canvas id="eqv2chart"></canvas></div>
-<h2>V3 Senaryo (durduruldu — h1 5..15 düşük önce · rejim&ge;0.5 · BE+1.5 · cooldown 45dk)</h2>
+<h2>V3 Senaryo (durduruldu · h1 5..15 düşük önce · rejim&ge;0.5 · BE+1.5 · cooldown 45dk)</h2>
 <div id="v3sum">arşiv, açınca yüklenir…</div>
 <table id="v3tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
 <th>mfe%</th><th>mae%</th><th>chg_m5</th><th>chg_h1</th><th>sol_h1</th><th>hold sn</th>
@@ -1310,7 +1407,7 @@ def momentum_page() -> str:
 <h2>Equity (V3)</h2>
 <div class="eqbtns" id="eqv3btns"></div>
 <div class="eqwrap"><canvas id="eqv3chart"></canvas></div>
-<h2>V5 Senaryo (durduruldu — gölge zemini + taban -%8 · tp yarım + koşucu trail -3/be+1.5)</h2>
+<h2>V5 Senaryo (durduruldu · gölge zemini + taban -%8 · tp yarım + koşucu trail -3/be+1.5)</h2>
 <div id="v5sum">arşiv, açınca yüklenir…</div>
 <table id="v5tr"><thead><tr><th>pair</th><th>exit_reason</th><th>koşucu</th><th>pnl $</th>
 <th>pnl%</th><th>mfe%</th><th>mae%</th><th>chg_h1</th><th>liq $</th><th>hold sn</th>
@@ -1364,8 +1461,9 @@ def momentum_page() -> str:
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script>
 const f=(x,d=2)=>x==null?"-":Number(x).toFixed(d);
-const eqCharts={};  // canli chartlar: motor tick'i ayni poll'un equity'sini uca basar
 const cls=x=>x>0?"pos":(x<0?"neg":"");
+const eqCharts={};  // canli chartlar: filo tick'i ayni poll'un equity'sini uca basar
+const MOTORLAR="__MOTORLAR__";  // sunucu _FILO_MOTORLAR listesinden basar (tek konfig)
 
 // ---- ARSIV: Golge (donuk, acilinca bir kez) -----------------------------------
 async function arsivGolge(){
@@ -1403,47 +1501,6 @@ async function arsivV4(){
     `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=12>henüz yok</td></tr>";
 }
 
-// ---- AKTIF: V6 (guclendirilmis golge: rejim 0.5 + hizli goz) ---------------------
-function basV6(d){
-  const s=d.summary;
-  document.getElementById("v6mtm").innerHTML=mtmSatir(s);
-  document.getElementById("v6sum").innerHTML=
-    `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
-    `<span>realized <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`+
-    `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
-    `<span>açık ${s.open_slots}/5</span>`+
-    `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
-  document.getElementById("eqv6label").innerHTML=
-    `V6 · equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b>`;
-  eqCharts.eqv6&&eqCharts.eqv6.setLive(s.equity);
-  document.querySelector("#v6tr tbody").innerHTML=(d.trades||[]).map(t=>
-    `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
-    `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
-    `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_h1,1)}</td>`+
-    `<td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
-    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
-}
-
-// ---- AKTIF: V7 (-%10 fren + rejim 0.5) ------------------------------------------
-function basV7(d){
-  const s=d.summary;
-  document.getElementById("v7sum").innerHTML=
-    `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
-    `<span>realized <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`+
-    `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
-    `<span>açık ${s.open_slots}/5</span>`+
-    `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
-  document.getElementById("eqv7label").innerHTML=
-    `V7 · equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b>`;
-  eqCharts.eqv7&&eqCharts.eqv7.setLive(s.equity);
-  document.querySelector("#v7tr tbody").innerHTML=(d.trades||[]).map(t=>
-    `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
-    `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
-    `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_h1,1)}</td>`+
-    `<td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
-    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
-}
-
 // ---- ARSIV: V8 (donuk, acilinca bir kez) ----------------------------------------
 async function arsivV8(){
   let d; try{const r=await fetch("/api/v8?limit=30"); d=await r.json();}catch(e){return;}
@@ -1478,27 +1535,6 @@ async function arsivV9(){
     `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_h1,1)}</td>`+
     `<td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
     `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
-}
-
-// ---- AKTIF: X1 (kosucu avcisi) ------------------------------------------------------
-function basX1(d){
-  const s=d.summary;
-  document.getElementById("x1sum").innerHTML=
-    `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
-    `<span>realized <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`+
-    `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
-    `<span>açık ${s.open_slots}/3</span>`+
-    `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
-  document.getElementById("eqx1label").innerHTML=
-    `X1 · equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b>`;
-  eqCharts.eqx1&&eqCharts.eqx1.setLive(s.equity);
-  document.querySelector("#x1tr tbody").innerHTML=(d.trades||[]).map(t=>
-    `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
-    `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
-    `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td>`+
-    `<td>${t.nefes_n==null?"-":t.nefes_n}</td><td>${f(t.nefes_en_derin_pct,1)}</td>`+
-    `<td>${f(t.chg_m5,1)}</td><td>${f(t.chg_h1,1)}</td><td>${f(t.liq_entry,0)}</td>`+
-    `<td>${f(t.hold_sec/60,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=13>henüz yok</td></tr>";
 }
 
 // ---- ARSIV: V10 (donuk, acilinca bir kez) -------------------------------------------
@@ -1564,35 +1600,6 @@ async function arsivM2(){
     `<td>${f(t.chg_h1,2)}</td><td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
     `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=12>henüz yok</td></tr>";
 }
-
-// ---- AKTIF FILO: TEK poll, TEK hesap (/api/filo) ------------------------------------
-// Senkron ilkesi: uc motorun ozetleri, MTM/slot rozetleri, kiyas satiri ve
-// chartlarin canli uc noktasi AYNI cevaptan basilir; ayri fetch/ayri an yok.
-let filoSonMs=0;
-function updEtiket(){
-  const sn=filoSonMs?Math.round((Date.now()-filoSonMs)/1000):null;
-  const txt=sn==null?"son güncelleme: -":`son güncelleme: ${sn} sn önce`;
-  for(const id of ["v6upd","v7upd","x1upd"]){
-    const e=document.getElementById(id);
-    if(e){e.textContent=txt;e.classList.toggle("stale",sn!=null&&sn>15);}
-  }
-}
-setInterval(updEtiket,1000);
-function basCmp(c){
-  // kiyas satiri ayni /api/filo cevabinin cmp blogundan: ikinci okuma/hesap yok
-  document.getElementById("cmp3").innerHTML=
-    `<span>Kümülatif realized PnL (her motor kendi başlangıcından): `+
-    `v6 <b class="${cls(c.v6)}">$${f(c.v6)}</b> · `+
-    `v7 <b class="${cls(c.v7)}">$${f(c.v7)}</b> · `+
-    `x1 <b class="${cls(c.x1)}">$${f(c.x1)}</b></span>`;
-}
-async function filoTick(){
-  let d; try{const r=await fetch("/api/filo?limit=30"); d=await r.json();}catch(e){return;}
-  filoSonMs=Date.now();
-  basV6(d.v6); basV7(d.v7); basX1(d.x1); basCmp(d.cmp);
-  updEtiket();
-}
-filoTick(); setInterval(filoTick,5000);
 
 // ---- ARSIV: v2/v3/v5, katlanir bolum acilinca BIR kez yuklenir (donuk) ----------
 async function arsivV2(){
@@ -1666,10 +1673,34 @@ document.getElementById("arsivBox").addEventListener("toggle",e=>{
   mkEqChart("eqv10","/api/v10/equity",false);
 });
 
-// ---- Equity chart'lari (v2 / gölge / v3, aynı görsel dil) -------------------
+// ---- Equity chart'lari: ortak gorsel dil ($start kesikli referans, canli uc) -----
 const EQWINS=[["5dk",5],["15dk",15],["30dk",30],["1s",60],["2s",120],["5s",300],
   ["12s",720],["24s",1440],["48s",2880],["1h",10080],["2h",20160],["Tümü",0]];
-function mkEqChart(prefix, api, live=true, shared=false){
+const SYNCWINS=[["5dk",5],["15dk",15],["30dk",30],["1s",60],["2s",120],["5s",300],
+  ["12s",720],["24s",1440],["48s",2880],["Tümü",0]];
+function cizSpark(id,pts,start,renk){
+  // kart mini sparkline: son 30dk equity, referans cizgisi kesikli
+  const c=document.getElementById(id); if(!c)return;
+  const w=c.width=c.clientWidth||160, h=c.height=36;
+  const x=c.getContext("2d"); x.clearRect(0,0,w,h);
+  const t0=Date.now()-30*60000;
+  const p=pts.filter(q=>q.x>=t0);
+  let lo=start,hi=start;
+  for(const q of p){if(q.y<lo)lo=q.y;if(q.y>hi)hi=q.y;}
+  const pad=(hi-lo)*0.12||1; lo-=pad; hi+=pad;
+  const Y=v=>h-2-(v-lo)/(hi-lo)*(h-4);
+  x.strokeStyle="#30363d"; x.setLineDash([3,3]); x.beginPath();
+  x.moveTo(0,Y(start)); x.lineTo(w,Y(start)); x.stroke(); x.setLineDash([]);
+  if(p.length<2)return;
+  const x0=p[0].x, dx=(p[p.length-1].x-x0)||1;
+  const X=v=>(v-x0)/dx*(w-6)+3;
+  x.strokeStyle=renk; x.lineWidth=1.5; x.beginPath();
+  p.forEach((q,i)=>i?x.lineTo(X(q.x),Y(q.y)):x.moveTo(X(q.x),Y(q.y)));
+  x.stroke();
+  const son=p[p.length-1];
+  x.fillStyle=renk; x.beginPath(); x.arc(X(son.x),Y(son.y),2,0,7); x.fill();
+}
+function mkEqChart(prefix, api, live=true, shared=false, renk="#58a6ff", sparkId=null){
   // shared=true: kendi buton seridi yok, pencereyi ortak eqSyncWin belirler
   const st={win:0, chart:null, start:1000, pts:[], live:null};
   const getWin=()=>shared?eqSyncWin:st.win;
@@ -1720,14 +1751,16 @@ function mkEqChart(prefix, api, live=true, shared=false){
     const ymin=lo-pad,ymax=hi+pad;
     if(!st.chart){
       st.chart=new Chart(document.getElementById(prefix+"chart"),{type:"line",
-        data:{datasets:[{data:pts,borderColor:"#58a6ff",borderWidth:1.5,pointRadius:0,
+        data:{datasets:[{data:pts,borderColor:renk,borderWidth:1.5,
+          pointRadius:c=>c.dataIndex===c.dataset.data.length-1?3:0,
+          pointBackgroundColor:renk,
           pointHitRadius:10,tension:0,
           fill:{target:{value:st.start},above:"rgba(63,185,80,.13)",below:"rgba(248,81,73,.13)"}}]},
         options:{responsive:true,maintainAspectRatio:false,animation:false,
           interaction:{mode:"nearest",axis:"x",intersect:false},
           plugins:{legend:{display:false},tooltip:{
             backgroundColor:"#161b22",borderColor:"#30363d",borderWidth:1,
-            titleColor:"#c9d1d9",bodyColor:"#58a6ff",displayColors:false,
+            titleColor:"#c9d1d9",bodyColor:renk,displayColors:false,
             callbacks:{title:it=>new Date(it[0].parsed.x).toLocaleString("tr-TR"),
               label:it=>" $"+it.parsed.y.toFixed(2)}}},
           scales:{x:{type:"time",min:xmin,max:now,
@@ -1745,29 +1778,149 @@ function mkEqChart(prefix, api, live=true, shared=false){
       st.chart.options.scales.y.max=ymax;
       st.chart.update("none");
     }
+    if(sparkId)cizSpark(sparkId,pts,st.start,renk);
   }
   if(!shared) buttons();
   tick(); if(live) setInterval(tick,5000);
   return {tick,setLive};
 }
 
-// ---- Canli Kiyas: uc chart, TEK ortak zaman filtresi seridi (senkron) ----------
+// ---- AKTIF FILO: TEK poll, TEK hesap (/api/filo) ------------------------------------
+// Senkron ilkesi: kartlar, MTM/slot rozetleri, lider secimi, kiyas satiri, islem
+// tablosu ve chartlarin canli uc noktasi AYNI cevaptan basilir; ayri fetch yok.
+let filoSonMs=0;
+function updEtiket(){
+  const sn=filoSonMs?Math.round((Date.now()-filoSonMs)/1000):null;
+  const txt=sn==null?"son güncelleme: -":`son güncelleme: ${sn} sn önce`;
+  for(const m of MOTORLAR){
+    const e=document.getElementById(m.id+"upd");
+    if(e){e.textContent=txt;e.classList.toggle("stale",sn!=null&&sn>15);}
+  }
+  const fb=document.getElementById("feedBadge");
+  fb.textContent=sn==null?"feed: -":`feed ${sn} sn`;
+  fb.classList.toggle("err",sn!=null&&sn>15);
+  fb.classList.toggle("ok",sn!=null&&sn<=15);
+}
+setInterval(updEtiket,1000);
+function basBot(m,d){
+  const s=d.summary;
+  const dp=s.equity-s.start_balance;
+  const pct=s.start_balance?dp/s.start_balance*100:null;
+  const osh=s.oldest_slot_hours;
+  const badge=osh==null?"":
+    `<span class="slotbadge ${osh>48?"b48":(osh>24?"b24":"")}">en yaşlı ${f(osh,1)}s</span>`;
+  document.getElementById("mtm-"+m.id).innerHTML=
+    `<b class="${cls(dp)}">$${f(s.equity)}</b>${badge}`;
+  document.getElementById("sub-"+m.id).innerHTML=
+    `<span class="${cls(pct)}">${pct>0?"+":""}${f(pct)}%</span> · ${s.trades_total} işlem`;
+  const dolu="●".repeat(s.open_slots)+"○".repeat(Math.max(m.slots-s.open_slots,0));
+  document.getElementById("foot-"+m.id).innerHTML=
+    `slot ${dolu} ${s.open_slots}/${m.slots} · win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}`;
+  document.getElementById("eq"+m.id+"label").innerHTML=
+    `MTM <b class="${cls(dp)}">$${f(s.equity)}</b>`;
+  eqCharts["eq"+m.id]&&eqCharts["eq"+m.id].setLive(s.equity);
+  return s;
+}
+function basCmp(c){
+  // kiyas satiri ayni /api/filo cevabinin cmp blogundan: ikinci okuma/hesap yok
+  document.getElementById("cmp3").innerHTML=
+    `<span>Kümülatif realized PnL (her motor kendi başlangıcından): `+
+    MOTORLAR.map(m=>`${m.id} <b class="${cls(c[m.id])}">$${f(c[m.id])}</b>`).join(" · ")+
+    `</span>`;
+}
+function exitSinif(r){
+  r=r||"";
+  if(r.indexOf("yarim")>=0)return "ex-amber";
+  if(r.indexOf("tp")===0)return "ex-tp";
+  if(r.indexOf("stop")>=0)return "ex-stop";
+  if(r.indexOf("timeout")>=0)return "ex-to";
+  return "";
+}
+function mfeMaeBar(mfe,mae){
+  // orta cizgi giris; saga yesil tepe (mfe), sola kirmizi dip (mae), 30% tavanla oranli
+  const W=70,H=12,mid=W/2,K=30;
+  const g=Math.min(Math.abs(mfe||0),K)/K*(mid-2);
+  const r=Math.min(Math.abs(mae||0),K)/K*(mid-2);
+  return `<svg width="${W}" height="${H}" style="vertical-align:middle">`+
+    `<rect x="${mid-r}" y="2" width="${r}" height="${H-4}" fill="#f85149" opacity=".75"/>`+
+    `<rect x="${mid}" y="2" width="${g}" height="${H-4}" fill="#3fb950" opacity=".85"/>`+
+    `<line x1="${mid}" y1="0" x2="${mid}" y2="${H}" stroke="#8b949e" stroke-width="1"/></svg>`;
+}
+function basIslemler(d){
+  // birlesik son islemler: uc botun trades'i ts'e gore tek tabloda
+  const rows=[];
+  for(const m of MOTORLAR)for(const t of d[m.id].trades||[])rows.push([m,t]);
+  rows.sort((a,b)=>(b[1].ts||0)-(a[1].ts||0));
+  document.querySelector("#isltr tbody").innerHTML=rows.slice(0,40).map(([m,t])=>
+    `<tr class="${t.pnl_usd<0?"loss":""}">`+
+    `<td><span class="dot" style="background:${m.renk}"></span> ${m.ad}</td>`+
+    `<td>${t.pair}</td><td><span class="exchip ${exitSinif(t.exit_reason)}">${t.exit_reason}</span></td>`+
+    `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
+    `<td title="mfe ${f(t.mfe_pct,1)}% / mae ${f(t.mae_pct,1)}%">${mfeMaeBar(t.mfe_pct,t.mae_pct)}</td>`+
+    `<td>${f(t.chg_h1,1)}</td><td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
+    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")
+    ||"<tr><td colspan=11>henüz yok</td></tr>";
+}
+function basRejim(d){
+  // rejim rozeti: ayni /api/filo cevabindaki en guncel sol_chg_h1 kaydi
+  let rj=null,rt=0;
+  for(const m of MOTORLAR)for(const t of d[m.id].trades||[])
+    if(t.sol_chg_h1!=null&&(t.ts||0)>=rt){rt=t.ts||0;rj=t.sol_chg_h1;}
+  const e=document.getElementById("rejimBadge");
+  if(rj==null){e.textContent="rejim sol_h1: -";e.className="badge";return;}
+  e.textContent=`rejim sol_h1 ${f(rj,2)}`;
+  e.className="badge"+(rj>0?" ok":"");
+}
+async function filoTick(){
+  let d; try{const r=await fetch("/api/filo?limit=30"); d=await r.json();}catch(e){return;}
+  filoSonMs=Date.now();
+  const eqs={};
+  for(const m of MOTORLAR)eqs[m.id]=basBot(m,d[m.id]).equity;
+  // lider: en yuksek MTM'li bot karti (dinamik, ayni cevaptan)
+  let lid=null,best=-Infinity;
+  for(const m of MOTORLAR)if(eqs[m.id]>best){best=eqs[m.id];lid=m.id;}
+  for(const m of MOTORLAR){
+    const k=document.getElementById("kart-"+m.id);
+    if(k)k.classList.toggle("lider",m.id===lid);
+  }
+  basCmp(d.cmp); basIslemler(d); basRejim(d);
+  updEtiket();
+}
+
+// ---- Canli chartlar: kart sirasiyla birebir ayni konfig listesinden ---------------
 let eqSyncWin=0;
-eqCharts.eqv6=mkEqChart("eqv6","/api/v6/equity",true,true);
-eqCharts.eqv7=mkEqChart("eqv7","/api/v7/equity",true,true);
-eqCharts.eqx1=mkEqChart("eqx1","/api/x1/equity",true,true);
-const eqSyncTicks=Object.values(eqCharts).map(c=>c.tick);
+for(const m of MOTORLAR){
+  eqCharts["eq"+m.id]=mkEqChart("eq"+m.id, "/api/"+m.id+"/equity", true, true,
+    m.renk, "spark-"+m.id);
+}
 function eqSyncButtons(){
   const el=document.getElementById("eqsyncbtns");
-  el.innerHTML=EQWINS.map(([l,m])=>
+  el.innerHTML=SYNCWINS.map(([l,m])=>
     `<button data-m="${m}" class="${m===eqSyncWin?"act":""}">${l}</button>`).join("");
   el.querySelectorAll("button").forEach(b=>b.onclick=()=>{
     eqSyncWin=Number(b.dataset.m);eqSyncButtons();
-    eqSyncTicks.forEach(t=>t());  // uc chart birden ayni pencereye
+    for(const c of Object.values(eqCharts))c.tick();  // tum chartlar ayni pencereye
   });
 }
 eqSyncButtons();
+filoTick(); setInterval(filoTick,5000);
 </script></body></html>"""
+
+
+@app.get("/momentum", response_class=HTMLResponse)
+def momentum_page() -> str:
+    """Momentum paneli: kart grid + chart sutunu _FILO_MOTORLAR listesinden uretilir;
+    aktif filo /api/filo'dan 5sn'de bir TEK poll ile beslenir (tek gercek kaynak)."""
+    kartlar = "".join(_filo_kart(m) for m in _FILO_MOTORLAR)
+    chartlar = "".join(_filo_chart(m) for m in _FILO_MOTORLAR)
+    motor_js = json.dumps([
+        {"id": m["id"], "ad": m["ad"], "renk": m["renk"], "slots": m["slots"]}
+        for m in _FILO_MOTORLAR if m["tip"] == "bot"
+    ])
+    return (_MOMENTUM_HTML
+            .replace("<!--KARTLAR-->", kartlar)
+            .replace("<!--CHARTCOL-->", chartlar)
+            .replace('"__MOTORLAR__"', motor_js))
 
 
 @app.post("/api/kill")
