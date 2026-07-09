@@ -41,6 +41,7 @@ from hibrit_trader.m1_session import (
     UNIVERSE_FILE,
     UNIVERSE_LIQ_MIN,
     UNIVERSE_REFRESH_SEC,
+    _best_sane_pool,
     _light_honeypot_ok,
 )
 from hibrit_trader.momentum_session import (
@@ -51,6 +52,7 @@ from hibrit_trader.momentum_session import (
     _mom_slippage,
 )
 from hibrit_trader.paper import _now_iso, new_trade_id
+from hibrit_trader.price_sanity import guard_price
 
 log = logging.getLogger(__name__)
 
@@ -177,7 +179,10 @@ class M2Engine:
                 ]
                 if not pairs:
                     continue
-                best = max(pairs, key=lambda x: float((x.get("liquidity") or {}).get("usd") or 0))
+                best = _best_sane_pool(pairs)
+                if best is None:
+                    log.warning("M2 EVREN: %s icin fiyati tutarli havuz yok (veri arizasi), disarida", sym)
+                    continue
                 liq = float((best.get("liquidity") or {}).get("usd") or 0)
                 if liq < UNIVERSE_LIQ_MIN:
                     continue
@@ -363,6 +368,9 @@ class M2Engine:
     # ---- Cikis: SADECE tp_1_2 (baska hicbir kural yok) ----------------------------
     def _eval_position(self, pos: dict, price: float, now: float) -> str | None:
         """Fiyati isle (last_price/mfe/mae) ve cikis nedeni dondur (yoksa None)."""
+        price, ariza = guard_price(pos, price, now, "M2")
+        if ariza:
+            return None  # veri arizasi: islem tetikleme, degerleme son gecerli fiyatta
         pos["last_price"] = price
         entry = pos["entry_price"]
         pnl_pct = (price / entry - 1) * 100 if entry > 0 else 0.0

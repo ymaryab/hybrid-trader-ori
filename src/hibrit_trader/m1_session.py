@@ -45,11 +45,13 @@ from hibrit_trader.live_sim import fetch_pool_price
 from hibrit_trader.momentum_session import (
     SCAN_INTERVAL_SEC,
     SOL_H1_CACHE_SEC,
+    SOL_H1_STALE_MAX_SEC,
     SOL_USDC_POOL,
     _data_dir,
     _mom_slippage,
 )
 from hibrit_trader.paper import _now_iso, new_trade_id
+from hibrit_trader.price_sanity import MAX_STEP_RATIO, guard_price
 
 log = logging.getLogger(__name__)
 
@@ -103,6 +105,39 @@ EXIT_INTERVAL_SEC = float(os.getenv("M_EXIT_INTERVAL_SEC", "2"))
 STATE_FILE = "m1_state.json"
 TRADES_FILE = "m1_trades.jsonl"
 UNIVERSE_FILE = "m1_universe.json"
+
+
+def _best_sane_pool(pairs: list[dict]) -> dict | None:
+    """En likit ama fiyati TUTARLI havuzu sec (evren tazeleme icin).
+
+    ORCA vakasi (09 Tem): en likit havuz ($24M, ORCA/JUP) priceUsd'yi ~5000x
+    sapik basiyordu; likiditeye kor guven bozuk havuzu evrene soktu. Referans:
+    stabil kotali (USDC/USDT) havuzlarin medyan fiyati; stabil kota yoksa tum
+    havuzlarin medyani. Referanstan MAX_STEP_RATIO kat+ sapan havuz elenir.
+    """
+    import statistics
+
+    priced = []
+    for p in pairs:
+        try:
+            pr = float(p.get("priceUsd") or 0)
+        except (TypeError, ValueError):
+            continue
+        if pr > 0:
+            priced.append((p, pr))
+    if not priced:
+        return None
+    stable = [
+        pr for p, pr in priced
+        if str(((p.get("quoteToken") or {}).get("symbol")) or "").upper() in ("USDC", "USDT")
+    ]
+    ref = statistics.median(stable if stable else [pr for _, pr in priced])
+    if ref <= 0:
+        return None
+    sane = [(p, pr) for p, pr in priced if max(pr / ref, ref / pr) <= MAX_STEP_RATIO]
+    if not sane:
+        return None
+    return max(sane, key=lambda t: float(((t[0].get("liquidity") or {}).get("usd")) or 0))[0]
 
 
 def _light_honeypot_ok(client: httpx.Client, token_address: str) -> bool:
@@ -233,7 +268,10 @@ class M1Engine:
                 ]
                 if not pairs:
                     continue
-                best = max(pairs, key=lambda x: float((x.get("liquidity") or {}).get("usd") or 0))
+                best = _best_sane_pool(pairs)
+                if best is None:
+                    log.warning("M1 EVREN: %s icin fiyati tutarli havuz yok (veri arizasi), disarida", sym)
+                    continue
                 liq = float((best.get("liquidity") or {}).get("usd") or 0)
                 if liq < UNIVERSE_LIQ_MIN:
                     continue
@@ -372,17 +410,28 @@ class M1Engine:
         cands.sort(key=lambda pr: getattr(pr, "chg_m5", 0.0), reverse=True)  # taze ivme once
         if not cands:
             return
+        # Rejim FAIL-CLOSED (09 Tem): veri yoksa kapi KAPALI; son basarili
+        # deger 10dk'ya kadar gecerli, sonrasinda giris yok.
         sol_h1 = None
         try:
             sol_h1 = self._sol_chg_h1(client)
         except Exception:
-            log.debug("m1 rejim: sol_chg_h1 alinamadi, filtre atlandi", exc_info=True)
-        if sol_h1 is not None and sol_h1 < SOL_H1_MIN:
+            log.debug("m1 rejim: sol_chg_h1 alinamadi", exc_info=True)
+        if sol_h1 is None:
+            ts, cached = self._sol_h1_cache
+            if cached is not None and now - ts <= SOL_H1_STALE_MAX_SEC:
+                sol_h1 = cached
+        if sol_h1 is None:
+            if not self._regime_logged:
+                self._regime_logged = True
+                log.warning("M1 REJIM: sol_h1 verisi yok (fail-closed), giris kapali")
+            return
+        if sol_h1 < SOL_H1_MIN:
             if not self._regime_logged:
                 self._regime_logged = True
                 log.warning("M1 REJIM: sol_chg_h1 %.2f%% < %.2f%%, giris yok", sol_h1, SOL_H1_MIN)
             return
-        if sol_h1 is not None and self._regime_logged:
+        if self._regime_logged:
             self._regime_logged = False
         budget_each = self.balance / empty
         for pair in cands:
@@ -433,6 +482,9 @@ class M1Engine:
     # ---- Cikis: tp_1_2 / stop_felaket (-%4) / stop_gec (20dk, -%1.5) / timeout_90 --
     def _eval_position(self, pos: dict, price: float, now: float) -> str | None:
         """Fiyati isle (last_price/mfe/mae) ve cikis nedeni dondur (yoksa None)."""
+        price, ariza = guard_price(pos, price, now, "M1")
+        if ariza:
+            return None  # veri arizasi: islem tetikleme, degerleme son gecerli fiyatta
         pos["last_price"] = price
         entry = pos["entry_price"]
         pnl_pct = (price / entry - 1) * 100 if entry > 0 else 0.0

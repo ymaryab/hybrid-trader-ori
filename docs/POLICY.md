@@ -79,3 +79,13 @@ Uygulama (2026-07-09): v4, v9, v10 durduruldu (ENABLED=0, state/trades korunur, 
 v10 KINS vakasi 07 Tem: tp-only sistemlerde realized karne sansurludur (kaybedenler kapanmaz, defterde gorunmez; KINS 3+ gun -%43 acik, realized 4/4 yesilken MTM -$50). M2 dogrulamasi realized ile DEGIL, mark-to-market equity + slot yasi ile okunacak.
 
 09 Tem: v6 guclendirilmis haliyle (rejim 0.5 + hizli goz) yeniden aktif. Filo reset: 5 motor esit $1000, adil yaris. Onceki veriler backup_reset_20260709'da. M2 dogrulama penceresi resetten itibaren yeniden: 100+ islem, 5-7 gun, bir kotu SOL gunu, MTM + slot yasi gozlugu.
+
+## Veri arizasi dersi: ORCA vakasi (09 Tem 2026)
+
+DexScreener, ORCA'nin en likit havuzlarinda (ORCA/JUP $24M, ORCA/RAY, ORCA/MET vb) priceUsd'yi ~5000-6000x sapik basti (gercek ~$1.2 iken ~$6013). M1 girisleri bu sapik fiyattan acildi; fiyat tek adimda 6013 -> 1.22'ye "dusunce" M1 stop_felaket ile -$199.6 realize etti, M2'nin acik ORCA slotu mae -%99.98 gordu. Bu kayiplar STRATEJI KAYBI DEGIL, VERI ARIZASIDIR. State bilerek duzeltilmedi, kayitlar duruyor: M1 realized icindeki -$199.6 ve M2'nin acik ORCA pozisyonu bu notla okunmali; M2 MTM'i fiyat kaynagi duzelirse toparlar. Ayni gun ikinci ariza: GeckoTerminal sol_h1 fetch'i basarisizken rejim kapisi fail-open oldugu icin 23 giris rejim-korlugunde atildi.
+
+Dersler ve alinan onlemler:
+- Fiyat kaynagina kor guven yok. Tum motorlarda fiyat sanity bandi (price_sanity.guard_price): tek adimda 5x+ sapma = veri arizasi; tick yok sayilir, islem tetiklenmez, degerleme son gecerli fiyatla surer, ariza loglanir. Sapma 5dk kesintisiz surerse yeni seviye taban kabul (motor sonsuza dek kor kalmaz).
+- Likiditeye kor guven de yok. Evren tazelemede havuz secimi stabil-kota referansli (_best_sane_pool): USDC/USDT havuzlarinin medyan fiyatindan 5x+ sapan havuz evrene giremez. ORCA'yi sokan sey "en likit havuz" kuralinin sorgusuzluguydu.
+- ORCA evrenden cikarildi. Saglikli fiyat basan en buyuk havuzu $712k (< $3M evren esigi), ikame havuz yok; kaynak duzelirse gunluk tazeleme dogal olarak geri alir.
+- Rejim fail-closed: sol_h1 alinamazsa giris kapisi KAPALI (eski davranis: filtre atlanirdi). Son basarili deger 10dk'ya kadar gecerli, sonrasi veri yoksa giris yok. Veri kaybi "serbest gecis" degil "dur" demektir.

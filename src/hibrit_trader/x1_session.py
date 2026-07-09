@@ -44,11 +44,13 @@ from hibrit_trader.live_sim import fetch_pool_price
 from hibrit_trader.momentum_session import (
     SCAN_INTERVAL_SEC,
     SOL_H1_CACHE_SEC,
+    SOL_H1_STALE_MAX_SEC,
     SOL_USDC_POOL,
     _data_dir,
     _mom_slippage,
 )
 from hibrit_trader.paper import _now_iso, new_trade_id
+from hibrit_trader.price_sanity import guard_price
 from hibrit_trader.safety import check_token
 from hibrit_trader.scanner import scan_all
 
@@ -230,17 +232,28 @@ class X1Engine:
         cands.sort(key=lambda pr: getattr(pr, "chg_m5", 0.0), reverse=True)  # en canli kosu once
         if not cands:
             return
+        # Rejim FAIL-CLOSED (09 Tem): veri yoksa kapi KAPALI; son basarili
+        # deger 10dk'ya kadar gecerli, sonrasinda giris yok.
         sol_h1 = None
         try:
             sol_h1 = self._sol_chg_h1(client)
         except Exception:
-            log.debug("x1 rejim: sol_chg_h1 alinamadi, filtre atlandi", exc_info=True)
-        if sol_h1 is not None and sol_h1 < SOL_H1_MIN:
+            log.debug("x1 rejim: sol_chg_h1 alinamadi", exc_info=True)
+        if sol_h1 is None:
+            ts, cached = self._sol_h1_cache
+            if cached is not None and time.time() - ts <= SOL_H1_STALE_MAX_SEC:
+                sol_h1 = cached
+        if sol_h1 is None:
+            if not self._regime_logged:
+                self._regime_logged = True
+                log.warning("X1 REJIM: sol_h1 verisi yok (fail-closed), giris kapali")
+            return
+        if sol_h1 < SOL_H1_MIN:
             if not self._regime_logged:
                 self._regime_logged = True
                 log.warning("X1 REJIM: sol_chg_h1 %.2f%% < %.2f%%, giris yok", sol_h1, SOL_H1_MIN)
             return
-        if sol_h1 is not None and self._regime_logged:
+        if self._regime_logged:
             self._regime_logged = False
         budget_each = min(self.balance / empty, MAX_TICKET_USD)
         for pair in cands:
@@ -306,6 +319,9 @@ class X1Engine:
             price = fetch_pool_price(client, pos["chain"], pos["pool_address"])
             if price is None or price <= 0:
                 price = pos["last_price"]
+            price, ariza = guard_price(pos, price, now, "X1")
+            if ariza:
+                continue  # veri arizasi: islem tetikleme, degerleme son gecerli fiyatta
             pos["last_price"] = price
             entry = pos["entry_price"]
             pnl_pct = (price / entry - 1) * 100 if entry > 0 else 0.0

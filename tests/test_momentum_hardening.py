@@ -172,6 +172,7 @@ def test_cooldown_blocks_reentry_then_expires(mom_data_dir, monkeypatch):
         ms, "check_token", lambda client, chain, token: SimpleNamespace(ok=True)
     )
     monkeypatch.setattr(ms.time, "sleep", lambda s: None)  # rate-limit beklemesi olmasın
+    monkeypatch.setattr(eng, "_sol_chg_h1", lambda client: 1.0)  # rejim kapisi acik
 
     # Cooldown aktifken: giriş YOK (farklı havuz olsa bile token bazlı yasak)
     eng._cooldown_until["TOK_A"] = ms.time.time() + 3600
@@ -226,15 +227,33 @@ def test_regime_filter_allows_when_sol_positive(mom_data_dir, monkeypatch):
     assert len(_enter_with_regime(eng, monkeypatch, sol_h1=0.3)) == 1
 
 
-def test_regime_filter_fail_open_on_api_error(mom_data_dir, monkeypatch):
-    # sol_chg_h1 alınamazsa filtre atlanır, giriş davranışı değişmez
+def test_regime_filter_fail_closed_on_api_error(mom_data_dir, monkeypatch):
+    # 09 Tem: sol_chg_h1 alınamazsa giriş kapısı KAPALI (fail-closed)
     eng = MomentumEngine(_settings())
+    assert _enter_with_regime(eng, monkeypatch, sol_h1=RuntimeError("api")) == []
+    rej = [
+        json.loads(ln)
+        for ln in (mom_data_dir / ms.REJECTS_FILE).read_text().splitlines()
+    ]
+    assert any(r.get("reason") == "rejim_veri_yok" for r in rej)
+
+
+def test_regime_filter_api_error_with_recent_cache_allows(mom_data_dir, monkeypatch):
+    # son başarılı değer 10dk'ya kadar geçerli
+    eng = MomentumEngine(_settings())
+    eng._sol_h1_cache = (ms.time.time() - 60, 1.0)
     assert len(_enter_with_regime(eng, monkeypatch, sol_h1=RuntimeError("api"))) == 1
 
 
-def test_regime_filter_none_means_open(mom_data_dir, monkeypatch):
+def test_regime_filter_api_error_with_stale_cache_blocks(mom_data_dir, monkeypatch):
     eng = MomentumEngine(_settings())
-    assert len(_enter_with_regime(eng, monkeypatch, sol_h1=None)) == 1
+    eng._sol_h1_cache = (ms.time.time() - ms.SOL_H1_STALE_MAX_SEC - 10, 1.0)
+    assert _enter_with_regime(eng, monkeypatch, sol_h1=RuntimeError("api")) == []
+
+
+def test_regime_filter_none_means_closed(mom_data_dir, monkeypatch):
+    eng = MomentumEngine(_settings())
+    assert _enter_with_regime(eng, monkeypatch, sol_h1=None) == []
 
 
 def test_regime_default_threshold():

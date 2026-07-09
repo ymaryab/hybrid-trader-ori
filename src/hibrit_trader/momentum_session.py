@@ -40,6 +40,7 @@ from hibrit_trader.config import GAS_COST_USD
 from hibrit_trader.killswitch import is_active as kill_is_active
 from hibrit_trader.live_sim import fetch_pool_price
 from hibrit_trader.paper import _now_iso, new_trade_id
+from hibrit_trader.price_sanity import guard_price
 from hibrit_trader.safety import check_token
 from hibrit_trader.scanner import scan_all
 
@@ -70,8 +71,11 @@ COOLDOWN_EXIT_SEC = float(os.getenv("MOM_COOLDOWN_EXIT_MIN", "15")) * 60
 # ---- Rejim filtresi (2026-07-02): SOL saatlik düşüşteyken YENİ giriş yok ----
 # Veri: SOL h1 negatifken 21 işlem -$43.88, yatay/yukarıyken 33 işlem +$81.31.
 # Yalnız girişleri keser; açık pozisyon yönetimi ve çıkışlar normal sürer.
-# sol_chg_h1 alınamazsa (API hatası) filtre ATLANIR (fail-open, davranış korunur).
+# 09 Tem 2026: fail-open FAIL-CLOSED yapildi. sol_chg_h1 alinamazsa giris kapisi
+# KAPALI; son basarili deger SOL_H1_STALE_MAX_SEC'e kadar gecerli sayilir,
+# sonrasinda veri yoksa giris yok (23 giris rejim-korlugunde atilmisti).
 SOL_H1_MIN = float(os.getenv("MOM_SOL_H1_MIN", "0"))
+SOL_H1_STALE_MAX_SEC = float(os.getenv("MOM_SOL_H1_STALE_MAX_SEC", "600"))
 
 # ---- Canlı-hazırlık korkulukları (VARSAYILAN KAPALI, paper davranışı değişmez) ----
 # 0 = kapalı. Açılırsa yalnız YENİ girişleri keser; açık pozisyon yönetimi sürer.
@@ -369,13 +373,25 @@ class MomentumEngine:
             return
         # Rejim filtresi: SOL h1 < eşik ise bu tick YENİ giriş yok; adaylar
         # "rejim" sebebiyle rejects'e düşer ve 30dk recheck'e girer (kaçan
-        # fırsat ölçümü). sol_chg_h1 alınamazsa filtre atlanır (fail-open).
+        # fırsat ölçümü). sol_chg_h1 alınamazsa FAIL-CLOSED: son başarılı değer
+        # 10dk'ya kadar geçerli, sonrasında veri yoksa giriş yok.
         sol_h1 = None
         try:
             sol_h1 = self._sol_chg_h1(client)
         except Exception:
-            log.debug("momentum rejim: sol_chg_h1 alınamadı, filtre atlandı", exc_info=True)
-        if sol_h1 is not None and sol_h1 < SOL_H1_MIN:
+            log.debug("momentum rejim: sol_chg_h1 alınamadı", exc_info=True)
+        if sol_h1 is None:
+            ts, cached = self._sol_h1_cache
+            if cached is not None and now - ts <= SOL_H1_STALE_MAX_SEC:
+                sol_h1 = cached
+        if sol_h1 is None:
+            if not self._regime_logged:
+                self._regime_logged = True
+                log.warning("MOMENTUM REJIM: sol_h1 verisi yok (fail-closed), yeni giriş yok")
+            for pr in cands:
+                self._log_reject(pr, "rejim_veri_yok")
+            return
+        if sol_h1 < SOL_H1_MIN:
             if not self._regime_logged:
                 self._regime_logged = True
                 log.warning(
@@ -385,7 +401,7 @@ class MomentumEngine:
             for pr in cands:
                 self._log_reject(pr, "rejim")
             return
-        if sol_h1 is not None and self._regime_logged:
+        if self._regime_logged:
             self._regime_logged = False
             log.warning("MOMENTUM REJIM: sol_chg_h1 %.2f%% >= %.2f%%, girişler serbest",
                         sol_h1, SOL_H1_MIN)
@@ -482,6 +498,10 @@ class MomentumEngine:
         now = time.time()
         for pos in list(self.positions):
             price = fetch_pool_price(client, pos["chain"], pos["pool_address"])
+            if price is not None and price > 0:
+                price, ariza = guard_price(pos, price, now, "MOMENTUM")
+                if ariza:
+                    price = None  # veri arizasi: tick'i fiyatsiz say, stale yolu islesin
             if price is None or price <= 0:
                 price = pos["last_price"]  # tick atlanırsa son bilinen fiyat
                 # Karar kuralı DEĞİŞMEZ; sadece bayatlığı işaretle ve bir kez uyar.

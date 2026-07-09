@@ -45,11 +45,13 @@ from hibrit_trader.live_sim import fetch_pool_price
 from hibrit_trader.momentum_session import (
     SCAN_INTERVAL_SEC,
     SOL_H1_CACHE_SEC,
+    SOL_H1_STALE_MAX_SEC,
     SOL_USDC_POOL,
     _data_dir,
     _mom_slippage,
 )
 from hibrit_trader.paper import _now_iso, new_trade_id
+from hibrit_trader.price_sanity import guard_price
 from hibrit_trader.safety import check_token
 from hibrit_trader.scanner import scan_all
 
@@ -246,17 +248,28 @@ class V6Engine:
         cands.sort(key=lambda pr: pr.chg_h1, reverse=True)  # en güçlü trend önce
         if not cands:
             return
+        # Rejim FAIL-CLOSED (09 Tem): veri yoksa kapi KAPALI; son basarili
+        # deger 10dk'ya kadar gecerli, sonrasinda giris yok.
         sol_h1 = None
         try:
             sol_h1 = self._sol_chg_h1(client)
         except Exception:
-            log.debug("v6 rejim: sol_chg_h1 alınamadı, filtre atlandı", exc_info=True)
-        if sol_h1 is not None and sol_h1 < SOL_H1_MIN:
+            log.debug("v6 rejim: sol_chg_h1 alınamadı", exc_info=True)
+        if sol_h1 is None:
+            ts, cached = self._sol_h1_cache
+            if cached is not None and now - ts <= SOL_H1_STALE_MAX_SEC:
+                sol_h1 = cached
+        if sol_h1 is None:
+            if not self._regime_logged:
+                self._regime_logged = True
+                log.warning("V6 REJIM: sol_h1 verisi yok (fail-closed), giriş kapalı")
+            return
+        if sol_h1 < SOL_H1_MIN:
             if not self._regime_logged:
                 self._regime_logged = True
                 log.warning("V6 REJIM: sol_chg_h1 %.2f%% < %.2f%%, giriş yok", sol_h1, SOL_H1_MIN)
             return
-        if sol_h1 is not None and self._regime_logged:
+        if self._regime_logged:
             self._regime_logged = False
         budget_each = self.balance / empty
         for pair in cands:
@@ -314,6 +327,9 @@ class V6Engine:
     # ---- Çıkış: tp_2 / stop_gec (30dk sonrası -%2) / timeout_60 (gölge birebir) --
     def _eval_position(self, pos: dict, price: float, now: float) -> str | None:
         """Fiyatı işle (last_price/mfe/mae) ve çıkış nedeni döndür (yoksa None)."""
+        price, ariza = guard_price(pos, price, now, "V6")
+        if ariza:
+            return None  # veri arizasi: islem tetikleme, degerleme son gecerli fiyatta
         pos["last_price"] = price
         entry = pos["entry_price"]
         pnl_pct = (price / entry - 1) * 100 if entry > 0 else 0.0
