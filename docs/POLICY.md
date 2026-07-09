@@ -69,3 +69,9 @@ Tum rakamlar data/*_trades.jsonl'den, kesim noktasi karar commit'i a8da524 (2026
 - 20dk mutlak tavan (v8): timeout_20 cikislari 8 islem net -$88.1, 8'in 7'si zararla kapandi (v8 tum omru .. kesim, toplam 11 islem -$54.2). Sonuc: tavan curudu, zarar realize makinesi.
 - Ortak kaybettiren parametre sol_h1 0..0.5 bandi: sol_h1 kaydi olan motorlarda bu banttaki girisler toplam 41 islem net -$136.6 (v6: 22/-$44.7, v7: 16/-$48.1, v8: 3/-$43.8; pencere: her motorun kendi omru .. kesim). v7 rejim esigi bu kanitla 0.5'e cekildi.
 - Aktif filo: v4 / v7 / v9 / v10 / X1. Durdurulan: golge, v6, v8 (state/trades korunur, panel arsivinde).
+
+## Sentez 06 Tem
+
+Kanit major golu gosteriyor (memecoin ~2900 islem -$2243, islem basi -$0.77; major ilk gun +$60). M2 birincil dogrulama adayi. Dogrulama bari: 100+ islem, 5-7 gun, en az bir sol_h1 negatif gun, slot-kilit senaryosu gozlenmis olacak. Kill: islem/gun < 3 ya da 48+ saat slot kilidi = tasarim sorgulanir. M2'ye timeout EKLENMEZ, saflik korunur.
+
+Uygulama (2026-07-09): v4, v9, v10 durduruldu (ENABLED=0, state/trades korunur, panel arsivinde). Aktif filo: M1, M2, v7, X1 (+EKG kaydedici).
