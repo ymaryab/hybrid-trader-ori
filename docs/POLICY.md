@@ -101,3 +101,17 @@ Dersler ve alinan onlemler:
 - Giris kapisinda veri_ariza reddi: tarama fiyati evrendeki hakem referansindan 5x+ sapiyorsa giris yok.
 - Re-base hakem onayina bagli: guard_price'ta 5dk kalici sapma artik otomatik taban degistirmez; Jupiter hakem yeni fiyati onaylamazsa degerleme son gecerli fiyatta kalir, pencere bastan baslar. Onceki tasarimda kalici bogus carpan 5dk sonra taban olur, carpan duzelince sahte -%99 kayip realize olurdu.
 - Golge olcum ayni zamanda veri-guvenilirlik sensorudur: paper fiyat ile Jupiter quote farki buyukse (ornegin |fark_bps| > 3000) once veri arizasi suphesi.
+
+## Canary on-sarti: round-trip golge makasi (09 Tem 2026 gece)
+
+Canary (kucuk gercek para) acilmadan once su iki kosul birlikte saglanmali:
+
+1. Al-yonlu golge makasi OLCULMUS olmali (saglikli, |fark_bps| < 3000 kayitlar; veri-ariza izleri sayilmaz).
+2. ROUND-TRIP makas (al + sat yonlu mutlak makaslarin toplami) hedef tp'nin altinda olmali.
+
+Aksi halde canary acilmaz. Gerekce: paper motorlar tp+1.2 gibi ince kenarlarla yarisir; gercek yurutmede al ve sat makasi bu kenari yiyorsa kagit ustundeki kar canary'de kayba doner. Golge olcum tam bu soruyu cevaplamak icin var; olcum yokken ya da makas tp'yi asarken canary acmak korlemesine gecis olur.
+
+Ilk olcum durumu (09 Tem gece, n cok kucuk, karar icin yetersiz):
+- Al yonlu saglikli: M2 SOL -213.9 bps (n=1). Ariza izleri (JTO/PYTH -9998) haric.
+- Sat yonlu saglikli: M1 WIF -82.9 bps (n=1).
+- Mutlak toplam ~297 bps; M1/M2 tp hedefi 120 bps. Bu haliyle on-sart SAGLANMIYOR; daha fazla olcum birikmeli ve makasin gercekten bu buyuklukte olup olmadigi (tek SOL olcumu hizli piyasada alinmisti) netlesmeli.
