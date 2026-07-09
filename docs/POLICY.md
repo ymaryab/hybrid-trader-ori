@@ -77,3 +77,5 @@ Kanit major golu gosteriyor (memecoin ~2900 islem -$2243, islem basi -$0.77; maj
 Uygulama (2026-07-09): v4, v9, v10 durduruldu (ENABLED=0, state/trades korunur, panel arsivinde). Aktif filo: M1, M2, v7, X1 (+EKG kaydedici).
 
 v10 KINS vakasi 07 Tem: tp-only sistemlerde realized karne sansurludur (kaybedenler kapanmaz, defterde gorunmez; KINS 3+ gun -%43 acik, realized 4/4 yesilken MTM -$50). M2 dogrulamasi realized ile DEGIL, mark-to-market equity + slot yasi ile okunacak.
+
+09 Tem: v6 guclendirilmis haliyle (rejim 0.5 + hizli goz) yeniden aktif. Filo reset: 5 motor esit $1000, adil yaris. Onceki veriler backup_reset_20260709'da. M2 dogrulama penceresi resetten itibaren yeniden: 100+ islem, 5-7 gun, bir kotu SOL gunu, MTM + slot yasi gozlugu.

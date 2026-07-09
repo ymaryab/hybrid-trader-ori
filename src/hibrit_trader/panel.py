@@ -853,10 +853,7 @@ def api_v5(limit: int = Query(50)) -> dict:
 
 @app.get("/api/v6")
 def api_v6(limit: int = Query(50)) -> dict:
-    """V6 senaryo gözlemi (arındırılmış gölge) — v6_* dosyalarından okur + altılı kıyas.
-
-    Kıyas satırı: her motorun KENDİ başlangıç anından bu yana realized PnL'i.
-    """
+    """V6 senaryo gözlemi (güçlendirilmiş gölge: rejim 0.5 + hızlı göz) — v6_* dosyaları."""
     data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
     state: dict = {}
     sp = data_dir / "v6_state.json"
@@ -882,16 +879,6 @@ def api_v6(limit: int = Query(50)) -> dict:
         p["pnl_pct_live"] = round((last / entry - 1) * 100, 2) if entry > 0 else 0.0
         p["age_min"] = round((time.time() - float(p.get("opened_ts") or time.time())) / 60, 1)
     balance = float(state.get("balance") or 0.0)
-
-    def _realized_of(name: str) -> float | None:
-        p = data_dir / name
-        if not p.exists():
-            return None
-        try:
-            return round(float(json.loads(p.read_text()).get("realized_pnl") or 0.0), 2)
-        except Exception:
-            return None
-
     reasons: dict[str, int] = {}
     for t in trades:
         r = t.get("exit_reason", "?")
@@ -912,11 +899,7 @@ def api_v6(limit: int = Query(50)) -> dict:
             "exit_reasons": reasons,
             "since": state.get("updated_at"),
             "created_ts": float(state.get("created_ts") or 0.0),
-            "v2_realized": _realized_of("momentum_state.json"),
-            "v3_realized": _realized_of("v3_state.json"),
-            "v4_realized": _realized_of("v4_state.json"),
-            "v5_realized": _realized_of("v5_state.json"),
-            "golge_realized": _realized_of("golge_state.json"),
+            "oldest_slot_hours": round(max(p["age_min"] for p in positions) / 60, 1) if positions else None,
         },
         "positions": positions,
         "trades": list(reversed(trades[-min(limit, 200):])),
@@ -1402,6 +1385,7 @@ def api_m2(limit: int = Query(50)) -> dict:
             "universe_at": universe.get("updated_at"),
             "universe_symbols": [t.get("symbol") for t in (universe.get("tokens") or [])],
             "oldest_slot_hours": round(max(p["age_min"] for p in positions) / 60, 1) if positions else None,
+            "v6_realized": _realized_of("v6_state.json"),
             "v7_realized": _realized_of("v7_state.json"),
             "x1_realized": _realized_of("x1_state.json"),
             "m1_realized": _realized_of("m1_state.json"),
@@ -1437,8 +1421,14 @@ def momentum_page() -> str:
  .slotbadge.b48{background:#da3633;color:#fff}
  @media(max-width:600px){.eqwrap{height:220px}}
 </style></head><body>
-<h2>AKTİF YARIŞ · v7 / x1 / m1 / m2</h2>
+<h2>AKTİF YARIŞ · v6 / v7 / x1 / m1 / m2</h2>
 <div id="cmp3" style="margin:4px 0 12px">yükleniyor…</div>
+<h2>V6 Senaryo (sanal, güçlendirilmiş gölge: liq&ge;$100k · h1 10..50 · tp+2 · 30dk sabır, stop-2 · 60dk tavan · rejim sol_h1&ge;0.5 · hızlı göz 2s)</h2>
+<div id="v6mtm" class="mtm">yükleniyor…</div>
+<div id="v6sum">yükleniyor…</div>
+<table id="v6tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
+<th>mfe%</th><th>mae%</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th><th>hold sn</th>
+<th>kapanış</th></tr></thead><tbody></tbody></table>
 <h2>V7 Senaryo (sanal, -%10 felaket freni · sabır iptal, anında sat · rejim sol_h1&ge;0.5)</h2>
 <div id="v7sum">yükleniyor…</div>
 <table id="v7tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
@@ -1461,8 +1451,10 @@ def momentum_page() -> str:
 <table id="m2tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
 <th>mfe%</th><th>mae%</th><th>chg_m5</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th>
 <th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>CANLI KIYAS · senkron equity (v7 · x1 · m1 · m2)</h2>
+<h2>CANLI KIYAS · senkron equity (v6 · v7 · x1 · m1 · m2)</h2>
 <div class="eqbtns" id="eqsyncbtns"></div>
+<div id="eqv6label" class="eqlabel">V6</div>
+<div class="eqwrap"><canvas id="eqv6chart"></canvas></div>
 <div id="eqv7label" class="eqlabel">V7</div>
 <div class="eqwrap"><canvas id="eqv7chart"></canvas></div>
 <div id="eqx1label" class="eqlabel">X1</div>
@@ -1472,7 +1464,7 @@ def momentum_page() -> str:
 <div id="eqm2label" class="eqlabel">M2</div>
 <div class="eqwrap"><canvas id="eqm2chart"></canvas></div>
 <details id="arsivBox" style="margin-top:28px;border-top:1px solid #30363d;padding-top:8px">
-<summary style="cursor:pointer;color:#8b949e"><b>ARŞİV · durdurulan motorlar (v2 · v3 · v4 · v5 · gölge · v6 · v8 · v9 · v10) · tıkla aç</b></summary>
+<summary style="cursor:pointer;color:#8b949e"><b>ARŞİV · durdurulan motorlar (v2 · v3 · v4 · v5 · gölge · v8 · v9 · v10) · tıkla aç</b></summary>
 <div id="arsivIc">
 <h2>MOMENTUM v2 (durduruldu — slot 5 · liq&ge;$40k · m5&gt;0 · h1 5..50 · stop-2/BE+3/trail 5/-3 · 60dk)</h2>
 <div id="sum">arşiv, açınca yüklenir…</div>
@@ -1509,14 +1501,6 @@ def momentum_page() -> str:
 <h2>Equity (Gölge)</h2>
 <div class="eqbtns" id="eqgbtns"></div>
 <div class="eqwrap"><canvas id="eqgchart"></canvas></div>
-<h2>V6 Senaryo (durduruldu · arındırılmış gölge: liq&ge;$100k + h1 10..50 · tp+2 · 30dk sabır · stop-2 · 60dk)</h2>
-<div id="v6sum">arşiv, açınca yüklenir…</div>
-<table id="v6tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
-<th>mfe%</th><th>mae%</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th><th>hold sn</th>
-<th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>Equity (V6)</h2>
-<div class="eqbtns" id="eqv6btns"></div>
-<div class="eqwrap"><canvas id="eqv6chart"></canvas></div>
 <h2>V8 Senaryo (durduruldu · gölge + liq 200k · h1 20..50 · tp+3 · mutlak 20dk tavan)</h2>
 <div id="v8sum">arşiv, açınca yüklenir…</div>
 <table id="v8tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
@@ -1594,16 +1578,20 @@ async function arsivV4(){
     `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=12>henüz yok</td></tr>";
 }
 
-// ---- ARSIV: V6 (donuk, acilinca bir kez) --------------------------------------
-async function arsivV6(){
+// ---- AKTIF: V6 (guclendirilmis golge: rejim 0.5 + hizli goz) ---------------------
+async function v6tick(){
   let d; try{const r=await fetch("/api/v6?limit=30"); d=await r.json();}catch(e){return;}
   const s=d.summary;
+  document.getElementById("v6mtm").innerHTML=mtmSatir(s);
   document.getElementById("v6sum").innerHTML=
     `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
     `<span>realized <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`+
     `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
     `<span>açık ${s.open_slots}/5</span>`+
     `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
+  document.getElementById("eqv6label").innerHTML=
+    `V6 · equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b>`;
+  eqCharts.eqv6&&eqCharts.eqv6.setLive(s.equity);
   document.querySelector("#v6tr tbody").innerHTML=(d.trades||[]).map(t=>
     `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
     `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
@@ -1611,6 +1599,7 @@ async function arsivV6(){
     `<td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
     `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
 }
+v6tick(); setInterval(v6tick,5000);
 
 // ---- AKTIF: V7 (-%10 fren + rejim 0.5) ------------------------------------------
 async function v7tick(){
@@ -1747,6 +1736,7 @@ async function m2tick(){
   const s=d.summary;
   document.getElementById("cmp3").innerHTML=
     `<span>Kümülatif realized PnL (her motor kendi başlangıcından): `+
+    `v6 <b class="${cls(s.v6_realized)}">$${f(s.v6_realized)}</b> · `+
     `v7 <b class="${cls(s.v7_realized)}">$${f(s.v7_realized)}</b> · `+
     `x1 <b class="${cls(s.x1_realized)}">$${f(s.x1_realized)}</b> · `+
     `m1 <b class="${cls(s.m1_realized)}">$${f(s.m1_realized)}</b> · `+
@@ -1827,13 +1817,12 @@ let arsivYuklendi=false;
 document.getElementById("arsivBox").addEventListener("toggle",e=>{
   if(!e.target.open||arsivYuklendi)return;
   arsivYuklendi=true;  // BIR kez: donuk ozet + donuk chartlar (interval yok)
-  arsivV2(); arsivV3(); arsivV5(); arsivGolge(); arsivV6(); arsivV8();
+  arsivV2(); arsivV3(); arsivV5(); arsivGolge(); arsivV8();
   arsivV4(); arsivV9(); arsivV10();
   mkEqChart("eqv2","/api/momentum/equity",false);
   mkEqChart("eqv3","/api/v3/equity",false);
   mkEqChart("eqv5","/api/v5/equity",false);
   mkEqChart("eqg","/api/golge/equity",false);
-  mkEqChart("eqv6","/api/v6/equity",false);
   mkEqChart("eqv8","/api/v8/equity",false);
   mkEqChart("eqv4","/api/v4/equity",false);
   mkEqChart("eqv9","/api/v9/equity",false);
@@ -1925,8 +1914,9 @@ function mkEqChart(prefix, api, live=true, shared=false){
   return {tick,setLive};
 }
 
-// ---- Canli Kiyas: dort chart, TEK ortak zaman filtresi seridi (senkron) --------
+// ---- Canli Kiyas: bes chart, TEK ortak zaman filtresi seridi (senkron) ---------
 let eqSyncWin=0;
+eqCharts.eqv6=mkEqChart("eqv6","/api/v6/equity",true,true);
 eqCharts.eqv7=mkEqChart("eqv7","/api/v7/equity",true,true);
 eqCharts.eqx1=mkEqChart("eqx1","/api/x1/equity",true,true);
 eqCharts.eqm1=mkEqChart("eqm1","/api/m1/equity",true,true);

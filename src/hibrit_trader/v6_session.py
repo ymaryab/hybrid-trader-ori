@@ -15,6 +15,14 @@ V6 = GÖLGE'NİN AYNISI + TEK ek filtre (2026-07-04 arındırma analizi):
   Ek    : sol_chg_h1 artık trade kayıtlarına yazılır (gölgede eksikti,
           rejim kırılımı analizi yapılamıyordu).
 
+GÜÇLENDİRME (2026-07-09 yeniden aktivasyon):
+  REJİM : sol_h1 < 0.5 iken giriş yok (0..0.5 bandı kanıtlı kaybettiren:
+          v6/v7/v8 toplamı 41 işlem -$136, bkz POLICY V-serisi final).
+  HIZLI GÖZ: çıkış kontrolü fast_price feed'inden 2s kadansla (M1/M2 deseni).
+          Pozisyon açılınca havuz feed'e dinamik eklenir, kapanınca çıkar.
+          Feed yok/bayat ise 30s polling fallback, motor kör kalmaz.
+  ÖLÇÜM : trade kaydında price_source (fast/poll) + tetik_gecikme_sec.
+
 Fill'ler sanal: gerçek fiyat + v2'nin likidite-slippage modeli + gas.
 Kadans v2 ile aynı; 3/8 interval faz kaydırmalı (v2:0, v5:1/8, v3:1/4,
 v6:3/8, gölge:1/2, v4:3/4). V6_ENABLED=0 ile kapatılır.
@@ -31,6 +39,7 @@ from pathlib import Path
 import httpx
 
 from hibrit_trader.config import GAS_COST_USD
+from hibrit_trader.fast_price import get_feed
 from hibrit_trader.killswitch import is_active as kill_is_active
 from hibrit_trader.live_sim import fetch_pool_price
 from hibrit_trader.momentum_session import (
@@ -56,9 +65,12 @@ TP_PCT = 2.0            # giriş +%2 görülünce kâr al (gölge ile aynı)
 GRACE_SEC = 30 * 60     # ilk 30dk aşağıda stop yok (sabır)
 LATE_STOP_PCT = -2.0    # 30dk sonrası: girişin -%2 altı SAT
 CEILING_SEC = 60 * 60   # 60dk tavan
-SOL_H1_MIN = float(os.getenv("MOM_SOL_H1_MIN", "0"))   # rejim eşiği gölge ile aynı
+# rejim eşiği 0.5: sol_h1 0..0.5 bandı kanıtlı kaybettiren (41 işlem -$136)
+SOL_H1_MIN = float(os.getenv("V6_SOL_H1_MIN", "0.5"))
 COOLDOWN_LOSS_SEC = float(os.getenv("MOM_COOLDOWN_STOP_MIN", "60")) * 60
 COOLDOWN_EXIT_SEC = float(os.getenv("MOM_COOLDOWN_EXIT_MIN", "15")) * 60
+# Hizli goz: 30s tam tick arasinda fast feed'ten 2s kadansli cikis kontrolu
+EXIT_INTERVAL_SEC = float(os.getenv("M_EXIT_INTERVAL_SEC", "2"))
 
 STATE_FILE = "v6_state.json"
 TRADES_FILE = "v6_trades.jsonl"
@@ -151,20 +163,35 @@ class V6Engine:
         if not self._acquire_lock():
             return
         log.warning(
-            "V6 senaryo başladı (arındırılmış gölge) — sanal $%.2f · slot %d · "
-            "giriş liq>=$%.0f + h1 %.0f..%.0f · çıkış tp+%.0f%% / %dm sabır sonrası "
-            "stop%%%.0f / tavan %dm",
-            self.balance, MAX_SLOTS, LIQ_MIN_USD, CHG_H1_MIN, CHG_H1_MAX,
+            "V6 senaryo başladı (arındırılmış gölge + rejim %.1f + hızlı göz) — "
+            "sanal $%.2f · slot %d · giriş liq>=$%.0f + h1 %.0f..%.0f · "
+            "çıkış tp+%.0f%% / %dm sabır sonrası stop%%%.0f / tavan %dm",
+            SOL_H1_MIN, self.balance, MAX_SLOTS, LIQ_MIN_USD, CHG_H1_MIN, CHG_H1_MAX,
             TP_PCT, GRACE_SEC // 60, LATE_STOP_PCT, CEILING_SEC // 60,
         )
         self._save()
+        feed = get_feed()
+        if feed is not None:  # restart sonrasi acik pozisyon havuzlarini feed'e geri tak
+            for pos in self.positions:
+                feed.add_pool(pos["pool_address"])
         time.sleep(SCAN_INTERVAL_SEC * 3 / 8)
         while True:
             try:
                 self.tick()
             except Exception:
                 log.exception("v6 tick hatası")
-            time.sleep(SCAN_INTERVAL_SEC)
+            deadline = time.time() + SCAN_INTERVAL_SEC
+            while True:
+                kalan = deadline - time.time()
+                if kalan <= 0:
+                    break
+                time.sleep(min(EXIT_INTERVAL_SEC, kalan))
+                if time.time() >= deadline:
+                    break
+                try:
+                    self.fast_exit_tick()
+                except Exception:
+                    log.exception("v6 hızlı çıkış tick hatası")
 
     def tick(self) -> None:
         with httpx.Client(timeout=10.0) as client:
@@ -277,34 +304,71 @@ class V6Engine:
         self.balance -= (usd + gas)
         self.positions.append(pos)
         self._save()
+        feed = get_feed()
+        if feed is not None:  # hizli goz: havuzu 1s feed'ine dinamik ekle
+            feed.add_pool(pos["pool_address"])
         log.warning("V6 BUY %s $%.2f @ %.8g (h1 %.1f%%, liq $%.0f)",
                     pair.name, usd, eff_price, pair.chg_h1, pair.liquidity_usd)
         return True
 
     # ---- Çıkış: tp_2 / stop_gec (30dk sonrası -%2) / timeout_60 (gölge birebir) --
+    def _eval_position(self, pos: dict, price: float, now: float) -> str | None:
+        """Fiyatı işle (last_price/mfe/mae) ve çıkış nedeni döndür (yoksa None)."""
+        pos["last_price"] = price
+        entry = pos["entry_price"]
+        pnl_pct = (price / entry - 1) * 100 if entry > 0 else 0.0
+        if pnl_pct > pos["mfe_pct"]:
+            pos["mfe_pct"] = round(pnl_pct, 4)
+        if pnl_pct < pos["mae_pct"]:
+            pos["mae_pct"] = round(pnl_pct, 4)
+        age = now - pos["opened_ts"]
+        if pnl_pct >= TP_PCT:
+            return "tp_2"
+        if age >= GRACE_SEC and pnl_pct <= LATE_STOP_PCT:
+            return "stop_gec"
+        if age >= CEILING_SEC:
+            return "timeout_60"
+        return None
+
     def _manage_exits(self, client: httpx.Client) -> None:
         now = time.time()
+        feed = get_feed()
         for pos in list(self.positions):
-            price = fetch_pool_price(client, pos["chain"], pos["pool_address"])
+            rec = feed.get_price(pos["pool_address"]) if feed is not None else None
+            if rec is not None:
+                price, sample_ts = rec
+                src = "fast"
+            else:
+                price = fetch_pool_price(client, pos["chain"], pos["pool_address"])
+                sample_ts, src = None, "poll"
             if price is None or price <= 0:
                 price = pos["last_price"]
-            pos["last_price"] = price
-            entry = pos["entry_price"]
-            pnl_pct = (price / entry - 1) * 100 if entry > 0 else 0.0
-            if pnl_pct > pos["mfe_pct"]:
-                pos["mfe_pct"] = round(pnl_pct, 4)
-            if pnl_pct < pos["mae_pct"]:
-                pos["mae_pct"] = round(pnl_pct, 4)
-            age = now - pos["opened_ts"]
-
-            reason = None
-            if pnl_pct >= TP_PCT:
-                reason = "tp_2"
-            elif age >= GRACE_SEC and pnl_pct <= LATE_STOP_PCT:
-                reason = "stop_gec"
-            elif age >= CEILING_SEC:
-                reason = "timeout_60"
+                sample_ts, src = None, "poll"
+            reason = self._eval_position(pos, price, now)
             if reason:
+                pos["_price_src"] = src
+                pos["_price_ts"] = sample_ts
+                self._close_position(pos, price, reason, now)
+
+    def fast_exit_tick(self) -> None:
+        """2s kadanslı çıkış kontrolü. SADECE fast feed'te taze fiyatı olan
+        pozisyonlara bakar; taze fiyat yoksa dokunmaz, 30s tick kapsar
+        (motor hiçbir koşulda kör kalmaz). Kapanış olmadıkça disk yazılmaz."""
+        if not self.positions:
+            return
+        feed = get_feed()
+        if feed is None:
+            return
+        now = time.time()
+        for pos in list(self.positions):
+            rec = feed.get_price(pos["pool_address"])
+            if rec is None:
+                continue
+            price, sample_ts = rec
+            reason = self._eval_position(pos, price, now)
+            if reason:
+                pos["_price_src"] = "fast"
+                pos["_price_ts"] = sample_ts
                 self._close_position(pos, price, reason, now)
 
     def _close_position(self, pos: dict, price: float, reason: str, now: float) -> None:
@@ -316,6 +380,10 @@ class V6Engine:
         pnl = proceeds - cost
         hold_sec = round(now - pos["opened_ts"], 1)
         pnl_pct = (eff_price / pos["entry_price"] - 1) * 100 if pos["entry_price"] > 0 else 0.0
+        # hiz kenari olcumu: fast yolunda tetik gecikmesi = simdi - feed ornek zamani
+        price_src = pos.pop("_price_src", "poll")
+        price_ts = pos.pop("_price_ts", None)
+        tetik_gecikme = round(now - price_ts, 3) if price_ts else None
 
         # v2 hardening deseni: önce kayıt, sonra mutasyon, anında save
         self._append_trade({
@@ -339,6 +407,8 @@ class V6Engine:
             "hold_sec": hold_sec,
             "exit_reason": reason,
             "friction_pct": round(pos.get("entry_slip_pct", 0.0) + slip * 100, 4),
+            "price_source": price_src,
+            "tetik_gecikme_sec": tetik_gecikme,
             "opened_at": pos["opened_at"],
             "closed_at": _now_iso(),
         })
@@ -352,5 +422,8 @@ class V6Engine:
         except ValueError:
             pass
         self._save()
+        feed = get_feed()
+        if feed is not None:  # hizli goz: kapanan havuzu feed'ten cikar
+            feed.remove_pool(pos["pool_address"])
         log.warning("V6 SELL %s pnl $%.2f (%.2f%%) — %s, hold %.0fs (mfe %.1f%% mae %.1f%%)",
                     pos["pair"], pnl, pnl_pct, reason, hold_sec, pos["mfe_pct"], pos["mae_pct"])

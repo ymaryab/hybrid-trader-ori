@@ -41,10 +41,23 @@ class FastPriceFeed:
         self._lock = threading.Lock()
         self._prices: dict[str, tuple[float, float]] = {}
         self._pools: list[str] = []
+        self._extra_pools: set[str] = set()  # dinamik: acik pozisyon havuzlari (v6 vb)
         self._pools_ts: float = 0.0
         self._thread: threading.Thread | None = None
         self._backoff: float = 0.0
         self._err_streak: int = 0
+
+    def add_pool(self, pool_address: str) -> None:
+        """Evren disi bir havuzu gecici izlemeye al (pozisyon acilinca)."""
+        if pool_address:
+            with self._lock:
+                self._extra_pools.add(pool_address)
+
+    def remove_pool(self, pool_address: str) -> None:
+        """Gecici izlemeyi birak (pozisyon kapaninca)."""
+        with self._lock:
+            self._extra_pools.discard(pool_address)
+            self._prices.pop(pool_address, None)
 
     def start(self) -> None:
         with self._lock:
@@ -78,25 +91,33 @@ class FastPriceFeed:
             log.debug("fast_price: evren dosyasi okunamadi", exc_info=True)
         self._pools_ts = time.time()
 
+    def _watched_pools(self) -> list[str]:
+        with self._lock:
+            extra = sorted(self._extra_pools - set(self._pools))
+        return self._pools + extra
+
     def _poll_once(self, client: httpx.Client) -> None:
-        pools = ",".join(self._pools)
-        r = client.get(f"{API['dexscreener']}/latest/dex/pairs/solana/{pools}")
-        r.raise_for_status()
-        data = r.json()
-        items = data.get("pairs") or ([data["pair"]] if data.get("pair") else [])
-        now = time.time()
-        fresh: dict[str, tuple[float, float]] = {}
-        for item in items:
-            try:
-                addr = str(item.get("pairAddress") or "")
-                price = float(item.get("priceUsd") or 0)
-            except (TypeError, ValueError):
-                continue
-            if addr and price > 0:
-                fresh[addr] = (price, now)
-        if fresh:
-            with self._lock:
-                self._prices.update(fresh)
+        watched = self._watched_pools()
+        # pairs endpoint istek basina 30 havuz kabul eder; fazlasi chunk'lanir
+        for i in range(0, len(watched), 30):
+            pools = ",".join(watched[i:i + 30])
+            r = client.get(f"{API['dexscreener']}/latest/dex/pairs/solana/{pools}")
+            r.raise_for_status()
+            data = r.json()
+            items = data.get("pairs") or ([data["pair"]] if data.get("pair") else [])
+            now = time.time()
+            fresh: dict[str, tuple[float, float]] = {}
+            for item in items:
+                try:
+                    addr = str(item.get("pairAddress") or "")
+                    price = float(item.get("priceUsd") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if addr and price > 0:
+                    fresh[addr] = (price, now)
+            if fresh:
+                with self._lock:
+                    self._prices.update(fresh)
 
     def _register_error(self, what: str) -> None:
         self._err_streak += 1
@@ -116,7 +137,7 @@ class FastPriceFeed:
                 try:
                     if t0 - self._pools_ts > UNIVERSE_RELOAD_SEC:
                         self._load_pools()
-                    if self._pools:
+                    if self._watched_pools():
                         self._poll_once(client)
                     if self._err_streak:
                         log.warning("FAST-PRICE toparlandi (%d hatadan sonra)",

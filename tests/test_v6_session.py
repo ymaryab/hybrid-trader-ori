@@ -17,6 +17,8 @@ def v6_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("MOMENTUM_DATA_DIR", str(tmp_path))
     monkeypatch.setattr("hibrit_trader.killswitch.KILL_FILE", tmp_path / "KILL")
     monkeypatch.delenv("KILL_SWITCH", raising=False)
+    # fast feed testte kapali: gercek thread/HTTP acilmasin, polling yolu test edilsin
+    monkeypatch.setattr("hibrit_trader.fast_price.ENABLED", False)
     return tmp_path
 
 
@@ -68,8 +70,17 @@ def test_entry_rejects_h1_below_10(v6_data_dir, monkeypatch):
 def test_entry_golge_rules_preserved(v6_data_dir, monkeypatch):
     eng = V6Engine(_settings())
     assert _enter(eng, monkeypatch, _pair(liq=99_000)) == []          # liq >= 100k
-    assert _enter(eng, monkeypatch, _pair(), sol_h1=-0.5) == []       # rejim < 0
     assert len(_enter(eng, monkeypatch, _pair(h1=45.0, m5=-5.0))) == 1  # m5 sarti yok
+
+
+# ---- Guclendirme 1: rejim esigi 0.5 (0..0.5 bandi kanitli kaybettiren) ---------------
+
+def test_regime_threshold_0_5(v6_data_dir, monkeypatch):
+    eng = V6Engine(_settings())
+    assert _enter(eng, monkeypatch, _pair(), sol_h1=-0.5) == []
+    assert _enter(eng, monkeypatch, _pair(), sol_h1=0.0) == []
+    assert _enter(eng, monkeypatch, _pair(), sol_h1=0.49) == []
+    assert len(_enter(eng, monkeypatch, _pair(), sol_h1=0.5)) == 1
 
 
 def test_candidates_sorted_highest_h1_first(v6_data_dir, monkeypatch):
@@ -163,3 +174,85 @@ def test_writes_only_v6_files(v6_data_dir, monkeypatch):
     assert all(f.startswith("v6_") for f in files), files
     state = json.loads((v6_data_dir / v6.STATE_FILE).read_text())
     assert state["start_balance"] == 1000.0
+
+
+# ---- Guclendirme 2: hizli goz (fast feed, 2s kadans) ------------------------------
+
+class _StubFeed:
+    def __init__(self, prices):
+        self.prices = prices  # pool -> (price, sample_ts)
+        self.added = []
+        self.removed = []
+
+    def get_price(self, pool, max_age_sec=None):
+        return self.prices.get(pool)
+
+    def add_pool(self, pool):
+        self.added.append(pool)
+
+    def remove_pool(self, pool):
+        self.removed.append(pool)
+
+
+def test_fast_exit_tick_closes_tp_with_fast_source(v6_data_dir, monkeypatch):
+    eng = V6Engine(_settings())
+    pos = _open(eng)
+    sample_ts = time.time() - 0.4
+    feed = _StubFeed({pos["pool_address"]: (pos["entry_price"] * 1.021, sample_ts)})
+    monkeypatch.setattr(v6, "get_feed", lambda: feed)
+    eng.fast_exit_tick()
+    t = _last(v6_data_dir)
+    assert t["exit_reason"] == "tp_2"
+    assert t["price_source"] == "fast"
+    assert 0 <= t["tetik_gecikme_sec"] < 5
+    assert feed.removed == [pos["pool_address"]]  # kapaninca feed'ten cikar
+
+
+def test_fast_exit_tick_skips_position_without_fresh_price(v6_data_dir, monkeypatch):
+    eng = V6Engine(_settings())
+    pos = _open(eng)
+    monkeypatch.setattr(v6, "get_feed", lambda: _StubFeed({}))
+    eng.fast_exit_tick()
+    assert eng.positions == [pos]  # taze fiyat yoksa dokunmaz, 30s tick kapsar
+    assert not (v6_data_dir / v6.TRADES_FILE).exists()
+
+
+def test_fast_exit_tick_noop_when_feed_disabled(v6_data_dir, monkeypatch):
+    eng = V6Engine(_settings())
+    pos = _open(eng)
+    pos["last_price"] = pos["entry_price"] * 1.05  # tp'lik fiyat bile olsa
+    eng.fast_exit_tick()  # autouse fixture ENABLED=False -> get_feed None
+    assert len(eng.positions) == 1
+
+
+def test_open_position_registers_pool_to_feed(v6_data_dir, monkeypatch):
+    eng = V6Engine(_settings())
+    feed = _StubFeed({})
+    monkeypatch.setattr(v6, "get_feed", lambda: feed)
+    pos = _open(eng)
+    assert feed.added == [pos["pool_address"]]
+
+
+def test_manage_exits_poll_path_records_source_and_null_delay(v6_data_dir, monkeypatch):
+    eng = V6Engine(_settings())
+    pos = _open(eng)
+    _tick_price(eng, pos, pos["entry_price"] * 1.02, pos["opened_ts"] + 60, monkeypatch)
+    t = _last(v6_data_dir)
+    assert t["price_source"] == "poll"
+    assert t["tetik_gecikme_sec"] is None
+
+
+def test_manage_exits_prefers_fast_feed_over_poll(v6_data_dir, monkeypatch):
+    eng = V6Engine(_settings())
+    pos = _open(eng)
+    feed = _StubFeed({pos["pool_address"]: (pos["entry_price"] * 1.021, time.time())})
+    monkeypatch.setattr(v6, "get_feed", lambda: feed)
+
+    def _boom(c, ch, p):
+        raise AssertionError("feed tazeyken polling zinciri cagrilmamali")
+
+    monkeypatch.setattr(v6, "fetch_pool_price", _boom)
+    eng._manage_exits(client=SimpleNamespace())
+    t = _last(v6_data_dir)
+    assert t["exit_reason"] == "tp_2"
+    assert t["price_source"] == "fast"

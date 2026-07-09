@@ -130,3 +130,35 @@ def test_get_feed_disabled_returns_none(monkeypatch):
     monkeypatch.setattr(fp, "ENABLED", False)
     monkeypatch.setattr(fp, "_feed", None)
     assert get_feed() is None
+
+
+# ---- dinamik havuz (v6 hizli goz) ---------------------------------------------------
+
+def test_add_remove_pool_dynamic_watchlist():
+    feed = FastPriceFeed()
+    feed._pools = ["P1"]
+    feed.add_pool("EXTRA1")
+    feed.add_pool("P1")  # evrende zaten var: cift sayilmaz
+    assert feed._watched_pools() == ["P1", "EXTRA1"]
+    feed.remove_pool("EXTRA1")
+    assert feed._watched_pools() == ["P1"]
+
+
+def test_remove_pool_drops_cached_price():
+    feed = FastPriceFeed()
+    feed.add_pool("EXTRA1")
+    feed._prices["EXTRA1"] = (5.0, time.time())
+    feed.remove_pool("EXTRA1")
+    assert feed.get_price("EXTRA1") is None
+
+
+def test_poll_once_chunks_over_30_pools():
+    feed = FastPriceFeed()
+    feed._pools = [f"P{i}" for i in range(30)]
+    for i in range(5):
+        feed.add_pool(f"E{i}")
+    client = _FakeClient({"pairs": []})
+    feed._poll_once(client)
+    assert len(client.urls) == 2  # 35 havuz -> 30 + 5 iki istek
+    assert client.urls[0].count(",") == 29
+    assert client.urls[1].count(",") == 4
