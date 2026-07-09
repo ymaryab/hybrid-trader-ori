@@ -37,6 +37,7 @@ from pathlib import Path
 
 import httpx
 
+from hibrit_trader.broker import golge_olcum
 from hibrit_trader.config import API, GAS_COST_USD
 from hibrit_trader.dexscreener_scan import pair_from_dexscreener
 from hibrit_trader.fast_price import get_feed
@@ -477,6 +478,7 @@ class M1Engine:
         log.warning("M1 BUY %s $%.2f @ %.8g (h1 %.2f%%, m5 %.2f%%, liq $%.0f, slip %%%.4f)",
                     pair.name, usd, eff_price, pair.chg_h1,
                     getattr(pair, "chg_m5", 0.0), pair.liquidity_usd, slip * 100)
+        golge_olcum("M1", "al", pair.token_address, eff_price, usd=usd)
         return True
 
     # ---- Cikis: tp_1_2 / stop_felaket (-%4) / stop_gec (20dk, -%1.5) / timeout_90 --
@@ -600,3 +602,5 @@ class M1Engine:
                     "(mfe %.1f%% mae %.1f%% friction %%%.4f)",
                     pos["pair"], pnl, pnl_pct, reason, hold_sec,
                     pos["mfe_pct"], pos["mae_pct"], friction_pct)
+        golge_olcum("M1", "sat", pos["token_address"], eff_price,
+                    amount_token=pos["amount_token"])

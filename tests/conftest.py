@@ -27,6 +27,8 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setattr("hibrit_trader.telemetry.LOGS_DIR", tmp_path / "logs")
     monkeypatch.setenv("HIBRIT_BRAIN_AUTO", "0")
     monkeypatch.setenv("HIBRIT_BRAIN_ENABLED", "0")
+    # Golge olcum testte gercek Jupiter/RPC cagrisi yapmasin
+    monkeypatch.setenv("BROKER_GOLGE_OLCUM", "0")
 
 
 @pytest.fixture(autouse=True)
