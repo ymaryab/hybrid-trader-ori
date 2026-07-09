@@ -125,3 +125,14 @@ M1/M2 durduruldu: ilk olcum round-trip 297 bps > tp 120 bps, mevcut tp hedefiyle
 - makas_probe: motorlardan bagimsiz, saatte bir m1_universe tokenlarinda sanal al VE sat
   quote'u alir; round-trip fark_bps'i dryrun_fills.jsonl'a tur="probe" satiri olarak yazar.
   Canary on-sarti verisi (round-trip makas ortalamasi) boylece motor fill'i olmadan birikir.
+
+## Karne sonrasi vidalar (09 Tem 2026 gece)
+
+Karne gunune kadar UYGULANMAZ; sadece degerlendirme gundemi.
+
+- X1 rejim kapisi: karne gunu X1'e sol_h1 >= 0.2-0.3 esikli rejim kapisi
+  takilmasi degerlendirilecek. Dayanak: 09 Tem aksami kapisiz X1 -$235
+  (gunduz +$242), rejim dilim verisi sol_h1 < 0.5'te negatif. Esik, karneye
+  kadar biriken aksam-verisiyle secilecek.
+- Jotchua-tipi rug kayiplari icin ek onlem YOK karari: kucuk bilet + yarim-tp
+  mevcut ve yeterli, bu av sahasinin dogal vergisi.
