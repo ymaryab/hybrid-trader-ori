@@ -115,3 +115,13 @@ Ilk olcum durumu (09 Tem gece, n cok kucuk, karar icin yetersiz):
 - Al yonlu saglikli: M2 SOL -213.9 bps (n=1). Ariza izleri (JTO/PYTH -9998) haric.
 - Sat yonlu saglikli: M1 WIF -82.9 bps (n=1).
 - Mutlak toplam ~297 bps; M1/M2 tp hedefi 120 bps. Bu haliyle on-sart SAGLANMIYOR; daha fazla olcum birikmeli ve makasin gercekten bu buyuklukte olup olmadigi (tek SOL olcumu hizli piyasada alinmisti) netlesmeli.
+
+## M1/M2 durduruldu, makas defteri probe ile acik (09 Tem 2026 gece)
+
+M1/M2 durduruldu: ilk olcum round-trip 297 bps > tp 120 bps, mevcut tp hedefiyle major-tp hipotezi odemiyor; makas defteri probe ile aciktir.
+
+- M1/M2 state ve trades dosyalari aynen duruyor; panelde arsiv bolumunden okunur.
+- Aktif filo: v6, v7, X1 (+EKG). Kiyas satiri ve canli equity chartlar uclu filoya gore.
+- makas_probe: motorlardan bagimsiz, saatte bir m1_universe tokenlarinda sanal al VE sat
+  quote'u alir; round-trip fark_bps'i dryrun_fills.jsonl'a tur="probe" satiri olarak yazar.
+  Canary on-sarti verisi (round-trip makas ortalamasi) boylece motor fill'i olmadan birikir.

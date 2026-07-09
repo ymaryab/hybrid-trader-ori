@@ -157,6 +157,10 @@ def _start_engine() -> None:
             from hibrit_trader.kosucu_ekg import KosucuEkg
             ekg = KosucuEkg(settings)
             threading.Thread(target=ekg.run_forever, daemon=True).start()
+        if os.getenv("PROBE_ENABLED", "1") != "0":
+            # Makas probe: motorsuz round-trip makas olcumu (canary on-sart verisi)
+            from hibrit_trader import makas_probe
+            threading.Thread(target=makas_probe.run_forever, daemon=True).start()
         return
     _restore_phantom_session()
     sorunlar = settings.validate()
@@ -579,22 +583,20 @@ def _motor_ozet(data_dir: Path, prefix: str, now: float, limit: int,
 
 @app.get("/api/filo")
 def api_filo(limit: int = Query(30)) -> dict:
-    """AKTIF filo TEK tick: bes motor + kiyas satiri tek geciste, tek 'now' ile.
+    """AKTIF filo TEK tick: uc motor (v6/v7/x1) + kiyas satiri tek geciste, tek 'now' ile.
 
     Panel senkron ilkesi: /momentum sayfasindaki her gosterge (ozetler, MTM ve
     slot rozetleri, kiyas satiri, chartlarin canli uc noktasi) bu tek cevaptan
-    basilir; ayri fetch / ayri an / ikinci hesap yok.
+    basilir; ayri fetch / ayri an / ikinci hesap yok. M1/M2 arsivde (kendi
+    endpointleri duruyor, arsiv acilinca bir kez okunur).
     """
     data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
     now = time.time()
-    evren = _oku_json(data_dir / "m1_universe.json")
     out: dict = {"ts": round(now, 3)}
     for prefix in ("v6", "v7", "x1"):
         out[prefix] = _motor_ozet(data_dir, prefix, now, limit)
-    for prefix in ("m1", "m2"):
-        out[prefix] = _motor_ozet(data_dir, prefix, now, limit, evren=evren)
     out["cmp"] = {p: out[p]["summary"]["realized_pnl"]
-                  for p in ("v6", "v7", "x1", "m1", "m2")}
+                  for p in ("v6", "v7", "x1")}
     return out
 
 
@@ -1242,7 +1244,7 @@ def momentum_page() -> str:
  .updlabel.stale{color:#f85149}
  @media(max-width:600px){.eqwrap{height:220px}}
 </style></head><body>
-<h2>AKTİF YARIŞ · v6 / v7 / x1 / m1 / m2</h2>
+<h2>AKTİF YARIŞ · v6 / v7 / x1</h2>
 <div id="cmp3" style="margin:4px 0 12px">yükleniyor…</div>
 <h2>V6 Senaryo (sanal, güçlendirilmiş gölge: liq&ge;$100k · h1 10..50 · tp+2 · 30dk sabır, stop-2 · 60dk tavan · rejim sol_h1&ge;0.5 · hızlı göz 2s) <span id="v6upd" class="updlabel"></span></h2>
 <div id="v6mtm" class="mtm">yükleniyor…</div>
@@ -1260,19 +1262,7 @@ def momentum_page() -> str:
 <table id="x1tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
 <th>mfe%</th><th>mae%</th><th>nefes</th><th>en derin%</th><th>chg_m5</th><th>chg_h1</th>
 <th>liq $</th><th>hold dk</th><th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>M1 Senaryo (sanal, MAJOR evren: liq&ge;$3M · h1 1.5..15, m5 sıralı · rejim sol_h1&ge;0.3 · tp+1.2 / fren -4 / 20dk sabır stop -1.5 / 90dk tavan) <span id="m1upd" class="updlabel"></span></h2>
-<div id="m1mtm" class="mtm">yükleniyor…</div>
-<div id="m1sum">yükleniyor…</div>
-<table id="m1tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
-<th>mfe%</th><th>mae%</th><th>chg_m5</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th>
-<th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>M2 Senaryo (sanal, MAJOR evren: liq&ge;$3M · h1 1.5..15, h1 sıralı · saf tp+1.2 · stop/timeout/rejim/cooldown YOK) <span id="m2upd" class="updlabel"></span></h2>
-<div id="m2mtm" class="mtm">yükleniyor…</div>
-<div id="m2sum">yükleniyor…</div>
-<table id="m2tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
-<th>mfe%</th><th>mae%</th><th>chg_m5</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th>
-<th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>CANLI KIYAS · senkron equity (v6 · v7 · x1 · m1 · m2)</h2>
+<h2>CANLI KIYAS · senkron equity (v6 · v7 · x1)</h2>
 <div class="eqbtns" id="eqsyncbtns"></div>
 <div id="eqv6label" class="eqlabel">V6</div>
 <div class="eqwrap"><canvas id="eqv6chart"></canvas></div>
@@ -1280,13 +1270,27 @@ def momentum_page() -> str:
 <div class="eqwrap"><canvas id="eqv7chart"></canvas></div>
 <div id="eqx1label" class="eqlabel">X1</div>
 <div class="eqwrap"><canvas id="eqx1chart"></canvas></div>
-<div id="eqm1label" class="eqlabel">M1</div>
-<div class="eqwrap"><canvas id="eqm1chart"></canvas></div>
-<div id="eqm2label" class="eqlabel">M2</div>
-<div class="eqwrap"><canvas id="eqm2chart"></canvas></div>
 <details id="arsivBox" style="margin-top:28px;border-top:1px solid #30363d;padding-top:8px">
-<summary style="cursor:pointer;color:#8b949e"><b>ARŞİV · durdurulan motorlar (v2 · v3 · v4 · v5 · gölge · v8 · v9 · v10) · tıkla aç</b></summary>
+<summary style="cursor:pointer;color:#8b949e"><b>ARŞİV · durdurulan motorlar (m1 · m2 · v2 · v3 · v4 · v5 · gölge · v8 · v9 · v10) · tıkla aç</b></summary>
 <div id="arsivIc">
+<h2>M1 Senaryo (durduruldu · MAJOR evren: liq&ge;$3M · h1 1.5..15, m5 sıralı · rejim sol_h1&ge;0.3 · tp+1.2 / fren -4 / 20dk sabır stop -1.5 / 90dk tavan)</h2>
+<div id="m1mtm" class="mtm">arşiv, açınca yüklenir…</div>
+<div id="m1sum">arşiv, açınca yüklenir…</div>
+<table id="m1tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
+<th>mfe%</th><th>mae%</th><th>chg_m5</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th>
+<th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table>
+<h2>Equity (M1)</h2>
+<div class="eqbtns" id="eqm1btns"></div>
+<div class="eqwrap"><canvas id="eqm1chart"></canvas></div>
+<h2>M2 Senaryo (durduruldu · MAJOR evren: liq&ge;$3M · h1 1.5..15, h1 sıralı · saf tp+1.2 · stop/timeout/rejim/cooldown YOK)</h2>
+<div id="m2mtm" class="mtm">arşiv, açınca yüklenir…</div>
+<div id="m2sum">arşiv, açınca yüklenir…</div>
+<table id="m2tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
+<th>mfe%</th><th>mae%</th><th>chg_m5</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th>
+<th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table>
+<h2>Equity (M2)</h2>
+<div class="eqbtns" id="eqm2btns"></div>
+<div class="eqwrap"><canvas id="eqm2chart"></canvas></div>
 <h2>MOMENTUM v2 (durduruldu — slot 5 · liq&ge;$40k · m5&gt;0 · h1 5..50 · stop-2/BE+3/trail 5/-3 · 60dk)</h2>
 <div id="sum">arşiv, açınca yüklenir…</div>
 <table id="pos"><thead><tr><th>pair</th><th>chain</th><th>giriş</th><th>son</th>
@@ -1523,7 +1527,9 @@ function mtmSatir(s){
     `<span class="slotbadge ${osh>48?"b48":(osh>24?"b24":"")}">en yaşlı slot ${f(osh,1)}s</span>`;
   return `MTM <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b>${badge}`;
 }
-function basM1(d){
+// ---- ARSIV: M1 (durduruldu, acilinca bir kez) ---------------------------------------
+async function arsivM1(){
+  let d; try{const r=await fetch("/api/m1?limit=30"); d=await r.json();}catch(e){return;}
   const s=d.summary;
   document.getElementById("m1mtm").innerHTML=mtmSatir(s);
   document.getElementById("m1sum").innerHTML=
@@ -1532,9 +1538,6 @@ function basM1(d){
     `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
     `<span>açık ${s.open_slots}/5</span><span>evren <b>${s.universe_n}</b> token</span>`+
     `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
-  document.getElementById("eqm1label").innerHTML=
-    `M1 · equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b>`;
-  eqCharts.eqm1&&eqCharts.eqm1.setLive(s.equity);
   document.querySelector("#m1tr tbody").innerHTML=(d.trades||[]).map(t=>
     `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
     `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
@@ -1543,17 +1546,10 @@ function basM1(d){
     `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=12>henüz yok</td></tr>";
 }
 
-// ---- AKTIF: M2 (major saf tp) + besli kiyas satiri ----------------------------------
-function basM2(d,c){
+// ---- ARSIV: M2 (durduruldu, acilinca bir kez) ---------------------------------------
+async function arsivM2(){
+  let d; try{const r=await fetch("/api/m2?limit=30"); d=await r.json();}catch(e){return;}
   const s=d.summary;
-  // kiyas satiri ayni /api/filo cevabinin cmp blogundan: ikinci okuma/hesap yok
-  document.getElementById("cmp3").innerHTML=
-    `<span>Kümülatif realized PnL (her motor kendi başlangıcından): `+
-    `v6 <b class="${cls(c.v6)}">$${f(c.v6)}</b> · `+
-    `v7 <b class="${cls(c.v7)}">$${f(c.v7)}</b> · `+
-    `x1 <b class="${cls(c.x1)}">$${f(c.x1)}</b> · `+
-    `m1 <b class="${cls(c.m1)}">$${f(c.m1)}</b> · `+
-    `m2 <b class="${cls(c.m2)}">$${f(c.m2)}</b></span>`;
   document.getElementById("m2mtm").innerHTML=mtmSatir(s);
   document.getElementById("m2sum").innerHTML=
     `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
@@ -1561,9 +1557,6 @@ function basM2(d,c){
     `<span>işlem ${s.trades_total}</span><span>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}</span>`+
     `<span>açık ${s.open_slots}/5</span><span>evren <b>${s.universe_n}</b> token</span>`+
     `<span>${Object.entries(s.exit_reasons||{}).map(([k,v])=>`<span class="chip">${k}:${v}</span>`).join(" ")}</span>`;
-  document.getElementById("eqm2label").innerHTML=
-    `M2 · equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b>`;
-  eqCharts.eqm2&&eqCharts.eqm2.setLive(s.equity);
   document.querySelector("#m2tr tbody").innerHTML=(d.trades||[]).map(t=>
     `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
     `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
@@ -1573,22 +1566,30 @@ function basM2(d,c){
 }
 
 // ---- AKTIF FILO: TEK poll, TEK hesap (/api/filo) ------------------------------------
-// Senkron ilkesi: bes motorun ozetleri, MTM/slot rozetleri, kiyas satiri ve
+// Senkron ilkesi: uc motorun ozetleri, MTM/slot rozetleri, kiyas satiri ve
 // chartlarin canli uc noktasi AYNI cevaptan basilir; ayri fetch/ayri an yok.
 let filoSonMs=0;
 function updEtiket(){
   const sn=filoSonMs?Math.round((Date.now()-filoSonMs)/1000):null;
   const txt=sn==null?"son güncelleme: -":`son güncelleme: ${sn} sn önce`;
-  for(const id of ["v6upd","v7upd","x1upd","m1upd","m2upd"]){
+  for(const id of ["v6upd","v7upd","x1upd"]){
     const e=document.getElementById(id);
     if(e){e.textContent=txt;e.classList.toggle("stale",sn!=null&&sn>15);}
   }
 }
 setInterval(updEtiket,1000);
+function basCmp(c){
+  // kiyas satiri ayni /api/filo cevabinin cmp blogundan: ikinci okuma/hesap yok
+  document.getElementById("cmp3").innerHTML=
+    `<span>Kümülatif realized PnL (her motor kendi başlangıcından): `+
+    `v6 <b class="${cls(c.v6)}">$${f(c.v6)}</b> · `+
+    `v7 <b class="${cls(c.v7)}">$${f(c.v7)}</b> · `+
+    `x1 <b class="${cls(c.x1)}">$${f(c.x1)}</b></span>`;
+}
 async function filoTick(){
   let d; try{const r=await fetch("/api/filo?limit=30"); d=await r.json();}catch(e){return;}
   filoSonMs=Date.now();
-  basV6(d.v6); basV7(d.v7); basX1(d.x1); basM1(d.m1); basM2(d.m2,d.cmp);
+  basV6(d.v6); basV7(d.v7); basX1(d.x1); basCmp(d.cmp);
   updEtiket();
 }
 filoTick(); setInterval(filoTick,5000);
@@ -1650,8 +1651,11 @@ let arsivYuklendi=false;
 document.getElementById("arsivBox").addEventListener("toggle",e=>{
   if(!e.target.open||arsivYuklendi)return;
   arsivYuklendi=true;  // BIR kez: donuk ozet + donuk chartlar (interval yok)
+  arsivM1(); arsivM2();
   arsivV2(); arsivV3(); arsivV5(); arsivGolge(); arsivV8();
   arsivV4(); arsivV9(); arsivV10();
+  mkEqChart("eqm1","/api/m1/equity",false);
+  mkEqChart("eqm2","/api/m2/equity",false);
   mkEqChart("eqv2","/api/momentum/equity",false);
   mkEqChart("eqv3","/api/v3/equity",false);
   mkEqChart("eqv5","/api/v5/equity",false);
@@ -1747,13 +1751,11 @@ function mkEqChart(prefix, api, live=true, shared=false){
   return {tick,setLive};
 }
 
-// ---- Canli Kiyas: bes chart, TEK ortak zaman filtresi seridi (senkron) ---------
+// ---- Canli Kiyas: uc chart, TEK ortak zaman filtresi seridi (senkron) ----------
 let eqSyncWin=0;
 eqCharts.eqv6=mkEqChart("eqv6","/api/v6/equity",true,true);
 eqCharts.eqv7=mkEqChart("eqv7","/api/v7/equity",true,true);
 eqCharts.eqx1=mkEqChart("eqx1","/api/x1/equity",true,true);
-eqCharts.eqm1=mkEqChart("eqm1","/api/m1/equity",true,true);
-eqCharts.eqm2=mkEqChart("eqm2","/api/m2/equity",true,true);
 const eqSyncTicks=Object.values(eqCharts).map(c=>c.tick);
 function eqSyncButtons(){
   const el=document.getElementById("eqsyncbtns");

@@ -183,7 +183,7 @@ def test_api_filo_tek_tick_tek_kaynak(client, monkeypatch, tmp_path):
 
     monkeypatch.setenv("MOMENTUM_DATA_DIR", str(tmp_path))
     opened = _time.time() - 7200
-    for i, p in enumerate(("v6", "v7", "x1", "m1", "m2")):
+    for i, p in enumerate(("v6", "v7", "x1")):
         (tmp_path / f"{p}_state.json").write_text(json.dumps({
             "balance": 1000.0 + i, "start_balance": 1000.0,
             "realized_pnl": 10.0 + i,
@@ -194,27 +194,24 @@ def test_api_filo_tek_tick_tek_kaynak(client, monkeypatch, tmp_path):
         (tmp_path / f"{p}_trades.jsonl").write_text(
             json.dumps({"pair": "AAA/SOL", "exit_reason": "tp",
                         "pnl_usd": 10.0 + i, "ts": opened}) + "\n")
-    (tmp_path / "m1_universe.json").write_text(json.dumps(
-        {"updated_at": "2026-07-09", "tokens": [{"symbol": "SOL"}, {"symbol": "WIF"}]}))
     r = client.get("/api/filo")
     assert r.status_code == 200
     d = r.json()
     assert d["ts"] > 0
+    # arsivdekiler aktif filoda yok
+    assert "m1" not in d and "m2" not in d
     # kiyas satiri ayni gecisin ozetinden: ikinci okuma/hesap yok, birebir esit
-    for p in ("v6", "v7", "x1", "m1", "m2"):
+    for p in ("v6", "v7", "x1"):
         assert d["cmp"][p] == d[p]["summary"]["realized_pnl"]
     assert d["cmp"]["v6"] == 10.0
-    assert d["cmp"]["m2"] == 14.0
+    assert d["cmp"]["x1"] == 12.0
     # equity tek formul (_live_equity): nakit + acik pozisyonun anlik degeri
     assert d["v6"]["summary"]["equity"] == 1110.0
-    # ayni 'now': bes motorun pozisyon yasi birebir ayni tick'ten
-    ages = {d[p]["positions"][0]["age_min"] for p in ("v6", "v7", "x1", "m1", "m2")}
+    # ayni 'now': uc motorun pozisyon yasi birebir ayni tick'ten
+    ages = {d[p]["positions"][0]["age_min"] for p in ("v6", "v7", "x1")}
     assert len(ages) == 1
     # slot rozeti ayni cevaptan: 7200 sn = 2.0 saat
-    assert d["m1"]["summary"]["oldest_slot_hours"] == 2.0
-    # m1/m2 evren ayni dosyadan tek okumayla
-    assert d["m1"]["summary"]["universe_n"] == 2
-    assert d["m2"]["summary"]["universe_n"] == 2
+    assert d["v6"]["summary"]["oldest_slot_hours"] == 2.0
     assert d["v6"]["summary"]["win_rate_pct"] == 100.0
 
 
@@ -239,12 +236,15 @@ def test_momentum_sayfasi_tek_poll_ve_upd_etiketi(client):
     h = client.get("/momentum").text
     assert "/api/filo" in h
     assert "son güncelleme" in h
-    for eid in ("v6upd", "v7upd", "x1upd", "m1upd", "m2upd"):
+    for eid in ("v6upd", "v7upd", "x1upd"):
         assert f'id="{eid}"' in h
     # aktif motorlar icin ayri fetch kalmadi: tek gercek kaynak /api/filo
-    for eski in ('fetch("/api/v6?', 'fetch("/api/v7?', 'fetch("/api/x1?',
-                 'fetch("/api/m1?', 'fetch("/api/m2?'):
+    for eski in ('fetch("/api/v6?', 'fetch("/api/v7?', 'fetch("/api/x1?'):
         assert eski not in h
+    # m1/m2 arsivde: bir kez yuklenen arsiv fetch'leri var, upd etiketi yok
+    assert 'fetch("/api/m1?' in h and 'fetch("/api/m2?' in h
+    assert 'id="m1upd"' not in h and 'id="m2upd"' not in h
+    assert "arsivM1" in h and "arsivM2" in h
 
 
 def test_momentum_sayfasi_js_syntax_valid(client):
