@@ -172,3 +172,93 @@ def test_panel_js_syntax_valid():
         check=False,
     )
     assert proc.returncode == 0, proc.stderr or proc.stdout
+
+
+# ---- PANEL SENKRON: /api/filo tek gercek kaynak ---------------------------------
+
+
+def test_api_filo_tek_tick_tek_kaynak(client, monkeypatch, tmp_path):
+    import json
+    import time as _time
+
+    monkeypatch.setenv("MOMENTUM_DATA_DIR", str(tmp_path))
+    opened = _time.time() - 7200
+    for i, p in enumerate(("v6", "v7", "x1", "m1", "m2")):
+        (tmp_path / f"{p}_state.json").write_text(json.dumps({
+            "balance": 1000.0 + i, "start_balance": 1000.0,
+            "realized_pnl": 10.0 + i,
+            "positions": [{"pair": "AAA/SOL", "entry_price": 1.0,
+                           "last_price": 1.1, "amount_token": 100.0,
+                           "opened_ts": opened}],
+        }))
+        (tmp_path / f"{p}_trades.jsonl").write_text(
+            json.dumps({"pair": "AAA/SOL", "exit_reason": "tp",
+                        "pnl_usd": 10.0 + i, "ts": opened}) + "\n")
+    (tmp_path / "m1_universe.json").write_text(json.dumps(
+        {"updated_at": "2026-07-09", "tokens": [{"symbol": "SOL"}, {"symbol": "WIF"}]}))
+    r = client.get("/api/filo")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["ts"] > 0
+    # kiyas satiri ayni gecisin ozetinden: ikinci okuma/hesap yok, birebir esit
+    for p in ("v6", "v7", "x1", "m1", "m2"):
+        assert d["cmp"][p] == d[p]["summary"]["realized_pnl"]
+    assert d["cmp"]["v6"] == 10.0
+    assert d["cmp"]["m2"] == 14.0
+    # equity tek formul (_live_equity): nakit + acik pozisyonun anlik degeri
+    assert d["v6"]["summary"]["equity"] == 1110.0
+    # ayni 'now': bes motorun pozisyon yasi birebir ayni tick'ten
+    ages = {d[p]["positions"][0]["age_min"] for p in ("v6", "v7", "x1", "m1", "m2")}
+    assert len(ages) == 1
+    # slot rozeti ayni cevaptan: 7200 sn = 2.0 saat
+    assert d["m1"]["summary"]["oldest_slot_hours"] == 2.0
+    # m1/m2 evren ayni dosyadan tek okumayla
+    assert d["m1"]["summary"]["universe_n"] == 2
+    assert d["m2"]["summary"]["universe_n"] == 2
+    assert d["v6"]["summary"]["win_rate_pct"] == 100.0
+
+
+def test_api_motor_endpoint_semasi_korundu(client, monkeypatch, tmp_path):
+    import json
+
+    monkeypatch.setenv("MOMENTUM_DATA_DIR", str(tmp_path))
+    (tmp_path / "m2_state.json").write_text(json.dumps(
+        {"balance": 500.0, "realized_pnl": 5.0, "positions": []}))
+    (tmp_path / "v6_state.json").write_text(json.dumps({"realized_pnl": 7.0}))
+    r = client.get("/api/m2")
+    assert r.status_code == 200
+    s = r.json()["summary"]
+    assert s["realized_pnl"] == 5.0
+    assert s["v6_realized"] == 7.0
+    assert "universe_n" in s
+    r2 = client.get("/api/v6")
+    assert r2.json()["summary"]["realized_pnl"] == 7.0
+
+
+def test_momentum_sayfasi_tek_poll_ve_upd_etiketi(client):
+    h = client.get("/momentum").text
+    assert "/api/filo" in h
+    assert "son güncelleme" in h
+    for eid in ("v6upd", "v7upd", "x1upd", "m1upd", "m2upd"):
+        assert f'id="{eid}"' in h
+    # aktif motorlar icin ayri fetch kalmadi: tek gercek kaynak /api/filo
+    for eski in ('fetch("/api/v6?', 'fetch("/api/v7?', 'fetch("/api/x1?',
+                 'fetch("/api/m1?', 'fetch("/api/m2?'):
+        assert eski not in h
+
+
+def test_momentum_sayfasi_js_syntax_valid(client):
+    h = client.get("/momentum").text
+    m = re.search(r"<script>(.*?)</script>", h, re.S)
+    assert m, "inline script bulunamadi"
+    js = m.group(1)
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node yok")
+    proc = subprocess.run(
+        [node, "-e", f"new Function({js!r}); console.log('OK')"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr or proc.stdout

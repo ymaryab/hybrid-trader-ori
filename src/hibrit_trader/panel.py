@@ -500,6 +500,104 @@ def _equity_series(prefix: str, minutes: int) -> dict:
     }
 
 
+def _oku_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
+
+
+def _realized_of(data_dir: Path, name: str) -> float | None:
+    p = data_dir / name
+    if not p.exists():
+        return None
+    try:
+        return round(float(json.loads(p.read_text()).get("realized_pnl") or 0.0), 2)
+    except Exception:
+        return None
+
+
+def _motor_ozet(data_dir: Path, prefix: str, now: float, limit: int,
+                evren: dict | None = None) -> dict:
+    """Tek motorun ozet+pozisyon+trades paketi, TEK 'now' ile hesaplanir.
+
+    Tek gercek kaynak ilkesi: /api/filo ve motor-bazli endpointlerin hepsi bu
+    fonksiyondan gecer; ayni gosterge iki ayri yerde ayri formulle hesaplanmaz.
+    """
+    state = _oku_json(data_dir / f"{prefix}_state.json")
+    trades: list[dict] = []
+    tp = data_dir / f"{prefix}_trades.jsonl"
+    if tp.exists():
+        for ln in tp.read_text().splitlines():
+            if not ln.strip():
+                continue
+            try:
+                trades.append(json.loads(ln))
+            except ValueError:
+                continue
+    positions = list(state.get("positions", []))
+    for p in positions:
+        entry = float(p.get("entry_price") or 0.0)
+        last = float(p.get("last_price") or entry)
+        peak = float(p.get("peak_price") or entry)
+        p["pnl_pct_live"] = round((last / entry - 1) * 100, 2) if entry > 0 else 0.0
+        p["dd_pct_live"] = round((last / peak - 1) * 100, 2) if peak > 0 else 0.0
+        p["age_min"] = round((now - float(p.get("opened_ts") or now)) / 60, 1)
+    reasons: dict[str, int] = {}
+    for t in trades:
+        r = t.get("exit_reason", "?")
+        reasons[r] = reasons.get(r, 0) + 1
+    wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
+    summary = {
+        "balance": round(float(state.get("balance") or 0.0), 2),
+        "start_balance": state.get("start_balance"),
+        "realized_pnl": round(float(state.get("realized_pnl") or 0.0), 2),
+        "equity": _live_equity(state),
+        "open_slots": len(positions),
+        "trades_total": len(trades),
+        "wins": wins,
+        "win_rate_pct": round(wins / len(trades) * 100, 1) if trades else None,
+        "exit_reasons": reasons,
+        "since": state.get("updated_at"),
+        "created_ts": float(state.get("created_ts") or 0.0),
+        "oldest_slot_hours": round(max(p["age_min"] for p in positions) / 60, 1) if positions else None,
+    }
+    if evren is not None:
+        summary["universe_n"] = len(evren.get("tokens") or [])
+        summary["universe_at"] = evren.get("updated_at")
+        summary["universe_symbols"] = [t.get("symbol") for t in (evren.get("tokens") or [])]
+    if state:
+        _equity_append(data_dir, prefix, summary["equity"])
+    return {
+        "summary": summary,
+        "positions": positions,
+        "trades": list(reversed(trades[-min(limit, 200):])),
+    }
+
+
+@app.get("/api/filo")
+def api_filo(limit: int = Query(30)) -> dict:
+    """AKTIF filo TEK tick: bes motor + kiyas satiri tek geciste, tek 'now' ile.
+
+    Panel senkron ilkesi: /momentum sayfasindaki her gosterge (ozetler, MTM ve
+    slot rozetleri, kiyas satiri, chartlarin canli uc noktasi) bu tek cevaptan
+    basilir; ayri fetch / ayri an / ikinci hesap yok.
+    """
+    data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
+    now = time.time()
+    evren = _oku_json(data_dir / "m1_universe.json")
+    out: dict = {"ts": round(now, 3)}
+    for prefix in ("v6", "v7", "x1"):
+        out[prefix] = _motor_ozet(data_dir, prefix, now, limit)
+    for prefix in ("m1", "m2"):
+        out[prefix] = _motor_ozet(data_dir, prefix, now, limit, evren=evren)
+    out["cmp"] = {p: out[p]["summary"]["realized_pnl"]
+                  for p in ("v6", "v7", "x1", "m1", "m2")}
+    return out
+
+
 @app.get("/api/momentum/equity")
 def api_momentum_equity(minutes: int = Query(0, ge=0)) -> dict:
     return _equity_series("momentum", minutes)
@@ -855,55 +953,7 @@ def api_v5(limit: int = Query(50)) -> dict:
 def api_v6(limit: int = Query(50)) -> dict:
     """V6 senaryo gözlemi (güçlendirilmiş gölge: rejim 0.5 + hızlı göz) — v6_* dosyaları."""
     data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
-    state: dict = {}
-    sp = data_dir / "v6_state.json"
-    if sp.exists():
-        try:
-            state = json.loads(sp.read_text())
-        except Exception:
-            state = {}
-    trades: list[dict] = []
-    tp = data_dir / "v6_trades.jsonl"
-    if tp.exists():
-        for ln in tp.read_text().splitlines():
-            if not ln.strip():
-                continue
-            try:
-                trades.append(json.loads(ln))
-            except ValueError:
-                continue
-    positions = list(state.get("positions", []))
-    for p in positions:
-        entry = float(p.get("entry_price") or 0.0)
-        last = float(p.get("last_price") or entry)
-        p["pnl_pct_live"] = round((last / entry - 1) * 100, 2) if entry > 0 else 0.0
-        p["age_min"] = round((time.time() - float(p.get("opened_ts") or time.time())) / 60, 1)
-    balance = float(state.get("balance") or 0.0)
-    reasons: dict[str, int] = {}
-    for t in trades:
-        r = t.get("exit_reason", "?")
-        reasons[r] = reasons.get(r, 0) + 1
-    wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
-    if state:
-        _equity_append(data_dir, "v6", _live_equity(state))
-    return {
-        "summary": {
-            "balance": round(balance, 2),
-            "start_balance": state.get("start_balance"),
-            "realized_pnl": round(float(state.get("realized_pnl") or 0.0), 2),
-            "equity": _live_equity(state),
-            "open_slots": len(positions),
-            "trades_total": len(trades),
-            "wins": wins,
-            "win_rate_pct": round(wins / len(trades) * 100, 1) if trades else None,
-            "exit_reasons": reasons,
-            "since": state.get("updated_at"),
-            "created_ts": float(state.get("created_ts") or 0.0),
-            "oldest_slot_hours": round(max(p["age_min"] for p in positions) / 60, 1) if positions else None,
-        },
-        "positions": positions,
-        "trades": list(reversed(trades[-min(limit, 200):])),
-    }
+    return _motor_ozet(data_dir, "v6", time.time(), limit)
 
 
 @app.get("/api/v7")
@@ -913,67 +963,13 @@ def api_v7(limit: int = Query(50)) -> dict:
     Kıyas: her aktif motorun KENDİ başlangıç anından bu yana realized PnL'i.
     """
     data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
-    state: dict = {}
-    sp = data_dir / "v7_state.json"
-    if sp.exists():
-        try:
-            state = json.loads(sp.read_text())
-        except Exception:
-            state = {}
-    trades: list[dict] = []
-    tp = data_dir / "v7_trades.jsonl"
-    if tp.exists():
-        for ln in tp.read_text().splitlines():
-            if not ln.strip():
-                continue
-            try:
-                trades.append(json.loads(ln))
-            except ValueError:
-                continue
-    positions = list(state.get("positions", []))
-    for p in positions:
-        entry = float(p.get("entry_price") or 0.0)
-        last = float(p.get("last_price") or entry)
-        p["pnl_pct_live"] = round((last / entry - 1) * 100, 2) if entry > 0 else 0.0
-        p["age_min"] = round((time.time() - float(p.get("opened_ts") or time.time())) / 60, 1)
-    balance = float(state.get("balance") or 0.0)
-
-    def _realized_of(name: str) -> float | None:
-        p = data_dir / name
-        if not p.exists():
-            return None
-        try:
-            return round(float(json.loads(p.read_text()).get("realized_pnl") or 0.0), 2)
-        except Exception:
-            return None
-
-    reasons: dict[str, int] = {}
-    for t in trades:
-        r = t.get("exit_reason", "?")
-        reasons[r] = reasons.get(r, 0) + 1
-    wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
-    if state:
-        _equity_append(data_dir, "v7", _live_equity(state))
-    return {
-        "summary": {
-            "balance": round(balance, 2),
-            "start_balance": state.get("start_balance"),
-            "realized_pnl": round(float(state.get("realized_pnl") or 0.0), 2),
-            "equity": _live_equity(state),
-            "open_slots": len(positions),
-            "trades_total": len(trades),
-            "wins": wins,
-            "win_rate_pct": round(wins / len(trades) * 100, 1) if trades else None,
-            "exit_reasons": reasons,
-            "since": state.get("updated_at"),
-            "created_ts": float(state.get("created_ts") or 0.0),
-            "v4_realized": _realized_of("v4_state.json"),
-            "v6_realized": _realized_of("v6_state.json"),
-            "golge_realized": _realized_of("golge_state.json"),
-        },
-        "positions": positions,
-        "trades": list(reversed(trades[-min(limit, 200):])),
-    }
+    d = _motor_ozet(data_dir, "v7", time.time(), limit)
+    d["summary"].update({
+        "v4_realized": _realized_of(data_dir, "v4_state.json"),
+        "v6_realized": _realized_of(data_dir, "v6_state.json"),
+        "golge_realized": _realized_of(data_dir, "golge_state.json"),
+    })
+    return d
 
 
 @app.get("/api/v8")
@@ -1126,72 +1122,16 @@ def api_x1(limit: int = Query(50)) -> dict:
     Kıyas: her aktif motorun KENDİ başlangıç anından bu yana realized PnL'i.
     """
     data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
-    state: dict = {}
-    sp = data_dir / "x1_state.json"
-    if sp.exists():
-        try:
-            state = json.loads(sp.read_text())
-        except Exception:
-            state = {}
-    trades: list[dict] = []
-    tp = data_dir / "x1_trades.jsonl"
-    if tp.exists():
-        for ln in tp.read_text().splitlines():
-            if not ln.strip():
-                continue
-            try:
-                trades.append(json.loads(ln))
-            except ValueError:
-                continue
-    positions = list(state.get("positions", []))
-    for p in positions:
-        entry = float(p.get("entry_price") or 0.0)
-        last = float(p.get("last_price") or entry)
-        peak = float(p.get("peak_price") or entry)
-        p["pnl_pct_live"] = round((last / entry - 1) * 100, 2) if entry > 0 else 0.0
-        p["dd_pct_live"] = round((last / peak - 1) * 100, 2) if peak > 0 else 0.0
-        p["age_min"] = round((time.time() - float(p.get("opened_ts") or time.time())) / 60, 1)
-    balance = float(state.get("balance") or 0.0)
-
-    def _realized_of(name: str) -> float | None:
-        p = data_dir / name
-        if not p.exists():
-            return None
-        try:
-            return round(float(json.loads(p.read_text()).get("realized_pnl") or 0.0), 2)
-        except Exception:
-            return None
-
-    reasons: dict[str, int] = {}
-    for t in trades:
-        r = t.get("exit_reason", "?")
-        reasons[r] = reasons.get(r, 0) + 1
-    wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
-    if state:
-        _equity_append(data_dir, "x1", _live_equity(state))
-    return {
-        "summary": {
-            "balance": round(balance, 2),
-            "start_balance": state.get("start_balance"),
-            "realized_pnl": round(float(state.get("realized_pnl") or 0.0), 2),
-            "equity": _live_equity(state),
-            "open_slots": len(positions),
-            "trades_total": len(trades),
-            "wins": wins,
-            "win_rate_pct": round(wins / len(trades) * 100, 1) if trades else None,
-            "exit_reasons": reasons,
-            "since": state.get("updated_at"),
-            "created_ts": float(state.get("created_ts") or 0.0),
-            "v4_realized": _realized_of("v4_state.json"),
-            "v6_realized": _realized_of("v6_state.json"),
-            "v7_realized": _realized_of("v7_state.json"),
-            "v8_realized": _realized_of("v8_state.json"),
-            "v9_realized": _realized_of("v9_state.json"),
-            "golge_realized": _realized_of("golge_state.json"),
-        },
-        "positions": positions,
-        "trades": list(reversed(trades[-min(limit, 200):])),
-    }
+    d = _motor_ozet(data_dir, "x1", time.time(), limit)
+    d["summary"].update({
+        "v4_realized": _realized_of(data_dir, "v4_state.json"),
+        "v6_realized": _realized_of(data_dir, "v6_state.json"),
+        "v7_realized": _realized_of(data_dir, "v7_state.json"),
+        "v8_realized": _realized_of(data_dir, "v8_state.json"),
+        "v9_realized": _realized_of(data_dir, "v9_state.json"),
+        "golge_realized": _realized_of(data_dir, "golge_state.json"),
+    })
+    return d
 
 
 @app.get("/api/v10")
@@ -1252,65 +1192,8 @@ def api_v10(limit: int = Query(50)) -> dict:
 def api_m1(limit: int = Query(50)) -> dict:
     """M1 senaryo gözlemi (major evren) - m1_* dosyalarından okur."""
     data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
-    state: dict = {}
-    sp = data_dir / "m1_state.json"
-    if sp.exists():
-        try:
-            state = json.loads(sp.read_text())
-        except Exception:
-            state = {}
-    trades: list[dict] = []
-    tp = data_dir / "m1_trades.jsonl"
-    if tp.exists():
-        for ln in tp.read_text().splitlines():
-            if not ln.strip():
-                continue
-            try:
-                trades.append(json.loads(ln))
-            except ValueError:
-                continue
-    positions = list(state.get("positions", []))
-    for p in positions:
-        entry = float(p.get("entry_price") or 0.0)
-        last = float(p.get("last_price") or entry)
-        p["pnl_pct_live"] = round((last / entry - 1) * 100, 2) if entry > 0 else 0.0
-        p["age_min"] = round((time.time() - float(p.get("opened_ts") or time.time())) / 60, 1)
-    balance = float(state.get("balance") or 0.0)
-    universe: dict = {}
-    up = data_dir / "m1_universe.json"
-    if up.exists():
-        try:
-            universe = json.loads(up.read_text())
-        except Exception:
-            universe = {}
-    reasons: dict[str, int] = {}
-    for t in trades:
-        r = t.get("exit_reason", "?")
-        reasons[r] = reasons.get(r, 0) + 1
-    wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
-    if state:
-        _equity_append(data_dir, "m1", _live_equity(state))
-    return {
-        "summary": {
-            "balance": round(balance, 2),
-            "start_balance": state.get("start_balance"),
-            "realized_pnl": round(float(state.get("realized_pnl") or 0.0), 2),
-            "equity": _live_equity(state),
-            "open_slots": len(positions),
-            "trades_total": len(trades),
-            "wins": wins,
-            "win_rate_pct": round(wins / len(trades) * 100, 1) if trades else None,
-            "exit_reasons": reasons,
-            "since": state.get("updated_at"),
-            "created_ts": float(state.get("created_ts") or 0.0),
-            "universe_n": len(universe.get("tokens") or []),
-            "universe_at": universe.get("updated_at"),
-            "universe_symbols": [t.get("symbol") for t in (universe.get("tokens") or [])],
-            "oldest_slot_hours": round(max(p["age_min"] for p in positions) / 60, 1) if positions else None,
-        },
-        "positions": positions,
-        "trades": list(reversed(trades[-min(limit, 200):])),
-    }
+    evren = _oku_json(data_dir / "m1_universe.json")
+    return _motor_ozet(data_dir, "m1", time.time(), limit, evren=evren)
 
 
 @app.get("/api/m2")
@@ -1320,84 +1203,20 @@ def api_m2(limit: int = Query(50)) -> dict:
     Kıyas: her aktif motorun KENDİ başlangıç anından bu yana realized PnL'i.
     """
     data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
-    state: dict = {}
-    sp = data_dir / "m2_state.json"
-    if sp.exists():
-        try:
-            state = json.loads(sp.read_text())
-        except Exception:
-            state = {}
-    trades: list[dict] = []
-    tp = data_dir / "m2_trades.jsonl"
-    if tp.exists():
-        for ln in tp.read_text().splitlines():
-            if not ln.strip():
-                continue
-            try:
-                trades.append(json.loads(ln))
-            except ValueError:
-                continue
-    positions = list(state.get("positions", []))
-    for p in positions:
-        entry = float(p.get("entry_price") or 0.0)
-        last = float(p.get("last_price") or entry)
-        p["pnl_pct_live"] = round((last / entry - 1) * 100, 2) if entry > 0 else 0.0
-        p["age_min"] = round((time.time() - float(p.get("opened_ts") or time.time())) / 60, 1)
-    balance = float(state.get("balance") or 0.0)
-    universe: dict = {}
-    up = data_dir / "m1_universe.json"  # evren M1 ile ortak dosya
-    if up.exists():
-        try:
-            universe = json.loads(up.read_text())
-        except Exception:
-            universe = {}
-    reasons: dict[str, int] = {}
-    for t in trades:
-        r = t.get("exit_reason", "?")
-        reasons[r] = reasons.get(r, 0) + 1
-    wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
-    if state:
-        _equity_append(data_dir, "m2", _live_equity(state))
-
-    def _realized_of(name: str) -> float | None:
-        p = data_dir / name
-        if not p.exists():
-            return None
-        try:
-            return round(float(json.loads(p.read_text()).get("realized_pnl") or 0.0), 2)
-        except Exception:
-            return None
-
-    return {
-        "summary": {
-            "balance": round(balance, 2),
-            "start_balance": state.get("start_balance"),
-            "realized_pnl": round(float(state.get("realized_pnl") or 0.0), 2),
-            "equity": _live_equity(state),
-            "open_slots": len(positions),
-            "trades_total": len(trades),
-            "wins": wins,
-            "win_rate_pct": round(wins / len(trades) * 100, 1) if trades else None,
-            "exit_reasons": reasons,
-            "since": state.get("updated_at"),
-            "created_ts": float(state.get("created_ts") or 0.0),
-            "universe_n": len(universe.get("tokens") or []),
-            "universe_at": universe.get("updated_at"),
-            "universe_symbols": [t.get("symbol") for t in (universe.get("tokens") or [])],
-            "oldest_slot_hours": round(max(p["age_min"] for p in positions) / 60, 1) if positions else None,
-            "v6_realized": _realized_of("v6_state.json"),
-            "v7_realized": _realized_of("v7_state.json"),
-            "x1_realized": _realized_of("x1_state.json"),
-            "m1_realized": _realized_of("m1_state.json"),
-        },
-        "positions": positions,
-        "trades": list(reversed(trades[-min(limit, 200):])),
-    }
+    evren = _oku_json(data_dir / "m1_universe.json")  # evren M1 ile ortak dosya
+    d = _motor_ozet(data_dir, "m2", time.time(), limit, evren=evren)
+    d["summary"].update({
+        "v6_realized": _realized_of(data_dir, "v6_state.json"),
+        "v7_realized": _realized_of(data_dir, "v7_state.json"),
+        "x1_realized": _realized_of(data_dir, "x1_state.json"),
+        "m1_realized": _realized_of(data_dir, "m1_state.json"),
+    })
+    return d
 
 
 @app.get("/momentum", response_class=HTMLResponse)
 def momentum_page() -> str:
-    """Momentum modu mini paneli — /api/momentum'u 5sn'de bir yeniler."""
+    """Momentum modu mini paneli — aktif filo /api/filo'dan 5sn'de bir, TEK poll."""
     return """<!doctype html>
 <html lang="tr"><head><meta charset="utf-8"><title>Momentum v2</title>
 <style>
@@ -1419,33 +1238,35 @@ def momentum_page() -> str:
    padding:1px 8px;border-radius:10px;background:#21262d;color:#8b949e}
  .slotbadge.b24{background:#9e6a03;color:#fff}
  .slotbadge.b48{background:#da3633;color:#fff}
+ .updlabel{font-size:11px;font-weight:normal;color:#8b949e;margin-left:10px}
+ .updlabel.stale{color:#f85149}
  @media(max-width:600px){.eqwrap{height:220px}}
 </style></head><body>
 <h2>AKTİF YARIŞ · v6 / v7 / x1 / m1 / m2</h2>
 <div id="cmp3" style="margin:4px 0 12px">yükleniyor…</div>
-<h2>V6 Senaryo (sanal, güçlendirilmiş gölge: liq&ge;$100k · h1 10..50 · tp+2 · 30dk sabır, stop-2 · 60dk tavan · rejim sol_h1&ge;0.5 · hızlı göz 2s)</h2>
+<h2>V6 Senaryo (sanal, güçlendirilmiş gölge: liq&ge;$100k · h1 10..50 · tp+2 · 30dk sabır, stop-2 · 60dk tavan · rejim sol_h1&ge;0.5 · hızlı göz 2s) <span id="v6upd" class="updlabel"></span></h2>
 <div id="v6mtm" class="mtm">yükleniyor…</div>
 <div id="v6sum">yükleniyor…</div>
 <table id="v6tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
 <th>mfe%</th><th>mae%</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th><th>hold sn</th>
 <th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>V7 Senaryo (sanal, -%10 felaket freni · sabır iptal, anında sat · rejim sol_h1&ge;0.5)</h2>
+<h2>V7 Senaryo (sanal, -%10 felaket freni · sabır iptal, anında sat · rejim sol_h1&ge;0.5) <span id="v7upd" class="updlabel"></span></h2>
 <div id="v7sum">yükleniyor…</div>
 <table id="v7tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
 <th>mfe%</th><th>mae%</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th><th>hold sn</th>
 <th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>X1 Senaryo (sanal, koşucu avcısı: h1&ge;50 + m5&gt;0 + liq&ge;$20k · bilet&le;$70 · yarım tp mfe&ge;+15 · trail -18 · 6sa tavan)</h2>
+<h2>X1 Senaryo (sanal, koşucu avcısı: h1&ge;50 + m5&gt;0 + liq&ge;$20k · bilet&le;$70 · yarım tp mfe&ge;+15 · trail -18 · 6sa tavan) <span id="x1upd" class="updlabel"></span></h2>
 <div id="x1sum">yükleniyor…</div>
 <table id="x1tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
 <th>mfe%</th><th>mae%</th><th>nefes</th><th>en derin%</th><th>chg_m5</th><th>chg_h1</th>
 <th>liq $</th><th>hold dk</th><th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>M1 Senaryo (sanal, MAJOR evren: liq&ge;$3M · h1 1.5..15, m5 sıralı · rejim sol_h1&ge;0.3 · tp+1.2 / fren -4 / 20dk sabır stop -1.5 / 90dk tavan)</h2>
+<h2>M1 Senaryo (sanal, MAJOR evren: liq&ge;$3M · h1 1.5..15, m5 sıralı · rejim sol_h1&ge;0.3 · tp+1.2 / fren -4 / 20dk sabır stop -1.5 / 90dk tavan) <span id="m1upd" class="updlabel"></span></h2>
 <div id="m1mtm" class="mtm">yükleniyor…</div>
 <div id="m1sum">yükleniyor…</div>
 <table id="m1tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
 <th>mfe%</th><th>mae%</th><th>chg_m5</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th>
 <th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>M2 Senaryo (sanal, MAJOR evren: liq&ge;$3M · h1 1.5..15, h1 sıralı · saf tp+1.2 · stop/timeout/rejim/cooldown YOK)</h2>
+<h2>M2 Senaryo (sanal, MAJOR evren: liq&ge;$3M · h1 1.5..15, h1 sıralı · saf tp+1.2 · stop/timeout/rejim/cooldown YOK) <span id="m2upd" class="updlabel"></span></h2>
 <div id="m2mtm" class="mtm">yükleniyor…</div>
 <div id="m2sum">yükleniyor…</div>
 <table id="m2tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
@@ -1579,8 +1400,7 @@ async function arsivV4(){
 }
 
 // ---- AKTIF: V6 (guclendirilmis golge: rejim 0.5 + hizli goz) ---------------------
-async function v6tick(){
-  let d; try{const r=await fetch("/api/v6?limit=30"); d=await r.json();}catch(e){return;}
+function basV6(d){
   const s=d.summary;
   document.getElementById("v6mtm").innerHTML=mtmSatir(s);
   document.getElementById("v6sum").innerHTML=
@@ -1599,11 +1419,9 @@ async function v6tick(){
     `<td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
     `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
 }
-v6tick(); setInterval(v6tick,5000);
 
 // ---- AKTIF: V7 (-%10 fren + rejim 0.5) ------------------------------------------
-async function v7tick(){
-  let d; try{const r=await fetch("/api/v7?limit=30"); d=await r.json();}catch(e){return;}
+function basV7(d){
   const s=d.summary;
   document.getElementById("v7sum").innerHTML=
     `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
@@ -1621,7 +1439,6 @@ async function v7tick(){
     `<td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
     `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
 }
-v7tick(); setInterval(v7tick,5000);
 
 // ---- ARSIV: V8 (donuk, acilinca bir kez) ----------------------------------------
 async function arsivV8(){
@@ -1660,8 +1477,7 @@ async function arsivV9(){
 }
 
 // ---- AKTIF: X1 (kosucu avcisi) ------------------------------------------------------
-async function x1tick(){
-  let d; try{const r=await fetch("/api/x1?limit=30"); d=await r.json();}catch(e){return;}
+function basX1(d){
   const s=d.summary;
   document.getElementById("x1sum").innerHTML=
     `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
@@ -1680,7 +1496,6 @@ async function x1tick(){
     `<td>${f(t.chg_m5,1)}</td><td>${f(t.chg_h1,1)}</td><td>${f(t.liq_entry,0)}</td>`+
     `<td>${f(t.hold_sec/60,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=13>henüz yok</td></tr>";
 }
-x1tick(); setInterval(x1tick,5000);
 
 // ---- ARSIV: V10 (donuk, acilinca bir kez) -------------------------------------------
 async function arsivV10(){
@@ -1708,8 +1523,7 @@ function mtmSatir(s){
     `<span class="slotbadge ${osh>48?"b48":(osh>24?"b24":"")}">en yaşlı slot ${f(osh,1)}s</span>`;
   return `MTM <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b>${badge}`;
 }
-async function m1tick(){
-  let d; try{const r=await fetch("/api/m1?limit=30"); d=await r.json();}catch(e){return;}
+function basM1(d){
   const s=d.summary;
   document.getElementById("m1mtm").innerHTML=mtmSatir(s);
   document.getElementById("m1sum").innerHTML=
@@ -1728,19 +1542,18 @@ async function m1tick(){
     `<td>${f(t.chg_h1,2)}</td><td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
     `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=12>henüz yok</td></tr>";
 }
-m1tick(); setInterval(m1tick,5000);
 
-// ---- AKTIF: M2 (major saf tp) + dortlu kiyas satiri ---------------------------------
-async function m2tick(){
-  let d; try{const r=await fetch("/api/m2?limit=30"); d=await r.json();}catch(e){return;}
+// ---- AKTIF: M2 (major saf tp) + besli kiyas satiri ----------------------------------
+function basM2(d,c){
   const s=d.summary;
+  // kiyas satiri ayni /api/filo cevabinin cmp blogundan: ikinci okuma/hesap yok
   document.getElementById("cmp3").innerHTML=
     `<span>Kümülatif realized PnL (her motor kendi başlangıcından): `+
-    `v6 <b class="${cls(s.v6_realized)}">$${f(s.v6_realized)}</b> · `+
-    `v7 <b class="${cls(s.v7_realized)}">$${f(s.v7_realized)}</b> · `+
-    `x1 <b class="${cls(s.x1_realized)}">$${f(s.x1_realized)}</b> · `+
-    `m1 <b class="${cls(s.m1_realized)}">$${f(s.m1_realized)}</b> · `+
-    `m2 <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`;
+    `v6 <b class="${cls(c.v6)}">$${f(c.v6)}</b> · `+
+    `v7 <b class="${cls(c.v7)}">$${f(c.v7)}</b> · `+
+    `x1 <b class="${cls(c.x1)}">$${f(c.x1)}</b> · `+
+    `m1 <b class="${cls(c.m1)}">$${f(c.m1)}</b> · `+
+    `m2 <b class="${cls(c.m2)}">$${f(c.m2)}</b></span>`;
   document.getElementById("m2mtm").innerHTML=mtmSatir(s);
   document.getElementById("m2sum").innerHTML=
     `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
@@ -1758,7 +1571,27 @@ async function m2tick(){
     `<td>${f(t.chg_h1,2)}</td><td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
     `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=12>henüz yok</td></tr>";
 }
-m2tick(); setInterval(m2tick,5000);
+
+// ---- AKTIF FILO: TEK poll, TEK hesap (/api/filo) ------------------------------------
+// Senkron ilkesi: bes motorun ozetleri, MTM/slot rozetleri, kiyas satiri ve
+// chartlarin canli uc noktasi AYNI cevaptan basilir; ayri fetch/ayri an yok.
+let filoSonMs=0;
+function updEtiket(){
+  const sn=filoSonMs?Math.round((Date.now()-filoSonMs)/1000):null;
+  const txt=sn==null?"son güncelleme: -":`son güncelleme: ${sn} sn önce`;
+  for(const id of ["v6upd","v7upd","x1upd","m1upd","m2upd"]){
+    const e=document.getElementById(id);
+    if(e){e.textContent=txt;e.classList.toggle("stale",sn!=null&&sn>15);}
+  }
+}
+setInterval(updEtiket,1000);
+async function filoTick(){
+  let d; try{const r=await fetch("/api/filo?limit=30"); d=await r.json();}catch(e){return;}
+  filoSonMs=Date.now();
+  basV6(d.v6); basV7(d.v7); basX1(d.x1); basM1(d.m1); basM2(d.m2,d.cmp);
+  updEtiket();
+}
+filoTick(); setInterval(filoTick,5000);
 
 // ---- ARSIV: v2/v3/v5, katlanir bolum acilinca BIR kez yuklenir (donuk) ----------
 async function arsivV2(){
