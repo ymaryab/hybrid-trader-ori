@@ -33,6 +33,7 @@ import httpx
 
 from hibrit_trader.config import API, GAS_COST_USD
 from hibrit_trader.dexscreener_scan import pair_from_dexscreener
+from hibrit_trader.fast_price import get_feed
 from hibrit_trader.killswitch import is_active as kill_is_active
 from hibrit_trader.live_sim import fetch_pool_price
 from hibrit_trader.m1_session import (
@@ -61,6 +62,8 @@ START_BALANCE = float(os.getenv("M2_START_BALANCE", "1000"))
 TP_PCT = 1.2            # TEK cikis kurali: +%1.2 gorunce sat
 # M1 kapaliysa evren tazelemeyi M2 devralir; 30dk pay M1'e oncelik verir
 UNIVERSE_TAKEOVER_SEC = UNIVERSE_REFRESH_SEC + 1800
+# Hizli cikis kadansi: 30s tam tick arasinda fast feed'ten tp kontrolu
+EXIT_INTERVAL_SEC = float(os.getenv("M_EXIT_INTERVAL_SEC", "2"))
 
 STATE_FILE = "m2_state.json"
 TRADES_FILE = "m2_trades.jsonl"
@@ -249,7 +252,18 @@ class M2Engine:
                 self.tick()
             except Exception:
                 log.exception("m2 tick hatasi")
-            time.sleep(SCAN_INTERVAL_SEC)
+            deadline = time.time() + SCAN_INTERVAL_SEC
+            while True:
+                kalan = deadline - time.time()
+                if kalan <= 0:
+                    break
+                time.sleep(min(EXIT_INTERVAL_SEC, kalan))
+                if time.time() >= deadline:
+                    break
+                try:
+                    self.fast_exit_tick()
+                except Exception:
+                    log.exception("m2 hizli cikis tick hatasi")
 
     def tick(self) -> None:
         with httpx.Client(timeout=10.0) as client:
@@ -347,21 +361,57 @@ class M2Engine:
         return True
 
     # ---- Cikis: SADECE tp_1_2 (baska hicbir kural yok) ----------------------------
+    def _eval_position(self, pos: dict, price: float, now: float) -> str | None:
+        """Fiyati isle (last_price/mfe/mae) ve cikis nedeni dondur (yoksa None)."""
+        pos["last_price"] = price
+        entry = pos["entry_price"]
+        pnl_pct = (price / entry - 1) * 100 if entry > 0 else 0.0
+        if pnl_pct > pos["mfe_pct"]:
+            pos["mfe_pct"] = round(pnl_pct, 4)
+        if pnl_pct < pos["mae_pct"]:
+            pos["mae_pct"] = round(pnl_pct, 4)
+        return "tp_1_2" if pnl_pct >= TP_PCT else None
+
     def _manage_exits(self, client: httpx.Client) -> None:
         now = time.time()
+        feed = get_feed()
         for pos in list(self.positions):
-            price = fetch_pool_price(client, pos["chain"], pos["pool_address"])
+            rec = feed.get_price(pos["pool_address"]) if feed is not None else None
+            if rec is not None:
+                price, sample_ts = rec
+                src = "fast"
+            else:
+                price = fetch_pool_price(client, pos["chain"], pos["pool_address"])
+                sample_ts, src = None, "poll"
             if price is None or price <= 0:
                 price = pos["last_price"]
-            pos["last_price"] = price
-            entry = pos["entry_price"]
-            pnl_pct = (price / entry - 1) * 100 if entry > 0 else 0.0
-            if pnl_pct > pos["mfe_pct"]:
-                pos["mfe_pct"] = round(pnl_pct, 4)
-            if pnl_pct < pos["mae_pct"]:
-                pos["mae_pct"] = round(pnl_pct, 4)
-            if pnl_pct >= TP_PCT:
-                self._close_position(pos, price, "tp_1_2", now)
+                sample_ts, src = None, "poll"
+            reason = self._eval_position(pos, price, now)
+            if reason:
+                pos["_price_src"] = src
+                pos["_price_ts"] = sample_ts
+                self._close_position(pos, price, reason, now)
+
+    def fast_exit_tick(self) -> None:
+        """1-2s kadansli tp kontrolu. SADECE fast feed'te taze fiyati olan
+        pozisyonlara bakar; taze fiyat yoksa dokunmaz, 30s tick kapsar
+        (motor hicbir kosulda kor kalmaz). Kapanis olmadikca disk yazilmaz."""
+        if not self.positions:
+            return
+        feed = get_feed()
+        if feed is None:
+            return
+        now = time.time()
+        for pos in list(self.positions):
+            rec = feed.get_price(pos["pool_address"])
+            if rec is None:
+                continue
+            price, sample_ts = rec
+            reason = self._eval_position(pos, price, now)
+            if reason:
+                pos["_price_src"] = "fast"
+                pos["_price_ts"] = sample_ts
+                self._close_position(pos, price, reason, now)
 
     def _close_position(self, pos: dict, price: float, reason: str, now: float) -> None:
         cost = pos["cost_usd"]
@@ -373,6 +423,10 @@ class M2Engine:
         hold_sec = round(now - pos["opened_ts"], 1)
         pnl_pct = (eff_price / pos["entry_price"] - 1) * 100 if pos["entry_price"] > 0 else 0.0
         friction_pct = round(pos.get("entry_slip_pct", 0.0) + slip * 100, 4)
+        # hiz kenari olcumu: fast yolunda tetik gecikmesi = simdi - feed ornek zamani
+        price_src = pos.pop("_price_src", "poll")
+        price_ts = pos.pop("_price_ts", None)
+        tetik_gecikme = round(now - price_ts, 3) if price_ts else None
 
         # v2 hardening deseni: once kayit, sonra mutasyon, aninda save
         self._append_trade({
@@ -396,6 +450,8 @@ class M2Engine:
             "hold_sec": hold_sec,
             "exit_reason": reason,
             "friction_pct": friction_pct,
+            "price_source": price_src,
+            "tetik_gecikme_sec": tetik_gecikme,
             "opened_at": pos["opened_at"],
             "closed_at": _now_iso(),
         })
