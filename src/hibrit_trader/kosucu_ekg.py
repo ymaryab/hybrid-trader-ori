@@ -32,7 +32,7 @@ import httpx
 from hibrit_trader.live_sim import fetch_pool_price
 from hibrit_trader.momentum_session import SCAN_INTERVAL_SEC, _data_dir
 from hibrit_trader.paper import _now_iso
-from hibrit_trader.scanner import scan_all
+from hibrit_trader.scanner import scan_all_cached as scan_all
 
 log = logging.getLogger(__name__)
 
@@ -129,8 +129,8 @@ class KosucuEkg:
     def tick(self) -> None:
         try:
             pairs = scan_all(self.settings.scan_chains)
-        except Exception:
-            log.debug("ekg scan hatasi", exc_info=True)
+        except Exception as e:
+            log.warning("EKG tick atlandi, tarama hatasi: %r", e)
             return
         now = time.time()
         self._expire(now)

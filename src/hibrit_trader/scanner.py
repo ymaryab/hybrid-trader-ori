@@ -1,11 +1,20 @@
 """GeckoTerminal trending tarayıcı — 4 ağda trend havuzları çeker, Pair'e normalize eder.
 
 Ücretsiz, key'siz; rate limit ~30 istek/dk → tarama döngüsü 30-60 sn yeterli.
+
+PAYLASIMLI TARAMA (09 Tem gece): scan_all_cached ile dongu basina TEK tarama.
+Ilk isteyen motor HTTP'yi yapar, digerleri ayni sonucu paylasir (faz adaleti:
+tum motorlar ayni aday listesini gorur, dongu sonundaki motor 429 kurbani
+olmaz). 429'da kisa backoff + tek retry; tarama bos/hatali donerse son iyi
+sonuc SCAN_STALE_MAX_SEC'e kadar telafi olarak kullanilir.
 """
 
 from __future__ import annotations
 
 import logging
+import os
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
@@ -15,6 +24,10 @@ import httpx
 from hibrit_trader.config import API, DEFAULT_SCAN_CHAINS, restrict_chains, solana_only_enabled
 
 log = logging.getLogger(__name__)
+
+BACKOFF_429_SEC = float(os.getenv("SCAN_429_BACKOFF_SEC", "2.5"))
+SCAN_CACHE_SEC = float(os.getenv("SCAN_CACHE_SEC", "20"))
+SCAN_STALE_MAX_SEC = float(os.getenv("SCAN_STALE_MAX_SEC", "90"))
 
 
 @dataclass
@@ -100,6 +113,10 @@ def fetch_trending(client: httpx.Client, chain: str) -> list[Pair]:
         return []
     url = f"{API['geckoterminal']}/networks/{chain}/trending_pools"
     resp = client.get(url, headers={"accept": "application/json"}, timeout=15)
+    if resp.status_code == 429:
+        log.warning("%s trending 429, %.1fs backoff sonrasi tek tekrar", chain, BACKOFF_429_SEC)
+        time.sleep(BACKOFF_429_SEC)
+        resp = client.get(url, headers={"accept": "application/json"}, timeout=15)
     resp.raise_for_status()
     items = resp.json().get("data", [])
     pairs = [parse_pool(chain, item) for item in items]
@@ -174,3 +191,33 @@ def scan_all(chains: tuple[str, ...] | None = None) -> list[Pair]:
         except Exception as e:
             log.warning("Pump.fun feed atlandı: %s", e)
     return merge_pairs(gecko, ds, early, pump)
+
+
+_scan_lock = threading.Lock()
+_scan_cache: dict[tuple[str, ...], tuple[float, list[Pair]]] = {}
+
+
+def scan_all_cached(chains: tuple[str, ...] | None = None) -> list[Pair]:
+    """Dongu basina TEK tarama: taze sonucu paylas, hatada son iyi sonucla telafi."""
+    key = tuple(restrict_chains(chains if chains is not None else DEFAULT_SCAN_CHAINS))
+    now = time.monotonic()
+    with _scan_lock:
+        rec = _scan_cache.get(key)
+        if rec is not None and now - rec[0] <= SCAN_CACHE_SEC and rec[1]:
+            return list(rec[1])
+    try:
+        pairs = scan_all(chains)
+    except Exception as e:
+        log.warning("paylasimli tarama hatasi: %s", e)
+        pairs = []
+    now = time.monotonic()
+    with _scan_lock:
+        if pairs:
+            _scan_cache[key] = (now, list(pairs))
+            return list(pairs)
+        rec = _scan_cache.get(key)
+        if rec is not None and now - rec[0] <= SCAN_STALE_MAX_SEC and rec[1]:
+            log.warning("tarama bos dondu, %.0fs onceki paylasimli sonucla telafi",
+                        now - rec[0])
+            return list(rec[1])
+    return pairs

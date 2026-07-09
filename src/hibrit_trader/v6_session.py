@@ -59,7 +59,7 @@ from hibrit_trader.momentum_session import (
 from hibrit_trader.paper import _now_iso, new_trade_id
 from hibrit_trader.price_sanity import guard_price
 from hibrit_trader.safety import check_token
-from hibrit_trader.scanner import scan_all
+from hibrit_trader.scanner import scan_all_cached as scan_all
 
 log = logging.getLogger(__name__)
 
@@ -231,8 +231,8 @@ class V6Engine:
             return
         try:
             pairs = scan_all(self.settings.scan_chains)
-        except Exception:
-            log.debug("v6 scan hatası", exc_info=True)
+        except Exception as e:
+            log.warning("V6 giris tick atlandi, tarama hatasi: %r", e)
             return
         held = {p["pool_address"] for p in self.positions}
         held |= {p["token_address"] for p in self.positions if p.get("token_address")}
