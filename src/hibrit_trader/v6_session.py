@@ -22,6 +22,11 @@ GÜÇLENDİRME (2026-07-09 yeniden aktivasyon):
           Pozisyon açılınca havuz feed'e dinamik eklenir, kapanınca çıkar.
           Feed yok/bayat ise 30s polling fallback, motor kör kalmaz.
   ÖLÇÜM : trade kaydında price_source (fast/poll) + tetik_gecikme_sec.
+  GİRİŞ TAZE-FİYAT TEYİDİ (09 Tem gece): alım kaydedilmeden hemen önce fiyat
+          tazelenir (fast<=3s -> tek fetch -> tarama, fail-open). Taze fiyat
+          taramanın +%2'den (MOM_ENTRY_FRESH_MAX_PCT) fazla üstündeyse giriş
+          iptal, rejects'e "taze_fiyat_kacti" + 30dk recheck. Kayıt:
+          entry_price_source (fast/fetch/scan) + entry_fresh_fark_pct.
 
 Fill'ler sanal: gerçek fiyat + v2'nin likidite-slippage modeli + gas.
 Kadans v2 ile aynı; 3/8 interval faz kaydırmalı (v2:0, v5:1/8, v3:1/4,
@@ -39,6 +44,7 @@ from pathlib import Path
 import httpx
 
 from hibrit_trader.config import GAS_COST_USD
+from hibrit_trader.entry_fresh import taze_teyit
 from hibrit_trader.fast_price import get_feed
 from hibrit_trader.killswitch import is_active as kill_is_active
 from hibrit_trader.live_sim import fetch_pool_price
@@ -282,17 +288,23 @@ class V6Engine:
             time.sleep(0.2 if self._aggressive else 1.5)
             if not report.ok:
                 continue
-            if self._open_position(pair, budget_each, sol_h1):
+            if self._open_position(pair, budget_each, sol_h1, client=client):
                 empty -= 1
                 held.add(pair.pool_address)
                 held.add(pair.token_address)
 
-    def _open_position(self, pair, usd: float, sol_h1: float | None = None) -> bool:
+    def _open_position(self, pair, usd: float, sol_h1: float | None = None,
+                       client: httpx.Client | None = None) -> bool:
         gas = GAS_COST_USD.get(pair.chain, 0.1)
         if self.balance < usd + gas:
             return False
+        taze = taze_teyit(pair, "V6", client)
+        if taze.iptal:
+            log.warning("V6 GIRIS IPTAL %s: taze fiyat taramanin %%%.2f ustunde (kaynak %s)",
+                        pair.name, taze.fark_pct, taze.kaynak)
+            return False
         slip = _mom_slippage(usd, pair.liquidity_usd)
-        eff_price = pair.price_usd * (1 + slip)
+        eff_price = taze.fiyat * (1 + slip)
         now = time.time()
         pos = {
             "trade_id": new_trade_id(pair.pool_address, now),
@@ -309,6 +321,8 @@ class V6Engine:
             "chg_h1": round(pair.chg_h1, 2),
             "liq_entry": round(pair.liquidity_usd, 2),
             "sol_chg_h1": sol_h1,   # gölgede eksikti: rejim analizi için kaydet
+            "entry_price_source": taze.kaynak,
+            "entry_fresh_fark_pct": taze.fark_pct,
             "entry_slip_pct": round(slip * 100, 4),
             "mfe_pct": 0.0,
             "mae_pct": 0.0,
@@ -414,6 +428,8 @@ class V6Engine:
             "chg_h1": pos["chg_h1"],
             "liq_entry": pos["liq_entry"],
             "sol_chg_h1": pos.get("sol_chg_h1"),
+            "entry_price_source": pos.get("entry_price_source"),
+            "entry_fresh_fark_pct": pos.get("entry_fresh_fark_pct"),
             "cost_usd": round(cost, 4),
             "proceeds_usd": round(proceeds, 4),
             "pnl_usd": round(pnl, 4),

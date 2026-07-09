@@ -17,6 +17,8 @@ def x1_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("MOMENTUM_DATA_DIR", str(tmp_path))
     monkeypatch.setattr("hibrit_trader.killswitch.KILL_FILE", tmp_path / "KILL")
     monkeypatch.delenv("KILL_SWITCH", raising=False)
+    # fast feed testte kapali: giris teyidi gercek thread/HTTP acmasin
+    monkeypatch.setattr("hibrit_trader.fast_price.ENABLED", False)
     return tmp_path
 
 
