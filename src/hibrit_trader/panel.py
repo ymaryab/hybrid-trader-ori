@@ -1323,6 +1323,7 @@ def api_m1(limit: int = Query(50)) -> dict:
             "universe_n": len(universe.get("tokens") or []),
             "universe_at": universe.get("updated_at"),
             "universe_symbols": [t.get("symbol") for t in (universe.get("tokens") or [])],
+            "oldest_slot_hours": round(max(p["age_min"] for p in positions) / 60, 1) if positions else None,
         },
         "positions": positions,
         "trades": list(reversed(trades[-min(limit, 200):])),
@@ -1400,6 +1401,7 @@ def api_m2(limit: int = Query(50)) -> dict:
             "universe_n": len(universe.get("tokens") or []),
             "universe_at": universe.get("updated_at"),
             "universe_symbols": [t.get("symbol") for t in (universe.get("tokens") or [])],
+            "oldest_slot_hours": round(max(p["age_min"] for p in positions) / 60, 1) if positions else None,
             "v7_realized": _realized_of("v7_state.json"),
             "x1_realized": _realized_of("x1_state.json"),
             "m1_realized": _realized_of("m1_state.json"),
@@ -1428,6 +1430,11 @@ def momentum_page() -> str:
  .eqbtns button.act{background:#1f6feb;color:#fff;border-color:#1f6feb}
  .eqwrap{position:relative;width:100%;height:280px;margin-bottom:16px}
  .eqlabel{color:#8b949e;margin:8px 0 2px} .eqlabel b{color:#c9d1d9}
+ .mtm{font-size:24px;margin:2px 0 6px;color:#8b949e}
+ .slotbadge{display:inline-block;font-size:12px;vertical-align:middle;margin-left:12px;
+   padding:1px 8px;border-radius:10px;background:#21262d;color:#8b949e}
+ .slotbadge.b24{background:#9e6a03;color:#fff}
+ .slotbadge.b48{background:#da3633;color:#fff}
  @media(max-width:600px){.eqwrap{height:220px}}
 </style></head><body>
 <h2>AKTİF YARIŞ · v7 / x1 / m1 / m2</h2>
@@ -1443,11 +1450,13 @@ def momentum_page() -> str:
 <th>mfe%</th><th>mae%</th><th>nefes</th><th>en derin%</th><th>chg_m5</th><th>chg_h1</th>
 <th>liq $</th><th>hold dk</th><th>kapanış</th></tr></thead><tbody></tbody></table>
 <h2>M1 Senaryo (sanal, MAJOR evren: liq&ge;$3M · h1 1.5..15, m5 sıralı · rejim sol_h1&ge;0.3 · tp+1.2 / fren -4 / 20dk sabır stop -1.5 / 90dk tavan)</h2>
+<div id="m1mtm" class="mtm">yükleniyor…</div>
 <div id="m1sum">yükleniyor…</div>
 <table id="m1tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
 <th>mfe%</th><th>mae%</th><th>chg_m5</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th>
 <th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table>
 <h2>M2 Senaryo (sanal, MAJOR evren: liq&ge;$3M · h1 1.5..15, h1 sıralı · saf tp+1.2 · stop/timeout/rejim/cooldown YOK)</h2>
+<div id="m2mtm" class="mtm">yükleniyor…</div>
 <div id="m2sum">yükleniyor…</div>
 <table id="m2tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
 <th>mfe%</th><th>mae%</th><th>chg_m5</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th>
@@ -1702,9 +1711,18 @@ async function arsivV10(){
     `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
 }
 
+function mtmSatir(s){
+  // MTM = nakit + acik pozisyonlarin anlik degeri (s.equity, _live_equity ile ayni).
+  // Rozet: kill-criterion'daki 48 saat slot kilidi gozle izlensin (24s sari, 48s kirmizi).
+  const osh=s.oldest_slot_hours;
+  const badge=osh==null?"":
+    `<span class="slotbadge ${osh>48?"b48":(osh>24?"b24":"")}">en yaşlı slot ${f(osh,1)}s</span>`;
+  return `MTM <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b>${badge}`;
+}
 async function m1tick(){
   let d; try{const r=await fetch("/api/m1?limit=30"); d=await r.json();}catch(e){return;}
   const s=d.summary;
+  document.getElementById("m1mtm").innerHTML=mtmSatir(s);
   document.getElementById("m1sum").innerHTML=
     `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
     `<span>realized <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`+
@@ -1733,6 +1751,7 @@ async function m2tick(){
     `x1 <b class="${cls(s.x1_realized)}">$${f(s.x1_realized)}</b> · `+
     `m1 <b class="${cls(s.m1_realized)}">$${f(s.m1_realized)}</b> · `+
     `m2 <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`;
+  document.getElementById("m2mtm").innerHTML=mtmSatir(s);
   document.getElementById("m2sum").innerHTML=
     `<span>bakiye <b>$${f(s.balance)}</b></span><span>equity <b class="${cls(s.equity-s.start_balance)}">$${f(s.equity)}</b></span>`+
     `<span>realized <b class="${cls(s.realized_pnl)}">$${f(s.realized_pnl)}</b></span>`+

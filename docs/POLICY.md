@@ -75,3 +75,5 @@ Tum rakamlar data/*_trades.jsonl'den, kesim noktasi karar commit'i a8da524 (2026
 Kanit major golu gosteriyor (memecoin ~2900 islem -$2243, islem basi -$0.77; major ilk gun +$60). M2 birincil dogrulama adayi. Dogrulama bari: 100+ islem, 5-7 gun, en az bir sol_h1 negatif gun, slot-kilit senaryosu gozlenmis olacak. Kill: islem/gun < 3 ya da 48+ saat slot kilidi = tasarim sorgulanir. M2'ye timeout EKLENMEZ, saflik korunur.
 
 Uygulama (2026-07-09): v4, v9, v10 durduruldu (ENABLED=0, state/trades korunur, panel arsivinde). Aktif filo: M1, M2, v7, X1 (+EKG kaydedici).
+
+v10 KINS vakasi 07 Tem: tp-only sistemlerde realized karne sansurludur (kaybedenler kapanmaz, defterde gorunmez; KINS 3+ gun -%43 acik, realized 4/4 yesilken MTM -$50). M2 dogrulamasi realized ile DEGIL, mark-to-market equity + slot yasi ile okunacak.
