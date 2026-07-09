@@ -31,7 +31,7 @@ from pathlib import Path
 
 import httpx
 
-from hibrit_trader.broker import golge_olcum
+from hibrit_trader.broker import golge_olcum, jupiter_referans_fiyat
 from hibrit_trader.config import API, GAS_COST_USD
 from hibrit_trader.dexscreener_scan import pair_from_dexscreener
 from hibrit_trader.fast_price import get_feed
@@ -53,7 +53,7 @@ from hibrit_trader.momentum_session import (
     _mom_slippage,
 )
 from hibrit_trader.paper import _now_iso, new_trade_id
-from hibrit_trader.price_sanity import guard_price
+from hibrit_trader.price_sanity import MAX_STEP_RATIO, guard_price
 
 log = logging.getLogger(__name__)
 
@@ -180,7 +180,12 @@ class M2Engine:
                 ]
                 if not pairs:
                     continue
-                best = _best_sane_pool(pairs)
+                # Jupiter hakem: bagimsiz gercek-fiyat referansi (fail-closed)
+                ref = jupiter_referans_fiyat(addr)
+                if ref is None:
+                    log.warning("M2 EVREN: %s icin Jupiter hakem yok (fail-closed), disarida", sym)
+                    continue
+                best = _best_sane_pool(pairs, ref_fiyat=ref)
                 if best is None:
                     log.warning("M2 EVREN: %s icin fiyati tutarli havuz yok (veri arizasi), disarida", sym)
                     continue
@@ -195,6 +200,7 @@ class M2Engine:
                     "token_address": addr,
                     "pool_address": str(best.get("pairAddress") or ""),
                     "liq_usd": round(liq, 0),
+                    "ref_fiyat": ref,
                 })
             except Exception:
                 log.debug("m2 universe: %s dogrulanamadi", sym, exc_info=True)
@@ -304,9 +310,17 @@ class M2Engine:
             return
         held = {p["pool_address"] for p in self.positions}
         held |= {p["token_address"] for p in self.positions if p.get("token_address")}
+        refs = {t["token_address"]: float(t.get("ref_fiyat") or 0)
+                for t in self._universe}
         cands = []
         for pr in pairs:
             if pr.pool_address in held or pr.token_address in held or pr.price_usd <= 0:
+                continue
+            ref = refs.get(pr.token_address, 0.0)
+            if ref > 0 and max(pr.price_usd / ref, ref / pr.price_usd) > MAX_STEP_RATIO:
+                log.warning("M2 GIRIS veri_ariza: %s fiyat %.8g hakem referansi "
+                            "(%.8g) ile 5x+ uyumsuz, reject",
+                            pr.name, pr.price_usd, ref)
                 continue
             if pr.liquidity_usd < UNIVERSE_LIQ_MIN:
                 continue  # havuz gun ici boslamis olabilir, slip garantisi icin taze kontrol

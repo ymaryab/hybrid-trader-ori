@@ -37,7 +37,7 @@ from pathlib import Path
 
 import httpx
 
-from hibrit_trader.broker import golge_olcum
+from hibrit_trader.broker import golge_olcum, jupiter_referans_fiyat
 from hibrit_trader.config import API, GAS_COST_USD
 from hibrit_trader.dexscreener_scan import pair_from_dexscreener
 from hibrit_trader.fast_price import get_feed
@@ -108,13 +108,15 @@ TRADES_FILE = "m1_trades.jsonl"
 UNIVERSE_FILE = "m1_universe.json"
 
 
-def _best_sane_pool(pairs: list[dict]) -> dict | None:
+def _best_sane_pool(pairs: list[dict], ref_fiyat: float | None = None) -> dict | None:
     """En likit ama fiyati TUTARLI havuzu sec (evren tazeleme icin).
 
     ORCA vakasi (09 Tem): en likit havuz ($24M, ORCA/JUP) priceUsd'yi ~5000x
-    sapik basiyordu; likiditeye kor guven bozuk havuzu evrene soktu. Referans:
-    stabil kotali (USDC/USDT) havuzlarin medyan fiyati; stabil kota yoksa tum
-    havuzlarin medyani. Referanstan MAX_STEP_RATIO kat+ sapan havuz elenir.
+    sapik basiyordu; likiditeye kor guven bozuk havuzu evrene soktu. Referans
+    oncelik sirasi: (1) ref_fiyat (Jupiter hakem; JTO/PYTH vakasi gosterdi ki
+    stabil kotasiz tokenlerde medyan da bogus cikabiliyor), (2) stabil kotali
+    (USDC/USDT) havuzlarin medyani, (3) tum havuzlarin medyani. Referanstan
+    MAX_STEP_RATIO kat+ sapan havuz elenir.
     """
     import statistics
 
@@ -128,11 +130,14 @@ def _best_sane_pool(pairs: list[dict]) -> dict | None:
             priced.append((p, pr))
     if not priced:
         return None
-    stable = [
-        pr for p, pr in priced
-        if str(((p.get("quoteToken") or {}).get("symbol")) or "").upper() in ("USDC", "USDT")
-    ]
-    ref = statistics.median(stable if stable else [pr for _, pr in priced])
+    if ref_fiyat is not None and ref_fiyat > 0:
+        ref = ref_fiyat
+    else:
+        stable = [
+            pr for p, pr in priced
+            if str(((p.get("quoteToken") or {}).get("symbol")) or "").upper() in ("USDC", "USDT")
+        ]
+        ref = statistics.median(stable if stable else [pr for _, pr in priced])
     if ref <= 0:
         return None
     sane = [(p, pr) for p, pr in priced if max(pr / ref, ref / pr) <= MAX_STEP_RATIO]
@@ -269,7 +274,14 @@ class M1Engine:
                 ]
                 if not pairs:
                     continue
-                best = _best_sane_pool(pairs)
+                # Jupiter hakem: bagimsiz gercek-fiyat referansi (fail-closed).
+                # JTO/PYTH vakasi: stabil kotasiz tokenlerde DexScreener medyani
+                # da bogus cikabiliyor, tek guvenilir referans yurutulebilir quote.
+                ref = jupiter_referans_fiyat(addr)
+                if ref is None:
+                    log.warning("M1 EVREN: %s icin Jupiter hakem yok (fail-closed), disarida", sym)
+                    continue
+                best = _best_sane_pool(pairs, ref_fiyat=ref)
                 if best is None:
                     log.warning("M1 EVREN: %s icin fiyati tutarli havuz yok (veri arizasi), disarida", sym)
                     continue
@@ -284,6 +296,7 @@ class M1Engine:
                     "token_address": addr,
                     "pool_address": str(best.get("pairAddress") or ""),
                     "liq_usd": round(liq, 0),
+                    "ref_fiyat": ref,
                 })
             except Exception:
                 log.debug("m1 universe: %s dogrulanamadi", sym, exc_info=True)
@@ -397,9 +410,17 @@ class M1Engine:
         self._cooldown_until = {
             t: ts for t, ts in self._cooldown_until.items() if ts > now
         }
+        refs = {t["token_address"]: float(t.get("ref_fiyat") or 0)
+                for t in self._universe}
         cands = []
         for pr in pairs:
             if pr.pool_address in held or pr.token_address in held or pr.price_usd <= 0:
+                continue
+            ref = refs.get(pr.token_address, 0.0)
+            if ref > 0 and max(pr.price_usd / ref, ref / pr.price_usd) > MAX_STEP_RATIO:
+                log.warning("M1 GIRIS veri_ariza: %s fiyat %.8g hakem referansi "
+                            "(%.8g) ile 5x+ uyumsuz, reject",
+                            pr.name, pr.price_usd, ref)
                 continue
             if self._cooldown_until.get(pr.token_address, 0.0) > now:
                 continue

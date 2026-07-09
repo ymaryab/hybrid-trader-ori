@@ -237,6 +237,7 @@ class _FakeClient:
 
 def test_universe_refresh_filters_liq_and_persists(m1_data_dir, monkeypatch):
     monkeypatch.setattr(m1.time, "sleep", lambda s: None)
+    monkeypatch.setattr(m1, "jupiter_referans_fiyat", lambda addr: 1.0)
     seeds = dict(list(m1.SEED_TOKENS.items())[:3])
     monkeypatch.setattr(m1, "SEED_TOKENS", seeds)
     addrs = list(seeds.values())

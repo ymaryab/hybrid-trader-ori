@@ -422,6 +422,19 @@ def _golge_worker(engine: str, yon: str, token_address: str, paper_fiyat: float,
         log.warning("GOLGE olcum hatasi (%s %s): %s", engine, yon, e)
 
 
+def jupiter_referans_fiyat(token_address: str, usd: float = 100.0) -> float | None:
+    """Bagimsiz gercek-fiyat hakemi: Jupiter'den kucuk bir alis quote'u alip
+    birim fiyati dondurur. Hata/eksik veri durumunda None (fail-closed:
+    cagiran taraf hakem yoksa guvenme kararini kendi verir)."""
+    try:
+        q, _neden = _get_golge_broker()._quote(token_address, "al", usd,
+                                               slippage_bps=100)
+        return q.fiyat if q is not None else None
+    except Exception as e:
+        log.warning("HAKEM: Jupiter referans alinamadi %s: %s", token_address[:8], e)
+        return None
+
+
 def golge_olcum(engine: str, yon: str, token_address: str, paper_fiyat: float, *,
                 usd: float | None = None, amount_token: float | None = None) -> None:
     """Paper fill aninda arka planda Jupiter quote alip kiyas loglar.

@@ -89,3 +89,15 @@ Dersler ve alinan onlemler:
 - Likiditeye kor guven de yok. Evren tazelemede havuz secimi stabil-kota referansli (_best_sane_pool): USDC/USDT havuzlarinin medyan fiyatindan 5x+ sapan havuz evrene giremez. ORCA'yi sokan sey "en likit havuz" kuralinin sorgusuzluguydu.
 - ORCA evrenden cikarildi. Saglikli fiyat basan en buyuk havuzu $712k (< $3M evren esigi), ikame havuz yok; kaynak duzelirse gunluk tazeleme dogal olarak geri alir.
 - Rejim fail-closed: sol_h1 alinamazsa giris kapisi KAPALI (eski davranis: filtre atlanirdi). Son basarili deger 10dk'ya kadar gecerli, sonrasi veri yoksa giris yok. Veri kaybi "serbest gecis" degil "dur" demektir.
+
+## Veri arizasi dersi 2: DexScreener MET/JUP kotali havuz carpan arizasi (09 Tem 2026 aksam)
+
+Golge olcum (broker katmani, dryrun_fills.jsonl) devreye girdigi ilk iki kayitta yakaladi: M1'in JTO ve PYTH alislari, Jupiter'in gercek yurutulebilir fiyatindan ~5000x yukarida (fark_bps -9998). Canli dogrulama: DexScreener, MET/JUP kotali havuzlarda priceUsd'yi ~5000x sisik basiyor (JTO/MET 3335 vs gercek 0.64; PYTH/JUP 214.9 vs gercek 0.043; PUMP/MET, BONK/MET ayni). ORCA vakasiyla ayni imza. Stabil-kota medyan referansi burada YETMEDI: JTO/PYTH'nin USDC/USDT havuzu yok, fallback "tum havuzlarin medyani" cogunluk bogus olunca sapik havuzu secti.
+
+Veri-arizasi iptali: DexScreener MET/JUP kotali havuz carpan arizasi, 3 pozisyon veri-arizasi iptali (JTO ve PYTH M1, PYTH M2), strateji kaybi degil. Dorduncu hedef (Bonk M1) iptal penceresinden once timeout_90 ile kendisi kapandi (-$1.25; carpan giris-cikis boyunca tutarli oldugu icin goreli PnL gercekciydi, sahte kayip olusmadi; kayit ORCA emsaline uygun olarak duruyor). Iptal disiplini: state yedeklendi (data/backup_iptal_20260709/), iptal edilenler tum detayla data/iptal_veri_ariza.jsonl'a yazildi, bakiyeye acilis maliyeti (cost + gas) iade edildi (hic acilmamis gibi), trades'e YAZILMADI (karne temiz), cooldown uygulanmadi. Eski ORCA kaydi ders olarak aynen duruyor.
+
+Dersler ve alinan onlemler:
+- Tek guvenilir fiyat referansi YURUTULEBILIR fiyattir (Jupiter quote). Evren tazelemede Jupiter hakem zorunlu (fail-closed): hakem cevap vermezse token evrene giremez; havuz secimi hakem referansindan 5x icinde olmali.
+- Giris kapisinda veri_ariza reddi: tarama fiyati evrendeki hakem referansindan 5x+ sapiyorsa giris yok.
+- Re-base hakem onayina bagli: guard_price'ta 5dk kalici sapma artik otomatik taban degistirmez; Jupiter hakem yeni fiyati onaylamazsa degerleme son gecerli fiyatta kalir, pencere bastan baslar. Onceki tasarimda kalici bogus carpan 5dk sonra taban olur, carpan duzelince sahte -%99 kayip realize olurdu.
+- Golge olcum ayni zamanda veri-guvenilirlik sensorudur: paper fiyat ile Jupiter quote farki buyukse (ornegin |fark_bps| > 3000) once veri arizasi suphesi.
