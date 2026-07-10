@@ -130,7 +130,7 @@ def _open(eng, **kw):
 
 
 def _tick_price(eng, pos, price, now, monkeypatch):
-    monkeypatch.setattr(x1, "fetch_pool_price", lambda c, ch, p: price)
+    monkeypatch.setattr(x1, "fetch_pool_snapshot", lambda c, ch, p: (price, None))
     monkeypatch.setattr(x1.time, "time", lambda: now)
     eng._manage_exits(client=SimpleNamespace())
 

@@ -45,7 +45,7 @@ import httpx
 from hibrit_trader.config import GAS_COST_USD
 from hibrit_trader.entry_fresh import taze_teyit
 from hibrit_trader.killswitch import is_active as kill_is_active
-from hibrit_trader.live_sim import fetch_pool_price
+from hibrit_trader.live_sim import fetch_pool_snapshot
 from hibrit_trader.momentum_session import (
     SCAN_INTERVAL_SEC,
     SOL_H1_CACHE_SEC,
@@ -329,10 +329,10 @@ class X1Engine:
     def _manage_exits(self, client: httpx.Client) -> None:
         now = time.time()
         for pos in list(self.positions):
-            price = fetch_pool_price(client, pos["chain"], pos["pool_address"])
+            price, liq = fetch_pool_snapshot(client, pos["chain"], pos["pool_address"])
             if price is None or price <= 0:
                 price = pos["last_price"]
-            price, ariza = guard_price(pos, price, now, "X1")
+            price, ariza = guard_price(pos, price, now, "X1", liquidity_usd=liq)
             if ariza:
                 continue  # veri arizasi: islem tetikleme, degerleme son gecerli fiyatta
             pos["last_price"] = price

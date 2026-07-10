@@ -136,3 +136,12 @@ Karne gunune kadar UYGULANMAZ; sadece degerlendirme gundemi.
   kadar biriken aksam-verisiyle secilecek.
 - Jotchua-tipi rug kayiplari icin ek onlem YOK karari: kucuk bilet + yarim-tp
   mevcut ve yeterli, bu av sahasinin dogal vergisi.
+
+## Veri arizasi dersi 3: mogcat zombi slotu, likidite-teyitli re-base (10 Tem 2026)
+
+X1'in mogcat slotu GERCEK bir cokuse (rug) yakalandi: havuz likiditesi $29.2k'dan $3.3k'ya indi, gercek fiyat ~100x asagida. Ama fiyat kaynagi arada bir bayat "normal" fiyat (0.0001767) ekosu basti; guard_price her ekoda sapma penceresini sifirladi, 5dk kesintisiz sapma hic olusmadi, hakem re-base ~24 saat tetiklenemedi. Slot zombiye dondu: degerleme bayat fiyatta kaldi, equity ~$42 sisik gosterdi, pozisyon normal cikis kurallarina donemedi. Sapma nihayet 10 Tem'de 326 sn kesintisiz surdu ve hakem onayiyla re-base gerceklesti; yani eski yol SONUNDA calisti ama ~24 saat surdu.
+
+Ders ve alinan onlem:
+- Sapik fiyat ASAGI yonluyse VE havuzun guncel likiditesi giristeki likiditenin %20'si (PRICE_SANITY_LIQ_CRASH_RATIO) altina dusmusse bu veri arizasi degil GERCEK COKUSTUR. Yeni fiyat aninda taban kabul edilir (hakem beklenmez), pozisyon normal cikis kurallarina doner. Likidite verisi GT havuz snapshot'inda zaten var (reserve_in_usd, ayni GET); ek istek yok.
+- Yukari yonlu sapmalar (ORCA/JTO tipi sisik carpan) bu yoldan GECMEZ; hakem onayli re-base aynen surer.
+- Likidite verisi alinamazsa eski hakem yolu aynen isler (davranis degisikligi yok).

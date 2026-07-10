@@ -232,12 +232,82 @@ def test_motor_trade_satirina_yazilir(fresh_env, monkeypatch):
     )
     assert eng._open_position(_pair(), 100.0, sol_h1=0.77)
     pos = eng.positions[0]
-    monkeypatch.setattr(v6, "fetch_pool_price", lambda c, ch, p: pos["entry_price"] * 1.03)
+    monkeypatch.setattr(v6, "fetch_pool_snapshot", lambda c, ch, p: (pos["entry_price"] * 1.03, None))
     monkeypatch.setattr(v6.time, "time", lambda: pos["opened_ts"] + 60)
     eng._manage_exits(client=SimpleNamespace())
     row = json.loads((fresh_env / v6.TRADES_FILE).read_text().splitlines()[-1])
     assert row["entry_price_source"] == "fetch"
     assert row["entry_fresh_fark_pct"] == 1.0
+
+
+# ---- rejim_reject enstrumantasyonu ---------------------------------------------------
+
+def test_rejim_reject_kaydi_ve_kuyruk(fresh_env):
+    ef.rejim_reject_kaydet([_pair(price=1.5)], "V6", 0.12)
+    rows = _rejects(fresh_env)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["type"] == "reject"
+    assert r["reason"] == "rejim_reject"
+    assert r["engine"] == "V6"
+    assert r["sol_chg_h1"] == 0.12
+    assert r["price_usd"] == 1.5
+    assert "FP1" in ef._watch
+    assert ef._watch["FP1"]["reason"] == "rejim_reject"
+    assert ef._watch["FP1"]["price_at_reject"] == 1.5
+
+
+def test_rejim_reject_verisi_yok_sol_h1_none(fresh_env):
+    ef.rejim_reject_kaydet([_pair()], "V7", None)
+    rows = _rejects(fresh_env)
+    assert rows[0]["sol_chg_h1"] is None
+    assert rows[0]["engine"] == "V7"
+
+
+def test_rejim_reject_kuyruktayken_tekrar_yazilmaz(fresh_env):
+    ef.rejim_reject_kaydet([_pair()], "V6", 0.1)
+    ef.rejim_reject_kaydet([_pair()], "V6", 0.2)
+    assert len(_rejects(fresh_env)) == 1  # dedup: ayni havuz kuyruktayken atlanir
+
+
+def test_rejim_reject_tick_basina_en_cok_5(fresh_env):
+    pairs = [_pair(pool=f"P{i}", token=f"T{i}") for i in range(8)]
+    ef.rejim_reject_kaydet(pairs, "V6", 0.1)
+    assert len(_rejects(fresh_env)) == 5
+    assert len(ef._watch) == 5
+
+
+def test_rejim_reject_recheck_satiri(fresh_env, monkeypatch):
+    ef.rejim_reject_kaydet([_pair(price=1.0)], "V6", 0.1)
+    monkeypatch.setattr(ef, "fetch_pool_price", lambda c, ch, p: 1.25)
+    ef._recheck_tick(SimpleNamespace(), now=time.time() + 31 * 60)
+    rows = _rejects(fresh_env)
+    assert rows[-1]["type"] == "recheck_30m"
+    assert rows[-1]["reason"] == "rejim_reject"
+    assert rows[-1]["chg_30m_pct"] == pytest.approx(25.0)
+    assert ef._watch == {}
+
+
+# ---- HuniSayac: gunluk giris-filtre hunisi -------------------------------------------
+
+def test_huni_sayac_gun_donunce_ozet_loglar(caplog):
+    h = ef.HuniSayac("V6")
+    t0 = time.mktime((2026, 7, 10, 12, 0, 0, 0, 0, -1))
+    h.ekle(30, 3, 1, now=t0)
+    h.ekle(25, 2, 0, now=t0 + 60)
+    with caplog.at_level("WARNING"):
+        h.ekle(10, 1, 1, now=t0 + 86400)  # gun dondu: onceki gun ozeti loglanir
+    assert any(
+        "V6 HUNI OZET 2026-07-10: tick=2 aday=55 liq_ok=5 h1_band_ok=1" in m
+        for m in caplog.messages
+    )
+
+
+def test_huni_sayac_ilk_gun_ozet_yok(caplog):
+    h = ef.HuniSayac("V7")
+    with caplog.at_level("WARNING"):
+        h.ekle(5, 1, 0)
+    assert not any("HUNI OZET" in m for m in caplog.messages)
 
 
 def test_x1_yarim_satis_satirina_da_yazilir(fresh_env, monkeypatch):
@@ -248,7 +318,7 @@ def test_x1_yarim_satis_satirina_da_yazilir(fresh_env, monkeypatch):
     )
     assert eng._open_position(_pair(h1=80.0, m5=5.0, liq=60_000.0), 60.0, sol_h1=0.5)
     pos = eng.positions[0]
-    monkeypatch.setattr(x1, "fetch_pool_price", lambda c, ch, p: pos["entry_price"] * 1.20)
+    monkeypatch.setattr(x1, "fetch_pool_snapshot", lambda c, ch, p: (pos["entry_price"] * 1.20, None))
     monkeypatch.setattr(x1.time, "time", lambda: pos["opened_ts"] + 60)
     eng._manage_exits(client=SimpleNamespace())
     rows = [json.loads(x) for x in (fresh_env / x1.TRADES_FILE).read_text().splitlines()]

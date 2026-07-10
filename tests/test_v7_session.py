@@ -19,6 +19,9 @@ def v7_data_dir(tmp_path, monkeypatch):
     monkeypatch.delenv("KILL_SWITCH", raising=False)
     # fast feed testte kapali: giris teyidi gercek thread/HTTP acmasin
     monkeypatch.setattr("hibrit_trader.fast_price.ENABLED", False)
+    # rejim_reject_kaydet: paylasilan kuyruk temiz, gercek daemon thread acilmasin
+    monkeypatch.setattr("hibrit_trader.entry_fresh._watch", {})
+    monkeypatch.setattr("hibrit_trader.entry_fresh._start_recheck_thread", lambda: None)
     return tmp_path
 
 
@@ -75,6 +78,19 @@ def test_entry_golge_rules_preserved(v7_data_dir, monkeypatch):
     assert len(_enter(eng, monkeypatch, _pair(h1=45.0, m5=-5.0), sol_h1=0.5)) == 1  # esik dahil, m5 sarti yok
 
 
+def test_rejim_kapaliyken_reject_kaydi(v7_data_dir, monkeypatch):
+    import hibrit_trader.entry_fresh as ef
+    from hibrit_trader.momentum_session import REJECTS_FILE
+    eng = V7Engine(_settings())
+    assert _enter(eng, monkeypatch, _pair(), sol_h1=0.2) == []
+    rows = [json.loads(x) for x in
+            (v7_data_dir / REJECTS_FILE).read_text().splitlines()]
+    assert rows[-1]["reason"] == "rejim_reject"
+    assert rows[-1]["engine"] == "V7"
+    assert rows[-1]["sol_chg_h1"] == 0.2
+    assert "ZP1" in ef._watch
+
+
 def test_candidates_sorted_highest_h1_first(v7_data_dir, monkeypatch):
     eng = V7Engine(_settings())
     low = _pair(pool="PL", token="TL", h1=12.0)
@@ -97,7 +113,7 @@ def _open(eng, **kw):
 
 
 def _tick_price(eng, pos, price, now, monkeypatch):
-    monkeypatch.setattr(v7, "fetch_pool_price", lambda c, ch, p: price)
+    monkeypatch.setattr(v7, "fetch_pool_snapshot", lambda c, ch, p: (price, None))
     monkeypatch.setattr(v7.time, "time", lambda: now)
     eng._manage_exits(client=SimpleNamespace())
 

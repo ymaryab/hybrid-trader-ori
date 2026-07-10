@@ -18,6 +18,10 @@ Karar (esik MOM_ENTRY_FRESH_MAX_PCT, varsayilan 2.0):
 
 Kayit: motorlar pozisyona ve trade satirina entry_price_source
 (fast/fetch/scan) ve entry_fresh_fark_pct (tarama-taze fark yuzdesi) yazar.
+
+Ek enstrumantasyon (10 Tem): rejim_reject_kaydet (rejim kapaliyken filtreyi
+gecen adaylar + 30dk recheck, "rejim yuzunden ne kacti" olculur) ve HuniSayac
+(gunluk giris-filtre hunisi, aday-yoklugu gunleri olculur).
 """
 
 from __future__ import annotations
@@ -47,6 +51,7 @@ FAST_MAX_AGE_SEC = 3.0          # feed kaydi bundan eskiyse fetch'e dusulur
 RECHECK_POLL_SEC = 30.0         # recheck kuyrugu tarama kadansi
 RECHECK_MAX_PER_TICK = 10       # tick basina en cok 10 GET (yuk siniri)
 WATCH_CAP = 100                 # kuyruk tavani (dosya/istek sismesin)
+REJIM_REJECT_MAX_PER_TICK = 5   # rejim kapali tick'inde en cok 5 aday kaydi
 
 
 @dataclass(frozen=True)
@@ -133,6 +138,84 @@ def _reject_kacti(pair, motor: str, scan_price: float, taze: float, fark: float)
         _start_recheck_thread()
     except Exception:
         log.debug("taze_fiyat_kacti kaydi hatasi", exc_info=True)
+
+
+def rejim_reject_kaydet(cands, motor: str, sol_h1: float | None) -> None:
+    """Rejim kapaliyken diger tum filtreleri GECEN adaylar: reject + 30dk recheck.
+
+    Ayni havuz recheck kuyrugundayken tekrar yazilmaz; rejim uzun sure kapali
+    kalirsa kayit kadansi dogal olarak ~30dk'ya iner.
+    """
+    try:
+        now = time.time()
+        yazilan = False
+        for pair in list(cands)[:REJIM_REJECT_MAX_PER_TICK]:
+            with _watch_lock:
+                if pair.pool_address in _watch or len(_watch) >= WATCH_CAP:
+                    continue
+                _watch[pair.pool_address] = {
+                    "pair": pair.name,
+                    "chain": pair.chain,
+                    "pool_address": pair.pool_address,
+                    "reason": "rejim_reject",
+                    "engine": motor,
+                    "price_at_reject": float(pair.price_usd),
+                    "reject_ts": now,
+                    "due_ts": now + REJECT_RECHECK_SEC,
+                }
+            _rejects_yaz({
+                "type": "reject",
+                "reason": "rejim_reject",
+                "engine": motor,
+                "pair": pair.name,
+                "chain": pair.chain,
+                "pool_address": pair.pool_address,
+                "token_address": pair.token_address,
+                "liquidity_usd": round(getattr(pair, "liquidity_usd", 0.0), 2),
+                "chg_m5": round(getattr(pair, "chg_m5", 0.0), 2),
+                "chg_h1": round(getattr(pair, "chg_h1", 0.0), 2),
+                "price_usd": float(pair.price_usd),
+                "sol_chg_h1": sol_h1,
+            })
+            yazilan = True
+        if yazilan:
+            _start_recheck_thread()
+    except Exception:
+        log.debug("rejim_reject kaydi hatasi", exc_info=True)
+
+
+class HuniSayac:
+    """Gunluk giris-filtre hunisi: aday-yoklugu (plato) gunlerini olcer.
+
+    Her tick'te sayilir, gun donunce tek satir ozet loglanir:
+    kac aday goruldu, kacinin likiditesi yetti, kacinin h1 bandi tuttu.
+    """
+
+    def __init__(self, motor: str) -> None:
+        self.motor = motor
+        self._gun: str | None = None
+        self._c: dict[str, int] = {}
+
+    def ekle(self, goruldu: int, liq_ok: int, h1_ok: int,
+             now: float | None = None) -> None:
+        gun = time.strftime(
+            "%Y-%m-%d", time.localtime(time.time() if now is None else now))
+        if gun != self._gun:
+            self.ozet_logla()
+            self._gun = gun
+            self._c = {"tick": 0, "goruldu": 0, "liq_ok": 0, "h1_ok": 0}
+        self._c["tick"] += 1
+        self._c["goruldu"] += goruldu
+        self._c["liq_ok"] += liq_ok
+        self._c["h1_ok"] += h1_ok
+
+    def ozet_logla(self) -> None:
+        if self._gun and self._c.get("tick"):
+            log.warning(
+                "%s HUNI OZET %s: tick=%d aday=%d liq_ok=%d h1_band_ok=%d",
+                self.motor, self._gun, self._c["tick"], self._c["goruldu"],
+                self._c["liq_ok"], self._c["h1_ok"],
+            )
 
 
 def _recheck_tick(client: httpx.Client, now: float | None = None) -> None:

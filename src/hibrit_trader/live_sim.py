@@ -57,6 +57,40 @@ def fetch_pool_price(client: httpx.Client, chain: str, pool_address: str) -> Opt
         return None
 
 
+_pool_liq_cache: dict[str, tuple[float, float]] = {}
+
+
+def fetch_pool_snapshot(
+    client: httpx.Client, chain: str, pool_address: str
+) -> tuple[Optional[float], Optional[float]]:
+    """GeckoTerminal tek havuz — (base_token_price_usd, reserve_in_usd).
+
+    Ayni GET zaten iki alani da tasiyor; likidite teyidi (price_sanity) icin
+    ek istek gerekmez. Fiyat cache'i fetch_pool_price ile ortaktir.
+    """
+    key = f"{chain}:{pool_address}"
+    price_c = _cache_get(_pool_cache, key)
+    liq_c = _cache_get(_pool_liq_cache, key)
+    if price_c is not None and liq_c is not None:
+        return price_c, liq_c
+    url = f"{API['geckoterminal']}/networks/{chain}/pools/{pool_address}"
+    try:
+        resp = client.get(url, headers={"accept": "application/json"}, timeout=12)
+        resp.raise_for_status()
+        attrs = resp.json()["data"]["attributes"]
+        price = float(attrs["base_token_price_usd"])
+        raw_liq = attrs.get("reserve_in_usd")
+        liq = float(raw_liq) if raw_liq not in (None, "") else None
+        if price > 0:
+            _cache_set(_pool_cache, key, price)
+        if liq is not None and liq > 0:
+            _cache_set(_pool_liq_cache, key, liq)
+        return (price if price > 0 else None), liq
+    except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+        log.debug("Havuz snapshot alınamadı %s: %s", key, exc)
+        return None, None
+
+
 def fetch_token_decimals(client: httpx.Client, chain: str, token_address: str) -> int:
     """Token decimals — GeckoTerminal; bilinmezse Solana 6, EVM 18."""
     key = f"{chain}:{token_address}"

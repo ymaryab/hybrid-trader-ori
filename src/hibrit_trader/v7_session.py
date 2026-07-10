@@ -37,9 +37,9 @@ from pathlib import Path
 import httpx
 
 from hibrit_trader.config import GAS_COST_USD
-from hibrit_trader.entry_fresh import taze_teyit
+from hibrit_trader.entry_fresh import HuniSayac, rejim_reject_kaydet, taze_teyit
 from hibrit_trader.killswitch import is_active as kill_is_active
-from hibrit_trader.live_sim import fetch_pool_price
+from hibrit_trader.live_sim import fetch_pool_snapshot
 from hibrit_trader.momentum_session import (
     SCAN_INTERVAL_SEC,
     SOL_H1_CACHE_SEC,
@@ -88,6 +88,7 @@ class V7Engine:
         self._cooldown_until: dict[str, float] = {}
         self._sol_h1_cache: tuple[float, float | None] = (0.0, None)
         self._regime_logged = False
+        self._huni = HuniSayac("V7")
         self._lock_fh = None
         self._load()
 
@@ -216,6 +217,7 @@ class V7Engine:
             t: ts for t, ts in self._cooldown_until.items() if ts > now
         }
         cands = []
+        liq_ok = 0
         for pr in pairs:
             if pr.pool_address in held or pr.token_address in held or pr.price_usd <= 0:
                 continue
@@ -223,10 +225,12 @@ class V7Engine:
                 continue
             if pr.liquidity_usd < LIQ_MIN_USD:
                 continue
+            liq_ok += 1
             if not (CHG_H1_MIN <= getattr(pr, "chg_h1", 0.0) <= CHG_H1_MAX):
                 continue  # v6 bandı: dikey pump tepesi dışarıda
             cands.append(pr)
         cands.sort(key=lambda pr: pr.chg_h1, reverse=True)  # en güçlü trend önce
+        self._huni.ekle(len(pairs), liq_ok, len(cands), now)
         if not cands:
             return
         # Rejim FAIL-CLOSED (09 Tem): veri yoksa kapi KAPALI; son basarili
@@ -244,11 +248,13 @@ class V7Engine:
             if not self._regime_logged:
                 self._regime_logged = True
                 log.warning("V7 REJIM: sol_h1 verisi yok (fail-closed), giriş kapalı")
+            rejim_reject_kaydet(cands, "V7", None)
             return
         if sol_h1 < SOL_H1_MIN:
             if not self._regime_logged:
                 self._regime_logged = True
                 log.warning("V7 REJIM: sol_chg_h1 %.2f%% < %.2f%%, giriş yok", sol_h1, SOL_H1_MIN)
+            rejim_reject_kaydet(cands, "V7", sol_h1)
             return
         if self._regime_logged:
             self._regime_logged = False
@@ -314,10 +320,10 @@ class V7Engine:
     def _manage_exits(self, client: httpx.Client) -> None:
         now = time.time()
         for pos in list(self.positions):
-            price = fetch_pool_price(client, pos["chain"], pos["pool_address"])
+            price, liq = fetch_pool_snapshot(client, pos["chain"], pos["pool_address"])
             if price is None or price <= 0:
                 price = pos["last_price"]
-            price, ariza = guard_price(pos, price, now, "V7")
+            price, ariza = guard_price(pos, price, now, "V7", liquidity_usd=liq)
             if ariza:
                 continue  # veri arizasi: islem tetikleme, degerleme son gecerli fiyatta
             pos["last_price"] = price

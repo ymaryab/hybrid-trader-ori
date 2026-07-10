@@ -44,10 +44,10 @@ from pathlib import Path
 import httpx
 
 from hibrit_trader.config import GAS_COST_USD
-from hibrit_trader.entry_fresh import taze_teyit
+from hibrit_trader.entry_fresh import HuniSayac, rejim_reject_kaydet, taze_teyit
 from hibrit_trader.fast_price import get_feed
 from hibrit_trader.killswitch import is_active as kill_is_active
-from hibrit_trader.live_sim import fetch_pool_price
+from hibrit_trader.live_sim import fetch_pool_snapshot
 from hibrit_trader.momentum_session import (
     SCAN_INTERVAL_SEC,
     SOL_H1_CACHE_SEC,
@@ -98,6 +98,7 @@ class V6Engine:
         self._cooldown_until: dict[str, float] = {}
         self._sol_h1_cache: tuple[float, float | None] = (0.0, None)
         self._regime_logged = False
+        self._huni = HuniSayac("V6")
         self._lock_fh = None
         self._load()
 
@@ -241,6 +242,7 @@ class V6Engine:
             t: ts for t, ts in self._cooldown_until.items() if ts > now
         }
         cands = []
+        liq_ok = 0
         for pr in pairs:
             if pr.pool_address in held or pr.token_address in held or pr.price_usd <= 0:
                 continue
@@ -248,10 +250,12 @@ class V6Engine:
                 continue
             if pr.liquidity_usd < LIQ_MIN_USD:
                 continue
+            liq_ok += 1
             if not (CHG_H1_MIN <= getattr(pr, "chg_h1", 0.0) <= CHG_H1_MAX):
                 continue  # TEK ek: dikey pump tepesi (RMG/KITTY tipi) dışarıda
             cands.append(pr)
         cands.sort(key=lambda pr: pr.chg_h1, reverse=True)  # en güçlü trend önce
+        self._huni.ekle(len(pairs), liq_ok, len(cands), now)
         if not cands:
             return
         # Rejim FAIL-CLOSED (09 Tem): veri yoksa kapi KAPALI; son basarili
@@ -269,11 +273,13 @@ class V6Engine:
             if not self._regime_logged:
                 self._regime_logged = True
                 log.warning("V6 REJIM: sol_h1 verisi yok (fail-closed), giriş kapalı")
+            rejim_reject_kaydet(cands, "V6", None)
             return
         if sol_h1 < SOL_H1_MIN:
             if not self._regime_logged:
                 self._regime_logged = True
                 log.warning("V6 REJIM: sol_chg_h1 %.2f%% < %.2f%%, giriş yok", sol_h1, SOL_H1_MIN)
+            rejim_reject_kaydet(cands, "V6", sol_h1)
             return
         if self._regime_logged:
             self._regime_logged = False
@@ -339,9 +345,10 @@ class V6Engine:
         return True
 
     # ---- Çıkış: tp_2 / stop_gec (30dk sonrası -%2) / timeout_60 (gölge birebir) --
-    def _eval_position(self, pos: dict, price: float, now: float) -> str | None:
+    def _eval_position(self, pos: dict, price: float, now: float,
+                       liquidity_usd: float | None = None) -> str | None:
         """Fiyatı işle (last_price/mfe/mae) ve çıkış nedeni döndür (yoksa None)."""
-        price, ariza = guard_price(pos, price, now, "V6")
+        price, ariza = guard_price(pos, price, now, "V6", liquidity_usd=liquidity_usd)
         if ariza:
             return None  # veri arizasi: islem tetikleme, degerleme son gecerli fiyatta
         pos["last_price"] = price
@@ -365,16 +372,17 @@ class V6Engine:
         feed = get_feed()
         for pos in list(self.positions):
             rec = feed.get_price(pos["pool_address"]) if feed is not None else None
+            liq = None
             if rec is not None:
                 price, sample_ts = rec
                 src = "fast"
             else:
-                price = fetch_pool_price(client, pos["chain"], pos["pool_address"])
+                price, liq = fetch_pool_snapshot(client, pos["chain"], pos["pool_address"])
                 sample_ts, src = None, "poll"
             if price is None or price <= 0:
                 price = pos["last_price"]
                 sample_ts, src = None, "poll"
-            reason = self._eval_position(pos, price, now)
+            reason = self._eval_position(pos, price, now, liquidity_usd=liq)
             if reason:
                 pos["_price_src"] = src
                 pos["_price_ts"] = sample_ts

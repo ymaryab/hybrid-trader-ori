@@ -106,6 +106,56 @@ def test_zero_or_missing_last_price_passes_through():
     assert guard_price(pos, 123.0, 1000.0, "T") == (123.0, False)
 
 
+# ---- likidite-teyitli re-base (mogcat vakasi) -----------------------------------------
+
+def _mogcat_pos(last=0.0001767, liq_entry=29_248.0):
+    pos = _pos(last)
+    pos["liq_entry"] = liq_entry
+    return pos
+
+
+def test_liq_cokusu_aninda_rebase():
+    # mogcat: fiyat ~100x asagi + liq 29.2k -> 3.3k: gercek cokus, hakem beklenmez
+    pos = _mogcat_pos()
+    price, ariza = guard_price(pos, 0.0001767 / 100, 1000.0, "T",
+                               liquidity_usd=3_292.0)
+    assert (price, ariza) == (0.0001767 / 100, False)
+    assert "veri_ariza_ts" not in pos
+
+
+def test_liq_cokusu_acik_ariza_penceresini_de_temizler():
+    pos = _mogcat_pos()
+    guard_price(pos, 0.0001767 / 100, 1000.0, "T")  # liq verisi yok: normal ariza
+    assert "veri_ariza_ts" in pos
+    price, ariza = guard_price(pos, 0.0001767 / 100, 1010.0, "T",
+                               liquidity_usd=3_292.0)
+    assert ariza is False and price == pytest.approx(0.0001767 / 100)
+    assert "veri_ariza_ts" not in pos
+
+
+def test_liq_sinirda_rebase_yok():
+    # tam %20: "altina dusmus" degil, normal ariza yolu
+    pos = _pos(1.0)
+    pos["liq_entry"] = 100_000.0
+    price, ariza = guard_price(pos, 0.01, 1000.0, "T", liquidity_usd=20_000.0)
+    assert (price, ariza) == (1.0, True)
+    assert pos["veri_ariza_ts"] == 1000.0
+
+
+def test_yukari_sapma_liq_cokse_de_hakemsiz_rebase_yok():
+    # ORCA/JTO tipi sisik carpan yukari yonlu: likidite teyidi devreye girmez
+    pos = _pos(1.0)
+    pos["liq_entry"] = 100_000.0
+    price, ariza = guard_price(pos, 10.0, 1000.0, "T", liquidity_usd=3_000.0)
+    assert (price, ariza) == (1.0, True)
+
+
+def test_liq_entry_yoksa_eski_yol():
+    pos = _pos(1.0)  # liq_entry alani yok (eski pozisyon)
+    price, ariza = guard_price(pos, 0.01, 1000.0, "T", liquidity_usd=3_000.0)
+    assert (price, ariza) == (1.0, True)
+
+
 # ---- motor entegrasyonu: ariza tick'inde islem tetiklenmez ---------------------------
 
 @pytest.fixture()

@@ -11,6 +11,12 @@ surerse re-base DENENIR ama Jupiter hakem onayina baglidir (JTO/PYTH vakasi,
 09 Tem aksam): hakem yeni fiyati MAX_STEP_RATIO icinde dogrulamazsa re-base
 yok, degerleme son gecerli fiyatta kalir ve pencere bastan baslar. Hakem
 ulasilamazsa da re-base yok (fail-closed).
+
+Likidite teyidi (mogcat vakasi, 10 Tem): sapik fiyat ASAGI yonluyse VE havuzun
+guncel likiditesi giristeki likiditenin LIQ_CRASH_RATIO'su altina dusmusse bu
+veri arizasi degil GERCEK COKUSTUR (rug). Yeni fiyat aninda taban kabul edilir,
+pozisyon normal cikis kurallarina doner. Aksi halde bayat kaynak ekosu sapma
+penceresini surekli sifirlar ve slot zombiye doner (equity sisik kalir).
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ log = logging.getLogger(__name__)
 
 MAX_STEP_RATIO = float(os.getenv("PRICE_SANITY_MAX_RATIO", "5"))
 REBASE_SEC = float(os.getenv("PRICE_SANITY_REBASE_SEC", "300"))
+LIQ_CRASH_RATIO = float(os.getenv("PRICE_SANITY_LIQ_CRASH_RATIO", "0.2"))
 
 Hakem = Callable[[str], Optional[float]]
 
@@ -33,12 +40,14 @@ def _jupiter_hakem(token_address: str) -> float | None:
 
 
 def guard_price(pos: dict, price: float, now: float, engine: str,
-                hakem: Hakem = _jupiter_hakem) -> tuple[float, bool]:
+                hakem: Hakem = _jupiter_hakem,
+                liquidity_usd: float | None = None) -> tuple[float, bool]:
     """Yeni fiyati pozisyonun son gecerli fiyatina karsi dogrula.
 
     Donus: (kullanilacak_fiyat, ariza_mi). Ariza durumunda son gecerli fiyat
     doner; caller o tick'te islem tetiklememeli. Ariza takibi pos icinde
     "veri_ariza_ts" alaniyla tutulur (state'e persist olur, restart dayanir).
+    liquidity_usd verilirse cokus yonlu sapmada likidite teyidi calisir.
     """
     last = float(pos.get("last_price") or 0)
     if price <= 0 or last <= 0:
@@ -48,6 +57,17 @@ def guard_price(pos: dict, price: float, now: float, engine: str,
         if pos.pop("veri_ariza_ts", None) is not None:
             log.warning("%s VERI ARIZASI %s: fiyat normale dondu (%.8g)",
                         engine, pos.get("pair"), price)
+        return price, False
+    liq_entry = float(pos.get("liq_entry") or 0)
+    if (price < last and liquidity_usd is not None and liq_entry > 0
+            and liquidity_usd < LIQ_CRASH_RATIO * liq_entry):
+        pos.pop("veri_ariza_ts", None)
+        log.warning(
+            "%s VERI ARIZASI %s: likidite teyidi GERCEK COKUS diyor "
+            "(liq $%.0f < giris $%.0f x %.2f), yeni taban kabul: %.8g (eski %.8g)",
+            engine, pos.get("pair"), liquidity_usd, liq_entry,
+            LIQ_CRASH_RATIO, price, last,
+        )
         return price, False
     since = pos.get("veri_ariza_ts")
     if since is None:
