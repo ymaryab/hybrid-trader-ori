@@ -1683,13 +1683,26 @@ const EQWINS=[["5dk",5],["15dk",15],["30dk",30],["1s",60],["2s",120],["5s",300],
   ["12s",720],["24s",1440],["48s",2880],["1h",10080],["2h",20160],["Tümü",0]];
 const SYNCWINS=[["5dk",5],["15dk",15],["30dk",30],["1s",60],["2s",120],["5s",300],
   ["12s",720],["24s",1440],["48s",2880],["Tümü",0]];
-function cizSpark(id,pts,start,renk){
-  // kart mini sparkline: son 30dk equity, referans cizgisi kesikli
+function sparkHazirla(pts,now){
+  // spark verisi: son 24 saat, ~72 noktaya seyreltilir (ilk/son nokta korunur);
+  // renk 24s net degisime gore: pozitif/notr yesil, negatif kirmizi
+  const SAAT=24,NOKTA=72;
+  const t0=now-SAAT*3600000;
+  let p=pts.filter(q=>q.x>=t0);
+  if(p.length>NOKTA){
+    const adim=(p.length-1)/(NOKTA-1),sey=[];
+    for(let i=0;i<NOKTA;i++)sey.push(p[Math.round(i*adim)]);
+    p=sey;
+  }
+  const renk=p.length>=2&&p[p.length-1].y-p[0].y<0?"#f85149":"#3fb950";
+  return {p,renk};
+}
+function cizSpark(id,pts,start){
+  // kart mini sparkline: son 24 saat equity, referans cizgisi kesikli
   const c=document.getElementById(id); if(!c)return;
   const w=c.width=c.clientWidth||160, h=c.height=36;
   const x=c.getContext("2d"); x.clearRect(0,0,w,h);
-  const t0=Date.now()-30*60000;
-  const p=pts.filter(q=>q.x>=t0);
+  const {p,renk}=sparkHazirla(pts,Date.now());
   let lo=start,hi=start;
   for(const q of p){if(q.y<lo)lo=q.y;if(q.y>hi)hi=q.y;}
   const pad=(hi-lo)*0.12||1; lo-=pad; hi+=pad;
@@ -1730,7 +1743,7 @@ function trendHiz(seri){
 }
 function mkEqChart(prefix, api, live=true, shared=false, renk="#58a6ff", sparkId=null){
   // shared=true: kendi buton seridi yok, pencereyi ortak eqSyncWin belirler
-  const st={win:0, chart:null, start:1000, pts:[], live:null, kum:[], kumSum:0, kumN:0};
+  const st={win:0, chart:null, start:1000, pts:[], sparkPts:[], live:null, kum:[], kumSum:0, kumN:0};
   const getWin=()=>shared?eqSyncWin:st.win;
   const refLine={id:prefix+"ref",afterDatasetsDraw(c){
     const y=c.scales.y.getPixelForValue(st.start),a=c.chartArea;
@@ -1752,6 +1765,16 @@ function mkEqChart(prefix, api, live=true, shared=false, renk="#58a6ff", sparkId
     catch(e){return;}
     st.start=d.start_balance||1000;
     st.pts=(d.points||[]).map(p=>({x:p[0],y:p[1]}));
+    // spark hep 24 saat: secili pencere 24s'ten darsa spark kendi verisini ceker
+    if(sparkId&&win>0&&win<1440){
+      try{
+        const r2=await fetch(`${api}?minutes=1440`);
+        const d2=await r2.json();
+        st.sparkPts=(d2.points||[]).map(p=>({x:p[0],y:p[1]}));
+      }catch(e){st.sparkPts=st.pts;}
+    }else{
+      st.sparkPts=st.pts;
+    }
     // kumulatif taban bir kez O(n); canli uc her tick'te toplam+sayacla O(1)
     st.kum=kumulatifSeri(st.pts);
     st.kumN=st.pts.length;
@@ -1839,7 +1862,11 @@ function mkEqChart(prefix, api, live=true, shared=false, renk="#58a6ff", sparkId
       st.chart.options.scales.y.max=ymax;
       st.chart.update("none");
     }
-    if(sparkId)cizSpark(sparkId,pts,st.start,renk);
+    if(sparkId){
+      let sp=st.sparkPts.length?st.sparkPts:st.pts;
+      if(st.live)sp=sp.filter(p=>p.x<st.live.x).concat([st.live]);
+      cizSpark(sparkId,sp,st.start);
+    }
   }
   if(!shared) buttons();
   tick(); if(live) setInterval(tick,5000);

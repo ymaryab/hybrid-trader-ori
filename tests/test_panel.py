@@ -340,6 +340,66 @@ console.log("OK");
     assert proc.returncode == 0, proc.stderr or proc.stdout
 
 
+def test_kart_sparkline_24_saat(client):
+    h = client.get("/momentum").text
+    # spark verisi saf fonksiyonda: 24 saat pencere + ~72 nokta seyreltme
+    assert "function sparkHazirla" in h
+    assert "SAAT=24,NOKTA=72" in h
+    # renk 24s net degisime gore (yesil/kirmizi), motor renginden bagimsiz
+    assert '"#f85149":"#3fb950"' in h
+    assert "cizSpark(sparkId,sp,st.start)" in h
+    # eski 30dk filtresi ve renk parametreli cagri kalmadi
+    assert "Date.now()-30*60000" not in h
+    assert "cizSpark(sparkId,pts,st.start,renk)" not in h
+    # dar pencerede spark kendi 24s verisini ceker
+    assert "minutes=1440" in h
+    # bos-durum kartlari etkilenmez: kilitli canli/vnext kartlarinda spark yok,
+    # spark yalniz bot kartlarinda (mkEqChart bagli)
+    assert 'id="spark-canli"' not in h
+    assert 'id="spark-vnext"' not in h
+    for p in ("v6", "v7", "x1"):
+        assert f'id="spark-{p}"' in h
+
+
+def test_spark_hazirla_birim(client):
+    h = client.get("/momentum").text
+    m = re.search(r"<script>(.*?)</script>", h, re.S)
+    assert m
+    js = m.group(1)
+    fm = re.search(r"function sparkHazirla\([\s\S]*?\n}", js)
+    assert fm
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node yok")
+    test_js = fm.group(0) + """
+function assert(c,m){if(!c){console.error("FAIL: "+m);process.exit(1);}}
+const now=1000000000000, SAAT=3600000;
+// 24 saatten eski noktalar dislanir
+const eski=sparkHazirla([{x:now-25*SAAT,y:1},{x:now-1*SAAT,y:2},{x:now,y:3}],now);
+assert(eski.p.length===2,"25 saatlik nokta dislandi");
+assert(eski.p[0].x===now-1*SAAT,"ilk nokta 24s icinden");
+// seyreltme: 500 nokta -> 72, ilk/son korunur
+const cok=[];for(let i=0;i<500;i++)cok.push({x:now-23*SAAT+i*60000,y:100+i});
+const s=sparkHazirla(cok,now);
+assert(s.p.length===72,"72 noktaya seyreltildi");
+assert(s.p[0].x===cok[0].x&&s.p[71].x===cok[499].x,"ilk/son korunur");
+// 72 ve alti dokunulmaz
+const az=[];for(let i=0;i<72;i++)az.push({x:now-i*60000,y:1});
+assert(sparkHazirla(az,now).p.length===72,"72 nokta aynen");
+// renk: net pozitif yesil, negatif kirmizi, notr/tek nokta yesil
+assert(sparkHazirla([{x:now-SAAT,y:100},{x:now,y:110}],now).renk==="#3fb950","yukselis yesil");
+assert(sparkHazirla([{x:now-SAAT,y:100},{x:now,y:90}],now).renk==="#f85149","dusus kirmizi");
+assert(sparkHazirla([{x:now-SAAT,y:100},{x:now,y:100}],now).renk==="#3fb950","notr yesil");
+assert(sparkHazirla([{x:now,y:100}],now).renk==="#3fb950","tek nokta yesil");
+// renk seyreltilmis serinin ilk/son noktasindan: 24s neti korunur
+assert(s.renk==="#3fb950","500 noktali yukselen seri yesil");
+console.log("OK");
+"""
+    proc = subprocess.run(
+        [node, "-e", test_js], capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+
+
 def test_momentum_sayfasi_js_syntax_valid(client):
     h = client.get("/momentum").text
     m = re.search(r"<script>(.*?)</script>", h, re.S)
