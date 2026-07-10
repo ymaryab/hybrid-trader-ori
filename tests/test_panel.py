@@ -283,11 +283,15 @@ def test_momentum_trend_katmani(client):
     assert ".trendroz" in h
     assert "#1D9E75" in h and "#E24B4A" in h
     assert "yükseliş" in h and "düşüş" in h and "$/saat" in h
-    # trend hesap fonksiyonlari inline JS'te
-    for fn in ("renkAlfa", "trendPeriyot", "emaSeries", "trendRenkler", "trendHiz"):
+    # trend hesap fonksiyonlari inline JS'te (kumulatif ortalama)
+    for fn in ("renkAlfa", "kumulatifSeri", "trendHiz"):
         assert f"function {fn}" in h, fn
-    # ham egri soluk, trend ustte ve kalin
+    # eski EMA/segment katmani kaldirildi
+    for eski in ("emaSeries", "trendRenkler", "trendPeriyot", "segment:"):
+        assert eski not in h, eski
+    # ham egri soluk; trend duz acik ton, ustte ve kalin
     assert "renkAlfa(renk,0.55)" in h
+    assert '"#e6edf3"' in h
     assert "borderWidth:3" in h and 'borderCapStyle:"round"' in h
     assert "order:-1" in h
     # tooltip yalniz ham seriden
@@ -300,7 +304,7 @@ def test_trend_hesap_birim(client):
     assert m
     js = m.group(1)
     parcalar = []
-    for fn in ("trendPeriyot", "emaSeries", "trendRenkler", "trendHiz"):
+    for fn in ("kumulatifSeri", "trendHiz"):
         fm = re.search(rf"function {fn}\([\s\S]*?\n}}", js)
         assert fm, fn
         parcalar.append(fm.group(0))
@@ -309,27 +313,26 @@ def test_trend_hesap_birim(client):
         pytest.skip("node yok")
     test_js = "\n".join(parcalar) + """
 function assert(c,m){if(!c){console.error("FAIL: "+m);process.exit(1);}}
-// periyot: nokta sayisinin %15'i, 5-50 klemp
-assert(trendPeriyot(10)===5,"min klemp 5");
-assert(trendPeriyot(1000)===50,"max klemp 50");
-assert(trendPeriyot(100)===15,"yuzde 15");
-// EMA: tek nokta bos, sabit seri sabit, kucuk periyot daha az gecikir
-assert(emaSeries([{x:0,y:1}],5).length===0,"tek nokta bos");
-const sabit=emaSeries([{x:0,y:5},{x:1,y:5},{x:2,y:5}],3);
-assert(sabit[0].y===5&&Math.abs(sabit[2].y-5)<1e-9,"sabit seri ema sabit");
-const seri=[];for(let i=0;i<20;i++)seri.push({x:i,y:i});
-const hizli=emaSeries(seri,2),yavas=emaSeries(seri,10);
-assert(hizli[19].y>yavas[19].y,"kucuk periyot son degere daha yakin");
-// histerezis: 2 ters nokta renk dondurmez, 3 ardisik dondurur
-const Y="#1D9E75",K="#E24B4A";
-const r1=trendRenkler([0,1,2,3,2.9,2.8,3.5,4].map((y,i)=>({x:i,y})));
-assert(r1.every(c=>c===Y),"2 ters nokta renk dondurmez");
-const r2=trendRenkler([0,1,2,3,2.9,2.8,2.7,2.6].map((y,i)=>({x:i,y})));
-assert(r2[5]===Y&&r2[6]===K&&r2[7]===K,"3 ardisik ters yon renk dondurur");
-// hiz: 1 saatte +10$ -> 10 $/saat; tek nokta null
-const hiz=trendHiz([{x:0,y:100},{x:3600000,y:110}]);
-assert(Math.abs(hiz-10)<1e-9,"hiz 10 $/saat");
+// kumulatif ortalama: bastan t'ye kadarki tum degerlerin ortalamasi
+const k=kumulatifSeri([{x:0,y:1},{x:1,y:2},{x:2,y:3}]);
+assert(k.length===3,"uzunluk ayni");
+assert(k[0].y===1&&Math.abs(k[1].y-1.5)<1e-9&&Math.abs(k[2].y-2)<1e-9,"1,1.5,2");
+assert(k[2].x===2,"x korunur");
+assert(kumulatifSeri([]).length===0,"bos seri bos");
+// sabit seri: kumulatif ortalama sabit
+const s=kumulatifSeri([{x:0,y:5},{x:1,y:5},{x:2,y:5}]);
+assert(s.every(p=>Math.abs(p.y-5)<1e-9),"sabit seri sabit");
+// hiz: son ~%20 dilimin egimi. 10 nokta, saatte +1$: i0=8 -> 1 $/saat
+const seri=[];for(let i=0;i<10;i++)seri.push({x:i*3600000,y:100+i});
+assert(Math.abs(trendHiz(seri)-1)<1e-9,"son dilim egimi 1 $/saat");
+// son dilim duz, oncesi dik: hiz son dilimden gelir (0'a yakin)
+const seri2=[];for(let i=0;i<10;i++)seri2.push({x:i*3600000,y:i<8?100+i*10:180});
+assert(Math.abs(trendHiz(seri2))<1e-9,"hiz yalniz son dilimden");
+// iki nokta: dilim = tum seri
+const h2=trendHiz([{x:0,y:100},{x:3600000,y:110}]);
+assert(Math.abs(h2-10)<1e-9,"iki nokta 10 $/saat");
 assert(trendHiz([{x:0,y:1}])===null,"tek nokta hiz yok");
+assert(trendHiz([{x:5,y:1},{x:5,y:2}])===null,"dt<=0 null");
 console.log("OK");
 """
     proc = subprocess.run(

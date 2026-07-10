@@ -1705,48 +1705,32 @@ function cizSpark(id,pts,start,renk){
   const son=p[p.length-1];
   x.fillStyle=renk; x.beginPath(); x.arc(X(son.x),Y(son.y),2,0,7); x.fill();
 }
-// ---- Trend katmani: EMA yumusatma + histerezisli yon rengi + hiz rozeti ----------
+// ---- Trend katmani: kumulatif ortalama + hiz rozeti -------------------------------
 function renkAlfa(hex,a){
   const n=parseInt(hex.slice(1),16);
   return "rgba("+((n>>16)&255)+","+((n>>8)&255)+","+(n&255)+","+a+")";
 }
-function trendPeriyot(n){
-  // pencere nokta sayisinin ~%15'i, 5-50 arasi
-  return Math.min(50,Math.max(5,Math.round(n*0.15)));
-}
-function emaSeries(pts,period){
-  if(pts.length<2)return [];
-  const k=2/(period+1);
-  const out=[{x:pts[0].x,y:pts[0].y}];
-  for(let i=1;i<pts.length;i++)
-    out.push({x:pts[i].x,y:pts[i].y*k+out[i-1].y*(1-k)});
-  return out;
-}
-function trendRenkler(ema){
-  // segment yonu: kucuk egim gurultusune karsi histerezis (3 ardisik ayni yon)
-  const YES="#1D9E75",KIR="#E24B4A";
-  const out=new Array(ema.length).fill(YES);
-  let cur=0,aday=0,say=0;
-  for(let i=1;i<ema.length;i++){
-    const s=Math.sign(ema[i].y-ema[i-1].y);
-    if(s!==0){
-      if(s===aday)say++;else{aday=s;say=1;}
-      if(cur===0)cur=s;
-      else if(aday!==cur&&say>=3)cur=aday;
-    }
-    out[i]=cur<0?KIR:YES;
+function kumulatifSeri(pts){
+  // her t noktasi: serinin BASINDAN t'ye kadarki tum degerlerin ortalamasi
+  const out=[];let t=0;
+  for(let i=0;i<pts.length;i++){
+    t+=pts[i].y;
+    out.push({x:pts[i].x,y:t/(i+1)});
   }
   return out;
 }
-function trendHiz(ema){
-  if(ema.length<2)return null;
-  const dt=ema[ema.length-1].x-ema[0].x;
+function trendHiz(seri){
+  // uzun vadeli gidisat: kumulatif egrinin son ~%20 diliminin egimi ($/saat)
+  const n=seri.length;
+  if(n<2)return null;
+  const i0=Math.min(Math.floor(n*0.8),n-2);
+  const dt=seri[n-1].x-seri[i0].x;
   if(dt<=0)return null;
-  return (ema[ema.length-1].y-ema[0].y)/dt*3600000;
+  return (seri[n-1].y-seri[i0].y)/dt*3600000;
 }
 function mkEqChart(prefix, api, live=true, shared=false, renk="#58a6ff", sparkId=null){
   // shared=true: kendi buton seridi yok, pencereyi ortak eqSyncWin belirler
-  const st={win:0, chart:null, start:1000, pts:[], live:null, trendRenk:[]};
+  const st={win:0, chart:null, start:1000, pts:[], live:null, kum:[], kumSum:0, kumN:0};
   const getWin=()=>shared?eqSyncWin:st.win;
   const refLine={id:prefix+"ref",afterDatasetsDraw(c){
     const y=c.scales.y.getPixelForValue(st.start),a=c.chartArea;
@@ -1768,6 +1752,10 @@ function mkEqChart(prefix, api, live=true, shared=false, renk="#58a6ff", sparkId
     catch(e){return;}
     st.start=d.start_balance||1000;
     st.pts=(d.points||[]).map(p=>({x:p[0],y:p[1]}));
+    // kumulatif taban bir kez O(n); canli uc her tick'te toplam+sayacla O(1)
+    st.kum=kumulatifSeri(st.pts);
+    st.kumN=st.pts.length;
+    st.kumSum=st.pts.reduce((a,p)=>a+p.y,0);
     render();
   }
   function setLive(eq){
@@ -1784,13 +1772,16 @@ function mkEqChart(prefix, api, live=true, shared=false, renk="#58a6ff", sparkId
     }
     const now=Date.now();
     const xmin=win>0?now-win*60000:undefined;
-    // trend katmani: gorunur pencere uzerinde EMA + yon renkleri + hiz rozeti
-    const gorunur=xmin?pts.filter(p=>p.x>=xmin):pts;
-    const ema=emaSeries(gorunur,trendPeriyot(gorunur.length));
-    st.trendRenk=trendRenkler(ema);
+    // trend: TUM serinin kumulatif ortalamasi; pencere sadece goruntuyu kirpar
+    let trend=st.kum;
+    if(st.live){
+      trend=st.kumN>0
+        ?trend.concat([{x:st.live.x,y:(st.kumSum+st.live.y)/(st.kumN+1)}])
+        :[{x:st.live.x,y:st.live.y}];
+    }
     const roz=document.getElementById(prefix+"trend");
     if(roz){
-      const hiz=trendHiz(ema);
+      const hiz=trendHiz(trend);
       if(hiz==null){roz.classList.remove("up","down");}
       else{
         const yukari=hiz>=0;
@@ -1807,6 +1798,11 @@ function mkEqChart(prefix, api, live=true, shared=false, renk="#58a6ff", sparkId
       if(p.y<lo)lo=p.y;
       if(p.y>hi)hi=p.y;
     }
+    for(const p of trend){
+      if(xmin&&p.x<xmin)continue;
+      if(p.y<lo)lo=p.y;
+      if(p.y>hi)hi=p.y;
+    }
     const pad=Math.max((hi-lo)*0.03,hi*0.005,1);
     const ymin=lo-pad,ymax=hi+pad;
     if(!st.chart){
@@ -1816,9 +1812,9 @@ function mkEqChart(prefix, api, live=true, shared=false, renk="#58a6ff", sparkId
           pointBackgroundColor:renk,
           pointHitRadius:10,tension:0,
           fill:{target:{value:st.start},above:"rgba(63,185,80,.13)",below:"rgba(248,81,73,.13)"}},
-         {data:ema,borderWidth:3,borderCapStyle:"round",borderJoinStyle:"round",
-          pointRadius:0,pointHitRadius:0,tension:0,fill:false,order:-1,
-          segment:{borderColor:c=>st.trendRenk[c.p1DataIndex]||"#1D9E75"}}]},
+         {data:trend,borderColor:"#e6edf3",borderWidth:3,borderCapStyle:"round",
+          borderJoinStyle:"round",pointRadius:0,pointHitRadius:0,tension:0,
+          fill:false,order:-1}]},
         options:{responsive:true,maintainAspectRatio:false,animation:false,
           interaction:{mode:"nearest",axis:"x",intersect:false},
           plugins:{legend:{display:false},tooltip:{
@@ -1835,7 +1831,7 @@ function mkEqChart(prefix, api, live=true, shared=false, renk="#58a6ff", sparkId
         plugins:[refLine]});
     }else{
       st.chart.data.datasets[0].data=pts;
-      st.chart.data.datasets[1].data=ema;
+      st.chart.data.datasets[1].data=trend;
       st.chart.data.datasets[0].fill.target.value=st.start;
       st.chart.options.scales.x.min=xmin;
       st.chart.options.scales.x.max=now;
