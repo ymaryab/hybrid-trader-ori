@@ -1276,7 +1276,8 @@ def _filo_chart(m: dict) -> str:
                 f'<b>{m["ad"]}</b> <span class="chdesc">{m["desc"]}</span>'
                 f'<span id="eq{m["id"]}label" class="eqlabel"></span>'
                 f'<span id="{m["id"]}upd" class="updlabel"></span></div>'
-                f'<div class="eqwrap"><canvas id="eq{m["id"]}chart"></canvas></div>')
+                f'<div class="eqwrap"><span id="eq{m["id"]}trend" class="trendroz"></span>'
+                f'<canvas id="eq{m["id"]}chart"></canvas></div>')
     if m["id"] == "canli":
         return ('<div class="chhead"><span class="dot" style="background:#e3b341"></span>'
                 '<b>CANLI</b></div>'
@@ -1342,6 +1343,10 @@ _MOMENTUM_HTML = """<!doctype html>
  .slotbadge.b48{background:#da3633;color:#fff}
  .updlabel{font-size:11px;font-weight:normal;color:#8b949e;margin-left:6px}
  .updlabel.stale{color:#f85149}
+ .trendroz{position:absolute;top:6px;right:8px;z-index:2;display:none;font-size:11px;
+   padding:1px 9px;border-radius:10px;color:#fff}
+ .trendroz.up{display:inline-block;background:#1D9E75}
+ .trendroz.down{display:inline-block;background:#E24B4A}
  .exchip{display:inline-block;padding:0 8px;border-radius:8px;background:#21262d;
    font-size:12px;border:1px solid transparent}
  .ex-tp{background:rgba(63,185,80,.15);color:#3fb950}
@@ -1700,9 +1705,48 @@ function cizSpark(id,pts,start,renk){
   const son=p[p.length-1];
   x.fillStyle=renk; x.beginPath(); x.arc(X(son.x),Y(son.y),2,0,7); x.fill();
 }
+// ---- Trend katmani: EMA yumusatma + histerezisli yon rengi + hiz rozeti ----------
+function renkAlfa(hex,a){
+  const n=parseInt(hex.slice(1),16);
+  return "rgba("+((n>>16)&255)+","+((n>>8)&255)+","+(n&255)+","+a+")";
+}
+function trendPeriyot(n){
+  // pencere nokta sayisinin ~%15'i, 5-50 arasi
+  return Math.min(50,Math.max(5,Math.round(n*0.15)));
+}
+function emaSeries(pts,period){
+  if(pts.length<2)return [];
+  const k=2/(period+1);
+  const out=[{x:pts[0].x,y:pts[0].y}];
+  for(let i=1;i<pts.length;i++)
+    out.push({x:pts[i].x,y:pts[i].y*k+out[i-1].y*(1-k)});
+  return out;
+}
+function trendRenkler(ema){
+  // segment yonu: kucuk egim gurultusune karsi histerezis (3 ardisik ayni yon)
+  const YES="#1D9E75",KIR="#E24B4A";
+  const out=new Array(ema.length).fill(YES);
+  let cur=0,aday=0,say=0;
+  for(let i=1;i<ema.length;i++){
+    const s=Math.sign(ema[i].y-ema[i-1].y);
+    if(s!==0){
+      if(s===aday)say++;else{aday=s;say=1;}
+      if(cur===0)cur=s;
+      else if(aday!==cur&&say>=3)cur=aday;
+    }
+    out[i]=cur<0?KIR:YES;
+  }
+  return out;
+}
+function trendHiz(ema){
+  if(ema.length<2)return null;
+  const dt=ema[ema.length-1].x-ema[0].x;
+  if(dt<=0)return null;
+  return (ema[ema.length-1].y-ema[0].y)/dt*3600000;
+}
 function mkEqChart(prefix, api, live=true, shared=false, renk="#58a6ff", sparkId=null){
   // shared=true: kendi buton seridi yok, pencereyi ortak eqSyncWin belirler
-  const st={win:0, chart:null, start:1000, pts:[], live:null};
+  const st={win:0, chart:null, start:1000, pts:[], live:null, trendRenk:[]};
   const getWin=()=>shared?eqSyncWin:st.win;
   const refLine={id:prefix+"ref",afterDatasetsDraw(c){
     const y=c.scales.y.getPixelForValue(st.start),a=c.chartArea;
@@ -1740,6 +1784,22 @@ function mkEqChart(prefix, api, live=true, shared=false, renk="#58a6ff", sparkId
     }
     const now=Date.now();
     const xmin=win>0?now-win*60000:undefined;
+    // trend katmani: gorunur pencere uzerinde EMA + yon renkleri + hiz rozeti
+    const gorunur=xmin?pts.filter(p=>p.x>=xmin):pts;
+    const ema=emaSeries(gorunur,trendPeriyot(gorunur.length));
+    st.trendRenk=trendRenkler(ema);
+    const roz=document.getElementById(prefix+"trend");
+    if(roz){
+      const hiz=trendHiz(ema);
+      if(hiz==null){roz.classList.remove("up","down");}
+      else{
+        const yukari=hiz>=0;
+        roz.textContent=(yukari?"↗ yükseliş ":"↘ düşüş ")+
+          (yukari?"+":"")+hiz.toFixed(2)+" $/saat";
+        roz.classList.toggle("up",yukari);
+        roz.classList.toggle("down",!yukari);
+      }
+    }
     // dikey olcek: gorunur veri + referans ($start) HER ZAMAN kadrajda, %3 pay
     let lo=st.start,hi=st.start;
     for(const p of pts){
@@ -1751,14 +1811,18 @@ function mkEqChart(prefix, api, live=true, shared=false, renk="#58a6ff", sparkId
     const ymin=lo-pad,ymax=hi+pad;
     if(!st.chart){
       st.chart=new Chart(document.getElementById(prefix+"chart"),{type:"line",
-        data:{datasets:[{data:pts,borderColor:renk,borderWidth:1.5,
+        data:{datasets:[{data:pts,borderColor:renkAlfa(renk,0.55),borderWidth:1.5,
           pointRadius:c=>c.dataIndex===c.dataset.data.length-1?3:0,
           pointBackgroundColor:renk,
           pointHitRadius:10,tension:0,
-          fill:{target:{value:st.start},above:"rgba(63,185,80,.13)",below:"rgba(248,81,73,.13)"}}]},
+          fill:{target:{value:st.start},above:"rgba(63,185,80,.13)",below:"rgba(248,81,73,.13)"}},
+         {data:ema,borderWidth:3,borderCapStyle:"round",borderJoinStyle:"round",
+          pointRadius:0,pointHitRadius:0,tension:0,fill:false,order:-1,
+          segment:{borderColor:c=>st.trendRenk[c.p1DataIndex]||"#1D9E75"}}]},
         options:{responsive:true,maintainAspectRatio:false,animation:false,
           interaction:{mode:"nearest",axis:"x",intersect:false},
           plugins:{legend:{display:false},tooltip:{
+            filter:it=>it.datasetIndex===0,
             backgroundColor:"#161b22",borderColor:"#30363d",borderWidth:1,
             titleColor:"#c9d1d9",bodyColor:renk,displayColors:false,
             callbacks:{title:it=>new Date(it[0].parsed.x).toLocaleString("tr-TR"),
@@ -1771,6 +1835,7 @@ function mkEqChart(prefix, api, live=true, shared=false, renk="#58a6ff", sparkId
         plugins:[refLine]});
     }else{
       st.chart.data.datasets[0].data=pts;
+      st.chart.data.datasets[1].data=ema;
       st.chart.data.datasets[0].fill.target.value=st.start;
       st.chart.options.scales.x.min=xmin;
       st.chart.options.scales.x.max=now;

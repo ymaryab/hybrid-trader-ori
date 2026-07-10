@@ -273,6 +273,70 @@ def test_momentum_yeni_duzen(client):
     assert '"id": "v6"' in h
 
 
+def test_momentum_trend_katmani(client):
+    h = client.get("/momentum").text
+    # aktif bot chartlarinda trend rozeti; bos-durum (canli/vnext) etkilenmez
+    for p in ("v6", "v7", "x1"):
+        assert f'id="eq{p}trend"' in h
+    assert 'id="eqcanlitrend"' not in h and 'id="eqvnexttrend"' not in h
+    # rozet CSS + yon renkleri + rozet metni
+    assert ".trendroz" in h
+    assert "#1D9E75" in h and "#E24B4A" in h
+    assert "yükseliş" in h and "düşüş" in h and "$/saat" in h
+    # trend hesap fonksiyonlari inline JS'te
+    for fn in ("renkAlfa", "trendPeriyot", "emaSeries", "trendRenkler", "trendHiz"):
+        assert f"function {fn}" in h, fn
+    # ham egri soluk, trend ustte ve kalin
+    assert "renkAlfa(renk,0.55)" in h
+    assert "borderWidth:3" in h and 'borderCapStyle:"round"' in h
+    assert "order:-1" in h
+    # tooltip yalniz ham seriden
+    assert "it.datasetIndex===0" in h
+
+
+def test_trend_hesap_birim(client):
+    h = client.get("/momentum").text
+    m = re.search(r"<script>(.*?)</script>", h, re.S)
+    assert m
+    js = m.group(1)
+    parcalar = []
+    for fn in ("trendPeriyot", "emaSeries", "trendRenkler", "trendHiz"):
+        fm = re.search(rf"function {fn}\([\s\S]*?\n}}", js)
+        assert fm, fn
+        parcalar.append(fm.group(0))
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node yok")
+    test_js = "\n".join(parcalar) + """
+function assert(c,m){if(!c){console.error("FAIL: "+m);process.exit(1);}}
+// periyot: nokta sayisinin %15'i, 5-50 klemp
+assert(trendPeriyot(10)===5,"min klemp 5");
+assert(trendPeriyot(1000)===50,"max klemp 50");
+assert(trendPeriyot(100)===15,"yuzde 15");
+// EMA: tek nokta bos, sabit seri sabit, kucuk periyot daha az gecikir
+assert(emaSeries([{x:0,y:1}],5).length===0,"tek nokta bos");
+const sabit=emaSeries([{x:0,y:5},{x:1,y:5},{x:2,y:5}],3);
+assert(sabit[0].y===5&&Math.abs(sabit[2].y-5)<1e-9,"sabit seri ema sabit");
+const seri=[];for(let i=0;i<20;i++)seri.push({x:i,y:i});
+const hizli=emaSeries(seri,2),yavas=emaSeries(seri,10);
+assert(hizli[19].y>yavas[19].y,"kucuk periyot son degere daha yakin");
+// histerezis: 2 ters nokta renk dondurmez, 3 ardisik dondurur
+const Y="#1D9E75",K="#E24B4A";
+const r1=trendRenkler([0,1,2,3,2.9,2.8,3.5,4].map((y,i)=>({x:i,y})));
+assert(r1.every(c=>c===Y),"2 ters nokta renk dondurmez");
+const r2=trendRenkler([0,1,2,3,2.9,2.8,2.7,2.6].map((y,i)=>({x:i,y})));
+assert(r2[5]===Y&&r2[6]===K&&r2[7]===K,"3 ardisik ters yon renk dondurur");
+// hiz: 1 saatte +10$ -> 10 $/saat; tek nokta null
+const hiz=trendHiz([{x:0,y:100},{x:3600000,y:110}]);
+assert(Math.abs(hiz-10)<1e-9,"hiz 10 $/saat");
+assert(trendHiz([{x:0,y:1}])===null,"tek nokta hiz yok");
+console.log("OK");
+"""
+    proc = subprocess.run(
+        [node, "-e", test_js], capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+
+
 def test_momentum_sayfasi_js_syntax_valid(client):
     h = client.get("/momentum").text
     m = re.search(r"<script>(.*?)</script>", h, re.S)
