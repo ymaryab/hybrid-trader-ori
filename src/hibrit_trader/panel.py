@@ -1229,8 +1229,10 @@ _FILO_MOTORLAR: list[dict] = [
     {"id": "v7", "tip": "bot", "ad": "V7", "renk": "#58a6ff", "slots": 5,
      "rozet": "fren -%10",
      "desc": "-%10 felaket freni · sabır iptal, anında sat · rejim sol_h1&ge;0.5"},
+    # arka: kart+chart ana ekrandan "Arka plan deneyleri" katlanir bolumune iner;
+    # motor, veri uretimi ve kiyas kayitlari aynen surer (sadece gorunum).
     {"id": "x1", "tip": "bot", "ad": "X1", "renk": "#d29922", "slots": 3,
-     "rozet": "koşucu avcısı",
+     "rozet": "koşucu avcısı", "arka": True,
      "desc": "koşucu avcısı: h1&ge;50 + m5&gt;0 + liq&ge;$20k · bilet&le;$70 · yarım tp mfe&ge;+15 · trail -18 · 6sa tavan"},
     {"id": "vnext", "tip": "yakinda", "ad": "V-NEXT", "renk": "#8b949e"},
 ]
@@ -1306,7 +1308,7 @@ _MOMENTUM_HTML = """<!doctype html>
    color:#8b949e;font-size:12px;margin-left:6px;border:1px solid #30363d}
  .badge.ok{color:#3fb950;border-color:#238636}
  .badge.err{background:#da3633;color:#fff;border-color:#da3633}
- #kartGrid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin:16px 0 6px}
+ #kartGrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0 6px}
  @media(max-width:1100px){#kartGrid{grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}}
  .kart{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px 14px;
    min-height:158px;display:flex;flex-direction:column}
@@ -1372,6 +1374,10 @@ _MOMENTUM_HTML = """<!doctype html>
 <div class="tablewrap"><table id="isltr"><thead><tr><th>bot</th><th>pair</th><th>exit</th>
 <th>pnl $</th><th>pnl%</th><th>mfe/mae</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th>
 <th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table></div>
+<details id="arkaBox" style="margin-top:28px;border-top:1px solid #30363d;padding-top:8px">
+<summary style="cursor:pointer;color:#8b949e"><b>ARKA PLAN DENEYLERİ · çalışır durumda (x1) · tıkla aç</b></summary>
+<div id="arkaIc"><!--ARKA--></div>
+</details>
 <details id="arsivBox" style="margin-top:28px;border-top:1px solid #30363d;padding-top:8px">
 <summary style="cursor:pointer;color:#8b949e"><b>ARŞİV · durdurulan motorlar (m1 · m2 · v2 · v3 · v4 · v5 · gölge · v8 · v9 · v10) · tıkla aç</b></summary>
 <div id="arsivIc">
@@ -1998,9 +2004,15 @@ filoTick(); setInterval(filoTick,5000);
 @app.get("/momentum", response_class=HTMLResponse)
 def momentum_page() -> str:
     """Momentum paneli: kart grid + chart sutunu _FILO_MOTORLAR listesinden uretilir;
-    aktif filo /api/filo'dan 5sn'de bir TEK poll ile beslenir (tek gercek kaynak)."""
-    kartlar = "".join(_filo_kart(m) for m in _FILO_MOTORLAR)
-    chartlar = "".join(_filo_chart(m) for m in _FILO_MOTORLAR)
+    aktif filo /api/filo'dan 5sn'de bir TEK poll ile beslenir (tek gercek kaynak).
+    arka=True motorlar ana ekran yerine katlanir "Arka plan deneyleri" bolumune
+    basilir; MOTORLAR JS listesi degismez, canli guncelleme aynen surer."""
+    kartlar = "".join(_filo_kart(m) for m in _FILO_MOTORLAR if not m.get("arka"))
+    chartlar = "".join(_filo_chart(m) for m in _FILO_MOTORLAR if not m.get("arka"))
+    arka = "".join(
+        f'<div style="max-width:300px;margin:12px 0">{_filo_kart(m)}</div>{_filo_chart(m)}'
+        for m in _FILO_MOTORLAR if m.get("arka")
+    )
     motor_js = json.dumps([
         {"id": m["id"], "ad": m["ad"], "renk": m["renk"], "slots": m["slots"]}
         for m in _FILO_MOTORLAR if m["tip"] == "bot"
@@ -2008,6 +2020,7 @@ def momentum_page() -> str:
     return (_MOMENTUM_HTML
             .replace("<!--KARTLAR-->", kartlar)
             .replace("<!--CHARTCOL-->", chartlar)
+            .replace("<!--ARKA-->", arka)
             .replace('"__MOTORLAR__"', motor_js))
 
 

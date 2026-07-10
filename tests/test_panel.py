@@ -340,6 +340,29 @@ console.log("OK");
     assert proc.returncode == 0, proc.stderr or proc.stdout
 
 
+def test_x1_arka_plan_bolumu(client):
+    h = client.get("/momentum").text
+    # katlanir bolum var, varsayilan kapali (open attr yok), arsiv deseninin aynisi
+    assert 'id="arkaBox"' in h
+    assert '<details id="arkaBox" open' not in h
+    assert "ARKA PLAN DENEYLERİ" in h
+    # ana kart gridi: canli + v6 + v7 + vnext, x1 yok
+    grid = h[h.index('id="kartGrid"'):h.index('id="cmp3"')]
+    for kid in ("kart-canli", "kart-v6", "kart-v7", "kart-vnext"):
+        assert f'id="{kid}"' in grid
+    assert 'id="kart-x1"' not in grid
+    # x1 karti + senkron charti arka bolumde (arsivden once)
+    arka = h[h.index('id="arkaBox"'):h.index('id="arsivBox"')]
+    assert 'id="kart-x1"' in arka
+    assert 'id="spark-x1"' in arka
+    assert 'id="eqx1chart"' in arka
+    assert 'id="eqx1trend"' in arka
+    # motor calisir durumda: MOTORLAR JS listesi x1'i icerir, poll/kiyas surer
+    assert '"id": "x1"' in h
+    # ana ekran 4 sutun
+    assert "repeat(4,minmax(0,1fr))" in h
+
+
 def test_kart_sparkline_24_saat(client):
     h = client.get("/momentum").text
     # spark verisi saf fonksiyonda: 24 saat pencere + ~72 nokta seyreltme
