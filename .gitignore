@@ -17,8 +17,12 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 
-# Veri
-data/
+# Veri (istisna: denetim klasorunun md dosyalari izlenir; CSV ve PDF izlenmez)
+data/*
+!data/denetim/
+data/denetim/*
+!data/denetim/README.md
+!data/denetim/cuzdan_kimlik.md
 logs/
 *.parquet
 

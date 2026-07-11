@@ -158,6 +158,10 @@ def _start_engine() -> None:
             # Makas probe: motorsuz round-trip makas olcumu (canary on-sart verisi)
             from hibrit_trader import makas_probe
             threading.Thread(target=makas_probe.run_forever, daemon=True).start()
+        if os.getenv("DENETIM_ENABLED", "1") != "0":
+            # Denetim: ay devrinde kapali islem defterini CSV'ye yazar
+            from hibrit_trader import denetim
+            threading.Thread(target=denetim.run_forever, daemon=True).start()
         return
     _restore_phantom_session()
     sorunlar = settings.validate()
