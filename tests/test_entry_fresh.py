@@ -257,11 +257,14 @@ def test_rejim_reject_kaydi_ve_kuyruk(fresh_env):
     assert ef._watch["FP1"]["price_at_reject"] == 1.5
 
 
-def test_rejim_reject_verisi_yok_sol_h1_none(fresh_env):
+def test_rejim_veri_yok_ayri_etiket_sol_h1_none(fresh_env):
+    # M1 paterni: veri-yok (fail-closed) negatif-rejimden ayri nedende
     ef.rejim_reject_kaydet([_pair()], "V7", None)
     rows = _rejects(fresh_env)
+    assert rows[0]["reason"] == "rejim_veri_yok"
     assert rows[0]["sol_chg_h1"] is None
     assert rows[0]["engine"] == "V7"
+    assert ef._watch["FP1"]["reason"] == "rejim_veri_yok"
 
 
 def test_rejim_reject_kuyruktayken_tekrar_yazilmaz(fresh_env):
@@ -335,17 +338,30 @@ def test_motor_safety_red_ve_hata_kaydi(fresh_env, monkeypatch, mod, eng_cls, mo
 
     monkeypatch.setattr(
         mod, "check_token",
-        lambda client, chain, token: SimpleNamespace(ok=False, reasons=["honeypot"]),
+        lambda client, chain, token: SimpleNamespace(ok=False, reasons=["honeypot"], kapi=""),
     )
     eng._enter(client=SimpleNamespace())
     assert eng.positions == []
 
-    rows = [r for r in _rejects(fresh_env) if r["reason"].startswith("safety_")]
+    monkeypatch.setattr(
+        mod, "check_token",
+        lambda client, chain, token: SimpleNamespace(
+            ok=False, reasons=["holder verisi alinamadi: ConnectError"], kapi="holder_hata",
+        ),
+    )
+    eng._enter(client=SimpleNamespace())
+    assert eng.positions == []
+
+    rows = [
+        r for r in _rejects(fresh_env)
+        if r["reason"].startswith("safety_") or r["reason"] == "holder_hata"
+    ]
     assert [(r["reason"], r["engine"]) for r in rows] == [
-        ("safety_hata", motor), ("safety_red", motor),
+        ("safety_hata", motor), ("safety_red", motor), ("holder_hata", motor),
     ]
     assert rows[0]["detay"] == "RuntimeError"
     assert rows[1]["detay"] == "honeypot"
+    assert rows[2]["detay"] == "holder verisi alinamadi: ConnectError"
 
 
 def test_rejim_reject_tick_basina_en_cok_5(fresh_env):

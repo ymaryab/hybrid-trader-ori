@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 
@@ -9,6 +10,8 @@ import httpx
 
 from hibrit_trader.rugcheck import RUGCHECK_BASE, _rate_limit
 from hibrit_trader.safety import SafetyReport
+
+log = logging.getLogger(__name__)
 
 _CACHE: dict[str, tuple[float, SafetyReport]] = {}
 _CACHE_TTL = 600.0
@@ -80,7 +83,18 @@ def check_holder_concentration(
         resp.raise_for_status()
         report = holder_report_from_payload(resp.json() or {}, genesis_ok=genesis_ok)
     except httpx.HTTPError as exc:
-        report = SafetyReport(ok=True, reasons=[f"holder risk skip: {type(exc).__name__}"])
+        # Fail-closed: veri alinamayan token GECMEZ. Hata raporu cache'e
+        # YAZILMAZ ki kesinti bitince ilk sorguda toparlansin; basarili
+        # sonuclar 600s cache'te kaldigi icin kesintide asiri red olmaz.
+        log.warning(
+            "HOLDER RISK: veri alinamadi (%s), fail-closed RED: %s",
+            type(exc).__name__, mint,
+        )
+        return SafetyReport(
+            ok=False,
+            reasons=[f"holder verisi alinamadi: {type(exc).__name__}"],
+            kapi="holder_hata",
+        )
 
     _CACHE[cache_key] = (time.time(), report)
     return report

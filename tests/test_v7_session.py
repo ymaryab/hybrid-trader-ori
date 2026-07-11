@@ -198,3 +198,19 @@ def test_writes_only_v7_files(v7_data_dir, monkeypatch):
     assert all(f.startswith("v7_") for f in files), files
     state = json.loads((v7_data_dir / v7.STATE_FILE).read_text())
     assert state["start_balance"] == 1000.0
+
+
+# ---- Kill-switch tek-seferlik log (M1 paterni) ---------------------------------------
+
+def test_kill_switch_tek_seferlik_log(v7_data_dir, monkeypatch, caplog):
+    import logging
+    eng = V7Engine(_settings())
+    monkeypatch.setattr(v7, "kill_is_active", lambda: True)
+    with caplog.at_level(logging.WARNING, logger="hibrit_trader.v7_session"):
+        eng._enter(client=SimpleNamespace())
+        eng._enter(client=SimpleNamespace())
+        assert sum("kill-switch AKTIF" in r.message for r in caplog.records) == 1
+        monkeypatch.setattr(v7, "kill_is_active", lambda: False)
+        monkeypatch.setattr(v7, "scan_all", lambda chains: [])
+        eng._enter(client=SimpleNamespace())
+        assert sum("kill-switch kalkti" in r.message for r in caplog.records) == 1

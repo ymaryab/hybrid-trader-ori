@@ -100,6 +100,7 @@ class V6Engine:
         self._aggressive = os.getenv("PAPER_AGGRESSIVE", "0") == "1"
         self._cooldown_until: dict[str, float] = {}
         self._regime_logged = False
+        self._kill_logged = False
         self._huni = HuniSayac("V6")
         self._lock_fh = None
         self._load()
@@ -220,7 +221,13 @@ class V6Engine:
         if empty <= 0 or self.balance <= 1.0:
             return
         if kill_is_active():
+            if not self._kill_logged:
+                self._kill_logged = True
+                log.critical("V6: kill-switch AKTIF, yeni girisler durdu (cikislar suruyor)")
             return
+        if self._kill_logged:
+            self._kill_logged = False
+            log.warning("V6: kill-switch kalkti, girisler serbest")
         try:
             pairs = scan_all(self.settings.scan_chains)
         except Exception as e:
@@ -277,7 +284,9 @@ class V6Engine:
                 continue
             time.sleep(0.2 if self._aggressive else 1.5)
             if not report.ok:
-                safety_reject_kaydet(pair, "V6", "safety_red", "; ".join(report.reasons[:2]))
+                safety_reject_kaydet(
+                    pair, "V6", report.kapi or "safety_red", "; ".join(report.reasons[:2])
+                )
                 continue
             if self._open_position(pair, budget_each, sol_h1, client=client):
                 empty -= 1

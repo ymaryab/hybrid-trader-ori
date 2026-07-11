@@ -144,7 +144,8 @@ def _reject_kacti(pair, motor: str, scan_price: float, taze: float, fark: float)
 def safety_reject_kaydet(pair, motor: str, neden: str, detay: str = "") -> None:
     """Guvenlik kontrolu girisi engelledi: motor etiketli gorunur reject kaydi.
 
-    neden: "safety_red" (rapor RED) | "safety_hata" (kontrol exception atti).
+    neden: "safety_red" (rapor RED) | "safety_hata" (kontrol exception atti)
+    | "holder_hata" (holder verisi alinamadi, fail-closed RED).
     Sessiz continue'nun yerine olcum satiri; recheck kuyruguna girmez.
     """
     try:
@@ -177,6 +178,8 @@ def rejim_reject_kaydet(cands, motor: str, sol_h1: float | None) -> None:
     try:
         now = time.time()
         yazilan = False
+        # M1 paterni: veri-yok (fail-closed) ile negatif-rejim ayri etikette
+        neden = "rejim_veri_yok" if sol_h1 is None else "rejim_reject"
         for pair in list(cands)[:REJIM_REJECT_MAX_PER_TICK]:
             with _watch_lock:
                 mevcut = _watch.get(pair.pool_address)
@@ -192,7 +195,7 @@ def rejim_reject_kaydet(cands, motor: str, sol_h1: float | None) -> None:
                         "pair": pair.name,
                         "chain": pair.chain,
                         "pool_address": pair.pool_address,
-                        "reason": "rejim_reject",
+                        "reason": neden,
                         "engine": motor,
                         "engines": {motor},
                         "price_at_reject": float(pair.price_usd),
@@ -201,7 +204,7 @@ def rejim_reject_kaydet(cands, motor: str, sol_h1: float | None) -> None:
                     }
             _rejects_yaz({
                 "type": "reject",
-                "reason": "rejim_reject",
+                "reason": neden,
                 "engine": motor,
                 "pair": pair.name,
                 "chain": pair.chain,

@@ -33,6 +33,7 @@ class SafetyReport:
     ok: bool
     reasons: list = field(default_factory=list)  # RED nedenleri (boş = temiz)
     metrics: dict = field(default_factory=dict)  # ham sayısal: top1/top10/insider, mint/freeze, rugcheck_score
+    kapi: str = ""  # kapi-bazli reject etiketi (orn. "holder_hata"); bos = genel safety_red
 
 
 def _goplus_no_data(report: SafetyReport) -> bool:
@@ -231,7 +232,9 @@ def _check_token_taze(
     if holder_risk_enabled():
         holder = check_holder_concentration(client, token_address, genesis_ok=genesis_ok)
         metrics.update(holder.metrics)
-        if not holder.ok and holder.reasons and not holder.reasons[0].startswith("holder risk skip"):
-            return SafetyReport(ok=False, reasons=list(holder.reasons), metrics=metrics)
+        if not holder.ok:
+            return SafetyReport(
+                ok=False, reasons=list(holder.reasons), metrics=metrics, kapi=holder.kapi
+            )
     report.metrics = metrics
     return report

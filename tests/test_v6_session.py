@@ -272,3 +272,19 @@ def test_manage_exits_prefers_fast_feed_over_poll(v6_data_dir, monkeypatch):
     t = _last(v6_data_dir)
     assert t["exit_reason"] == "tp_2"
     assert t["price_source"] == "fast"
+
+
+# ---- Kill-switch tek-seferlik log (M1 paterni) ---------------------------------------
+
+def test_kill_switch_tek_seferlik_log(v6_data_dir, monkeypatch, caplog):
+    import logging
+    eng = V6Engine(_settings())
+    monkeypatch.setattr(v6, "kill_is_active", lambda: True)
+    with caplog.at_level(logging.WARNING, logger="hibrit_trader.v6_session"):
+        eng._enter(client=SimpleNamespace())
+        eng._enter(client=SimpleNamespace())
+        assert sum("kill-switch AKTIF" in r.message for r in caplog.records) == 1
+        monkeypatch.setattr(v6, "kill_is_active", lambda: False)
+        monkeypatch.setattr(v6, "scan_all", lambda chains: [])
+        eng._enter(client=SimpleNamespace())
+        assert sum("kill-switch kalkti" in r.message for r in caplog.records) == 1

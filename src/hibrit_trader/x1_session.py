@@ -249,7 +249,9 @@ class X1Engine:
                 continue
             time.sleep(0.2 if self._aggressive else 1.5)
             if not report.ok:
-                safety_reject_kaydet(pair, "X1", "safety_red", "; ".join(report.reasons[:2]))
+                safety_reject_kaydet(
+                    pair, "X1", report.kapi or "safety_red", "; ".join(report.reasons[:2])
+                )
                 continue
             if self._open_position(pair, budget_each, sol_h1, client=client):
                 empty -= 1

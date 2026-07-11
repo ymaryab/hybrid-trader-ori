@@ -145,3 +145,12 @@ Ders ve alinan onlem:
 - Sapik fiyat ASAGI yonluyse VE havuzun guncel likiditesi giristeki likiditenin %20'si (PRICE_SANITY_LIQ_CRASH_RATIO) altina dusmusse bu veri arizasi degil GERCEK COKUSTUR. Yeni fiyat aninda taban kabul edilir (hakem beklenmez), pozisyon normal cikis kurallarina doner. Likidite verisi GT havuz snapshot'inda zaten var (reserve_in_usd, ayni GET); ek istek yok.
 - Yukari yonlu sapmalar (ORCA/JTO tipi sisik carpan) bu yoldan GECMEZ; hakem onayli re-base aynen surer.
 - Likidite verisi alinamazsa eski hakem yolu aynen isler (davranis degisikligi yok).
+
+## Simetri taramasi ertelenen vidalar (11 Tem 2026)
+
+Karne gunune kadar UYGULANMAZ; degerlendirme gundemine ek:
+
+- v6/v7 slot_dolu kaydi: slot/butce doluyken kacan adaylar M1'deki gibi kayit
+  altina alinacak (kacan-aday makas analizi tamamlanir).
+- entry_fresh kayit-yazma hatalarinin log seviyesi debug -> warning
+  (reject kaydi kaybi prod logunda gorunur olsun).
