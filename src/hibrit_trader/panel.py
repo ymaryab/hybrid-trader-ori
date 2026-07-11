@@ -1240,16 +1240,20 @@ _FILO_MOTORLAR: list[dict] = [
 ]
 
 
+_CANLI_CUZDAN = "DZXZGD5FURZDwa5BWByxxd7iLdCvGxSCy6RWHsgupaYa"
+
+
 def _filo_kart_canli(bagli: bool) -> str:
-    """CANLI karti iki sablonlu: bos-durum (kilitli) / dolu-durum (baglaninca)."""
+    """CANLI karti iki sablonlu: kilitli placeholder / V7 bagli bilgi karti."""
     if bagli:
+        tavan = os.getenv("LIVE_MAX_USD", "").strip() or "-"
         return ('<div class="kart" id="kart-canli">'
                 '<div class="khead"><b style="color:#e3b341">CANLI</b>'
-                '<span class="rozet">gerçek para</span></div>'
-                '<div class="mtmbig" id="mtm-canli">-</div>'
-                '<div class="ksub" id="sub-canli">-</div>'
-                '<canvas class="spark" id="spark-canli" height="36"></canvas>'
-                '<div class="kfoot" id="foot-canli">-</div></div>')
+                '<span class="rozet" style="background:#da3633;color:#fff">gerçek para</span></div>'
+                f'<div class="bosmetin">V7 fill\'leri gerçek cüzdandan geçiyor. '
+                f'Alım bileti tavanı ${tavan} (LIVE_MAX_USD); muhasebe ve yarış '
+                'paper boyutta sürer. Fill\'ler tx imzalı, denetim defterine düşer.</div>'
+                f'<div class="kfoot">cüzdan: {_CANLI_CUZDAN[:4]}…{_CANLI_CUZDAN[-4:]}</div></div>')
     return ('<div class="kart bos" id="kart-canli">'
             '<div class="khead"><b>CANLI</b><span class="rozet">kilitli</span></div>'
             '<div class="kilit">&#128274;</div>'
@@ -1258,7 +1262,7 @@ def _filo_kart_canli(bagli: bool) -> str:
             '<div class="kfoot">cüzdan: bağlı değil</div></div>')
 
 
-def _filo_kart(m: dict) -> str:
+def _filo_kart(m: dict, canli_bagli: bool = False) -> str:
     if m["tip"] == "bot":
         return (f'<div class="kart" id="kart-{m["id"]}" title="{m["desc"]}">'
                 f'<div class="khead"><b style="color:{m["renk"]}">{m["ad"]}</b>'
@@ -1269,13 +1273,13 @@ def _filo_kart(m: dict) -> str:
                 f'<canvas class="spark" id="spark-{m["id"]}" height="36"></canvas>'
                 f'<div class="kfoot" id="foot-{m["id"]}">-</div></div>')
     if m["id"] == "canli":
-        return _filo_kart_canli(bagli=False)
+        return _filo_kart_canli(bagli=canli_bagli)
     return ('<div class="kart bos" id="kart-vnext">'
             '<div class="khead"><b>V-NEXT</b><span class="rozet">yakında</span></div>'
             '<div class="bosmetin">Üç botun derslerinden doğacak aday.</div></div>')
 
 
-def _filo_chart(m: dict) -> str:
+def _filo_chart(m: dict, canli_bagli: bool = False) -> str:
     if m["tip"] == "bot":
         return (f'<div class="chhead"><span class="dot" style="background:{m["renk"]}"></span>'
                 f'<b>{m["ad"]}</b> <span class="chdesc">{m["desc"]}</span>'
@@ -1284,9 +1288,12 @@ def _filo_chart(m: dict) -> str:
                 f'<div class="eqwrap"><span id="eq{m["id"]}trend" class="trendroz"></span>'
                 f'<canvas id="eq{m["id"]}chart"></canvas></div>')
     if m["id"] == "canli":
+        metin = ("V7 canlı: cüzdan eğrisi henüz bağlanmadı, fill'ler denetim defterinde"
+                 if canli_bagli else
+                 "kazanan bağlandığında gerçek para eğrisi burada akacak")
         return ('<div class="chhead"><span class="dot" style="background:#e3b341"></span>'
                 '<b>CANLI</b></div>'
-                '<div class="ph">kazanan bağlandığında gerçek para eğrisi burada akacak</div>')
+                f'<div class="ph">{metin}</div>')
     return ('<div class="chhead"><span class="dot"></span><b>V-NEXT</b></div>'
             '<div class="ph">aday bot eklendiğinde eğrisi burada</div>')
 
@@ -1374,7 +1381,7 @@ _MOMENTUM_HTML = """<!doctype html>
  <div>
   <span id="feedBadge" class="badge">feed: -</span>
   <span id="rejimBadge" class="badge">rejim sol_h1: -</span>
-  <span class="badge">paper</span>
+  <!--MODROZET-->
  </div>
 </div>
 <div id="kartGrid"><!--KARTLAR--></div>
@@ -2049,8 +2056,27 @@ def momentum_page() -> str:
     aktif filo /api/filo'dan 5sn'de bir TEK poll ile beslenir (tek gercek kaynak).
     arka=True motorlar ana ekran yerine katlanir "Arka plan deneyleri" bolumune
     basilir; MOTORLAR JS listesi degismez, canli guncelleme aynen surer."""
-    kartlar = "".join(_filo_kart(m) for m in _FILO_MOTORLAR if not m.get("arka"))
-    chartlar = "".join(_filo_chart(m) for m in _FILO_MOTORLAR if not m.get("arka"))
+    # Mod rozeti + CANLI karti render aninda okunur (sayfa yenilemede guncel)
+    from hibrit_trader.broker import live_kilit_acik
+    mode = os.getenv("BROKER_MODE", "paper").strip().lower()
+    try:
+        kilit = live_kilit_acik()
+    except Exception:
+        kilit = False
+    canli_bagli = mode == "live" and kilit
+    if canli_bagli:
+        mod_rozet = '<span class="badge err">CANLI (V7)</span>'
+    elif mode == "live":
+        mod_rozet = '<span class="badge">live (kilit kapalı)</span>'
+    elif mode == "dryrun":
+        mod_rozet = ('<span class="badge" style="color:#e3b341;border-color:#9e6a03">'
+                     'dryrun</span>')
+    else:
+        mod_rozet = '<span class="badge">paper</span>'
+    kartlar = "".join(_filo_kart(m, canli_bagli)
+                      for m in _FILO_MOTORLAR if not m.get("arka"))
+    chartlar = "".join(_filo_chart(m, canli_bagli)
+                       for m in _FILO_MOTORLAR if not m.get("arka"))
     arka = "".join(
         f'<div style="max-width:300px;margin:12px 0">{_filo_kart(m)}</div>{_filo_chart(m)}'
         for m in _FILO_MOTORLAR if m.get("arka")
@@ -2064,6 +2090,7 @@ def momentum_page() -> str:
             .replace("<!--KARTLAR-->", kartlar)
             .replace("<!--CHARTCOL-->", chartlar)
             .replace("<!--ARKA-->", arka)
+            .replace("<!--MODROZET-->", mod_rozet)
             .replace('"__MOTORLAR__"', motor_js))
 
 

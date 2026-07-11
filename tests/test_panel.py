@@ -233,6 +233,35 @@ def test_momentum_yeni_duzen(client):
     assert '"id": "v6"' in h
 
 
+def test_momentum_mod_rozeti_ve_canli_karti(client, monkeypatch, tmp_path):
+    # paper (varsayilan): gri rozet + kilitli CANLI karti
+    monkeypatch.delenv("BROKER_MODE", raising=False)
+    monkeypatch.delenv("LIVE_UNLOCKED", raising=False)
+    h = client.get("/momentum").text
+    assert '<span class="badge">paper</span>' in h
+    assert "cüzdan: bağlı değil" in h
+    # dryrun rozeti
+    monkeypatch.setenv("BROKER_MODE", "dryrun")
+    h = client.get("/momentum").text
+    assert ">dryrun</span>" in h and ">paper</span>" not in h
+    # live ama kilit kapali: durust ara durum, kart hala kilitli
+    monkeypatch.setenv("BROKER_MODE", "live")
+    h = client.get("/momentum").text
+    assert "live (kilit kapalı)" in h
+    assert "cüzdan: bağlı değil" in h
+    # live + cift kilit acik: CANLI (V7) rozeti + bilgi karti
+    monkeypatch.setenv("LIVE_UNLOCKED", "1")
+    monkeypatch.setenv("MOMENTUM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LIVE_MAX_USD", "25")
+    (tmp_path / "LIVE_ONAY").write_text("canli-islem-onayliyorum", encoding="utf-8")
+    h = client.get("/momentum").text
+    assert 'class="badge err">CANLI (V7)</span>' in h
+    assert "cüzdan: bağlı değil" not in h
+    assert "gerçek para" in h and "$25" in h
+    assert "DZXZ" in h  # cuzdan kisaltmasi kfoot'ta
+    assert "denetim defterin" in h
+
+
 def test_momentum_trend_katmani(client):
     h = client.get("/momentum").text
     # aktif bot chartlarinda trend rozeti; bos-durum (canli/vnext) etkilenmez
