@@ -105,6 +105,38 @@ def test_api_state_chain_opportunities(client):
 # ---- PANEL SENKRON: /api/filo tek gercek kaynak ---------------------------------
 
 
+def test_kill_akisi_dosya_ve_filo_durumu(client, monkeypatch, tmp_path):
+    from hibrit_trader import killswitch
+
+    monkeypatch.setenv("MOMENTUM_DATA_DIR", str(tmp_path))
+    kill_dosya = tmp_path / "KILL"
+    monkeypatch.setattr(killswitch, "KILL_FILE", kill_dosya)
+    monkeypatch.delenv("KILL_SWITCH", raising=False)
+
+    assert client.get("/api/filo").json()["kill"] is False
+    r = client.post("/api/kill")
+    assert r.status_code == 200 and r.json()["kill_switch"] is True
+    assert kill_dosya.exists()
+    assert client.get("/api/filo").json()["kill"] is True
+    r = client.delete("/api/kill")
+    assert r.status_code == 200 and r.json()["kill_switch"] is False
+    assert not kill_dosya.exists()
+    assert client.get("/api/filo").json()["kill"] is False
+
+
+def test_momentum_kill_butonu_ve_bant(client):
+    h = client.get("/momentum").text
+    assert 'id="killBtn"' in h
+    assert 'id="killBant"' in h
+    assert "DURDURULDU · kill-switch aktif" in h
+    assert "Filo DURDURULSUN mu?" in h
+    assert "Kill-switch kaldırılsın mı?" in h
+    # durum ayni /api/filo cevabindan; tetik mevcut route'lara gider
+    assert "basKill(d.kill);" in h
+    assert 'fetch("/api/kill",{method:killAktif?"DELETE":"POST"})' in h
+    assert 'b.textContent=killAktif?"BAŞLAT":"DURDUR";' in h
+
+
 def test_api_filo_tek_tick_tek_kaynak(client, monkeypatch, tmp_path):
     import json
     import time as _time

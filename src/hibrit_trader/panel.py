@@ -594,6 +594,7 @@ def api_filo(limit: int = Query(30)) -> dict:
         out[prefix] = _motor_ozet(data_dir, prefix, now, limit)
     out["cmp"] = {p: out[p]["summary"]["realized_pnl"]
                   for p in ("v6", "v7", "x1")}
+    out["kill"] = is_active()
     return out
 
 
@@ -1249,6 +1250,7 @@ def _filo_kart_canli(bagli: bool) -> str:
             '<div class="khead"><b>CANLI</b><span class="rozet">kilitli</span></div>'
             '<div class="kilit">&#128274;</div>'
             '<div class="bosmetin">Gerçek para. Karne günü kazanan buraya bağlanır.</div>'
+            '<button id="killBtn" disabled>...</button>'
             '<div class="kfoot">cüzdan: bağlı değil</div></div>')
 
 
@@ -1353,8 +1355,16 @@ _MOMENTUM_HTML = """<!doctype html>
  .ex-to{background:#21262d;color:#8b949e}
  .ex-amber{background:rgba(210,153,34,.18);color:#d29922}
  tr.loss td{background:rgba(248,81,73,.06)}
+ #killBant{background:#f85149;color:#fff;font-weight:bold;text-align:center;
+   padding:10px;margin-bottom:14px;border-radius:6px;letter-spacing:1px}
+ #killBtn{width:100%;margin-top:8px;padding:7px 0;font:bold 12px monospace;
+   border-radius:6px;cursor:pointer;background:transparent;
+   border:1px solid #30363d;color:#8b949e}
+ #killBtn.dur{border-color:#f85149;color:#f85149}
+ #killBtn.bas{border-color:#3fb950;color:#3fb950}
  @media(max-width:600px){.eqwrap{height:210px}body{padding:12px}}
 </style></head><body>
+<div id="killBant" style="display:none">DURDURULDU · kill-switch aktif · yeni işlem açılmaz</div>
 <div id="topbar">
  <div><h1>AKTİF YARIŞ</h1></div>
  <div>
@@ -1983,9 +1993,31 @@ async function filoTick(){
     const k=document.getElementById("kart-"+m.id);
     if(k)k.classList.toggle("lider",m.id===lid);
   }
-  basCmp(d.cmp); basIslemler(d); basRejim(d);
+  basCmp(d.cmp); basIslemler(d); basRejim(d); basKill(d.kill);
   updEtiket();
 }
+
+// ---- Acil durdur/baslat: durum KILL dosyasindan (/api/filo kill alani) -----------
+let killAktif=null;
+function basKill(k){
+  killAktif=!!k;
+  const bant=document.getElementById("killBant");
+  if(bant)bant.style.display=killAktif?"block":"none";
+  const b=document.getElementById("killBtn");
+  if(!b)return;
+  b.disabled=false;
+  b.textContent=killAktif?"BAŞLAT":"DURDUR";
+  b.className=killAktif?"bas":"dur";
+}
+document.getElementById("killBtn").addEventListener("click",async()=>{
+  if(killAktif===null)return;
+  const soru=killAktif
+    ?"Kill-switch kaldırılsın mı? Filo normal akışa döner."
+    :"Filo DURDURULSUN mu? Tüm motorlar yeni işlem açmayı keser.";
+  if(!confirm(soru))return;
+  try{await fetch("/api/kill",{method:killAktif?"DELETE":"POST"});}catch(e){}
+  filoTick();
+});
 
 // ---- Canli chartlar: kart sirasiyla birebir ayni konfig listesinden ---------------
 let eqSyncWin=0;
