@@ -6,6 +6,7 @@ uvicorn
 python-dotenv
 pydantic
 solders
-solana
+# 0.40'ta solana.rpc.api yolu degisti, broker kiriliyor (VPS kurulumunda goruldu)
+solana==0.37.1
 web3
 pytest
