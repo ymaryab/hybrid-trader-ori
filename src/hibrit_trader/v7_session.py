@@ -373,12 +373,11 @@ class V7Engine:
         if not devam:
             log.error("V7 GIRIS IPTAL %s: canli alim gerceklesmedi", pair.name)
             return False
+        if canli is not None and canli.fiyat > 0:
+            eff_price = canli.fiyat  # sadece live: gercek fill fiyati baglayici
+        # Muhasebe her modda paper boyutta surer; LIVE_MAX_USD tavani yarisi etkilemez.
+        # Cuzdandaki gercek miktar ayrica canli_miktar'da tutulur (satis onu kullanir).
         amount_token = usd / eff_price
-        if canli is not None:  # sadece live: gercek fill fiyati/miktari baglayici
-            if canli.fiyat > 0:
-                eff_price = canli.fiyat
-            if canli.miktar_token > 0:
-                amount_token = canli.miktar_token
         now = time.time()
         pos = {
             "trade_id": new_trade_id(pair.pool_address, now),
@@ -402,8 +401,11 @@ class V7Engine:
             "mae_pct": 0.0,
             "last_price": eff_price,
         }
-        if canli is not None and canli.tx_id:
-            pos["tx_al"] = canli.tx_id
+        if canli is not None:
+            if canli.tx_id:
+                pos["tx_al"] = canli.tx_id
+            if canli.miktar_token > 0:
+                pos["canli_miktar"] = canli.miktar_token
         self.balance -= (usd + gas)
         self.positions.append(pos)
         self._save()
@@ -447,7 +449,8 @@ class V7Engine:
         slip = _mom_slippage(cost, pos["liq_entry"])
         eff_price = price * (1 - slip)
         devam, canli = self._exec_fill("sat", pos["token_address"],
-                                       amount_token=pos["amount_token"],
+                                       amount_token=pos.get("canli_miktar")
+                                       or pos["amount_token"],
                                        ref_fiyat=eff_price)
         if not devam:
             log.error("V7 SATIS ERTELENDI %s: canli satis gerceklesmedi, "

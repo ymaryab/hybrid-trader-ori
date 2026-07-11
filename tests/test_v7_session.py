@@ -315,21 +315,43 @@ def test_exec_live_alim_basarisiz_giris_yok(v7_data_dir, monkeypatch):
     assert eng.balance == v7.START_BALANCE  # bakiye mutasyonu fill'den sonra
 
 
-def test_exec_live_fill_fiyat_miktar_imza_baglayici(v7_data_dir, monkeypatch):
+def test_exec_live_fill_fiyat_imza_baglayici_muhasebe_paper_boyut(v7_data_dir, monkeypatch):
     eng = V7Engine(_settings())
     al = ExecFill(ok=True, fiyat=1.05, miktar_token=95.0, tx_id="SIGAL")
     sat = ExecFill(ok=True, fiyat=1.20, miktar_token=95.0, tx_id="SIGSAT")
     eng._exec = _StubExec("live", [al, sat])
     pos = _open(eng)
     assert pos["entry_price"] == 1.05
-    assert pos["amount_token"] == 95.0
+    # muhasebe paper boyutta: usd / fill fiyati; cuzdan miktari ayri saklanir
+    assert pos["amount_token"] == pytest.approx(100.0 / 1.05)
+    assert pos["canli_miktar"] == 95.0
     assert pos["tx_al"] == "SIGAL"
     _tick_price(eng, pos, 1.30, pos["opened_ts"] + 60, monkeypatch)
     t = _last(v7_data_dir)
     assert t["exit_price"] == 1.20  # canli satis fiyati, paper slip degil
     assert t["signature"] == "SIGSAT" and t["signature_al"] == "SIGAL"
     o_sat = eng._exec.orders[1]
-    assert o_sat.yon == "sat" and o_sat.amount_token == 95.0
+    assert o_sat.yon == "sat" and o_sat.amount_token == 95.0  # gercek miktar satilir
+
+
+def test_exec_live_tavanli_fill_satis_gercek_miktari_kullanir(v7_data_dir, monkeypatch):
+    # LIVE_MAX_USD=25 senaryosu: broker $25'lik alir (23.8 token @ 1.05),
+    # paper muhasebe $100 boyutta surer, satis cuzdandaki 23.8'i satar.
+    eng = V7Engine(_settings())
+    al = ExecFill(ok=True, fiyat=1.05, miktar_token=23.8, tx_id="SIGAL")
+    sat = ExecFill(ok=True, fiyat=1.20, miktar_token=23.8, tx_id="SIGSAT")
+    eng._exec = _StubExec("live", [al, sat])
+    pos = _open(eng)
+    assert pos["cost_usd"] == 100.0  # paper bilet degismedi
+    assert pos["amount_token"] == pytest.approx(100.0 / 1.05)
+    assert pos["canli_miktar"] == 23.8
+    _tick_price(eng, pos, 1.30, pos["opened_ts"] + 60, monkeypatch)
+    o_sat = eng._exec.orders[1]
+    assert o_sat.amount_token == 23.8
+    t = _last(v7_data_dir)
+    # PnL paper boyutta hesaplanir (yaris etkilenmez)
+    assert t["pnl_usd"] == pytest.approx(
+        (100.0 / 1.05) * 1.20 - 100.0 - 0.002, abs=0.01)
 
 
 def test_exec_live_satis_basarisiz_pozisyon_acik_kalir(v7_data_dir, monkeypatch):

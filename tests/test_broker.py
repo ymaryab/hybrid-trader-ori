@@ -333,6 +333,7 @@ def test_golge_olcum_kapaliyken_thread_acmaz(data_dir, monkeypatch):
 # ---- live SOL swap secimi (ASAMA 0, 11 Tem: kasa SOL, alim SOL->token) ------------------
 
 def test_live_execute_sol_swap_al_ve_sat(data_dir, monkeypatch):
+    monkeypatch.delenv("LIVE_MAX_USD", raising=False)
     monkeypatch.setenv("LIVE_UNLOCKED", "1")
     (data_dir / "LIVE_ONAY").write_text("canli-islem-onayliyorum", encoding="utf-8")
     br = make_exec_broker("live", http=FakeClient())
@@ -367,3 +368,51 @@ def test_live_execute_sol_swap_al_ve_sat(data_dir, monkeypatch):
     assert sat.fiyat == pytest.approx(99.0 / 500.0)  # proceeds_usd / miktar
     assert cagri == [("sol_to_token", 100.0, 50),
                      ("token_to_sol", 500 * 10 ** 9, 50)]
+
+
+def test_live_max_usd_tavani_sadece_alimi_kirpar(data_dir, monkeypatch):
+    monkeypatch.setenv("LIVE_MAX_USD", "25")
+    monkeypatch.setenv("LIVE_UNLOCKED", "1")
+    (data_dir / "LIVE_ONAY").write_text("canli-islem-onayliyorum", encoding="utf-8")
+    br = make_exec_broker("live", http=FakeClient())
+    monkeypatch.setattr(broker, "_cuzdan_yukle", lambda mode: object())
+    monkeypatch.setattr(br, "_decimals", lambda mint: 9)
+    cagri = []
+
+    def sahte_al(http, rpc, kp, mint, usd, bps):
+        cagri.append(("sol_to_token", usd, bps))
+        return {"signature": "SIGAL", "in_amount": 312_500_000,
+                "out_amount": 125 * 10 ** 9, "cost_usd": 25.0,
+                "sol_price_usd": 80.0}
+
+    def sahte_sat(http, rpc, kp, mint, amount_raw, bps):
+        cagri.append(("token_to_sol", amount_raw, bps))
+        return {"signature": "SIGSAT", "in_amount": amount_raw,
+                "out_amount": 309_375_000, "proceeds_usd": 24.75,
+                "sol_price_usd": 80.0}
+
+    monkeypatch.setattr("hibrit_trader.jupiter.swap_sol_to_token", sahte_al)
+    monkeypatch.setattr("hibrit_trader.jupiter.swap_token_to_sol", sahte_sat)
+
+    al = br.execute(ExecOrder(engine="V7", yon="al", token_address=TOK,
+                              usd=215.0, ref_fiyat=0.2))
+    assert al.ok and al.miktar_token == pytest.approx(125.0)
+    assert al.fiyat == pytest.approx(0.2)  # birim fiyat tavandan etkilenmez
+
+    # satis tavana takilmaz: cuzdandaki gercek miktar aynen satilir
+    sat = br.execute(ExecOrder(engine="V7", yon="sat", token_address=TOK,
+                               amount_token=125.0, ref_fiyat=0.2))
+    assert sat.ok and sat.fiyat == pytest.approx(24.75 / 125.0)
+    assert cagri == [("sol_to_token", 25.0, 50),
+                     ("token_to_sol", 125 * 10 ** 9, 50)]
+
+
+def test_live_max_usd_bos_veya_sifir_tavan_yok(monkeypatch):
+    monkeypatch.delenv("LIVE_MAX_USD", raising=False)
+    assert broker._live_max_usd() == 0.0
+    monkeypatch.setenv("LIVE_MAX_USD", "0")
+    assert broker._live_max_usd() == 0.0
+    monkeypatch.setenv("LIVE_MAX_USD", "bozuk")
+    assert broker._live_max_usd() == 0.0
+    monkeypatch.setenv("LIVE_MAX_USD", "25")
+    assert broker._live_max_usd() == 25.0

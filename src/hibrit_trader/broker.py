@@ -309,6 +309,14 @@ class DryrunExecBroker:
 
 # ---- Live: cift kilit arkasinda gercek islem ------------------------------------------
 
+def _live_max_usd() -> float:
+    """LIVE_MAX_USD: canli alim bileti ust siniri (USD). 0 veya bos = tavan yok."""
+    try:
+        return float(os.getenv("LIVE_MAX_USD", "0") or 0.0)
+    except ValueError:
+        return 0.0
+
+
 class LiveExecBroker(DryrunExecBroker):
     mode = "live"
 
@@ -338,8 +346,15 @@ class LiveExecBroker(DryrunExecBroker):
             from hibrit_trader.jupiter import swap_sol_to_token, swap_token_to_sol
             rpc = RpcClient(_rpc_url())
             if order.yon == "al":
+                # Canli bilet tavani: sadece alim, satis her zaman gercek miktar
+                usd_exec = order.usd
+                tavan = _live_max_usd()
+                if 0 < tavan < usd_exec:
+                    log.warning("BROKER LIVE %s al bileti tavanlandi: $%.2f -> $%.2f "
+                                "(LIVE_MAX_USD)", order.engine, usd_exec, tavan)
+                    usd_exec = tavan
                 res = swap_sol_to_token(self._http, rpc, keypair,
-                                        order.token_address, order.usd,
+                                        order.token_address, usd_exec,
                                         order.slippage_bps)
                 miktar_token = res["out_amount"] / 10 ** dec
                 fiyat = res["cost_usd"] / miktar_token if miktar_token > 0 else 0.0
