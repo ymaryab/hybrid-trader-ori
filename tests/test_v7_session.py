@@ -214,3 +214,50 @@ def test_kill_switch_tek_seferlik_log(v7_data_dir, monkeypatch, caplog):
         monkeypatch.setattr(v7, "scan_all", lambda chains: [])
         eng._enter(client=SimpleNamespace())
         assert sum("kill-switch kalkti" in r.message for r in caplog.records) == 1
+
+
+# ---- Gunluk zarar kesicisi (M1 paterni; varsayilan 0 = kapali) -----------------------
+
+def test_daily_loss_varsayilan_kapali(v7_data_dir, monkeypatch):
+    assert v7.DAILY_LOSS_LIMIT_USD == 0.0
+    eng = V7Engine(_settings())
+    eng._day_realized = -10_000.0
+    assert len(_enter(eng, monkeypatch, _pair())) == 1  # limit kapali, giris serbest
+
+
+def test_daily_loss_limit_asilinca_giris_yok_tek_log(v7_data_dir, monkeypatch, caplog):
+    import logging
+    monkeypatch.setattr(v7, "DAILY_LOSS_LIMIT_USD", 50.0)
+    eng = V7Engine(_settings())
+    eng._day_realized_add(-50.0, time.time())
+    with caplog.at_level(logging.CRITICAL, logger="hibrit_trader.v7_session"):
+        assert _enter(eng, monkeypatch, _pair()) == []
+        assert _enter(eng, monkeypatch, _pair()) == []
+    assert sum("zarar limiti" in r.message for r in caplog.records) == 1
+
+
+def test_daily_loss_gun_devri_bloku_kaldirir(v7_data_dir, monkeypatch):
+    monkeypatch.setattr(v7, "DAILY_LOSS_LIMIT_USD", 50.0)
+    eng = V7Engine(_settings())
+    eng._day_key = "2000-01-01"  # dun asilan limit bugunu bloklamasin
+    eng._day_realized = -500.0
+    assert len(_enter(eng, monkeypatch, _pair())) == 1
+    assert eng._day_realized == 0.0
+
+
+def test_daily_loss_kapanista_birikir(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    pos = _open(eng)
+    _tick_price(eng, pos, pos["entry_price"] * 0.89, pos["opened_ts"] + 60, monkeypatch)
+    t = _last(v7_data_dir)
+    assert t["pnl_usd"] < 0
+    assert eng._day_realized == pytest.approx(t["pnl_usd"], abs=1e-3)
+
+
+def test_daily_loss_restartta_trades_dosyasindan_yuklenir(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    pos = _open(eng)
+    _tick_price(eng, pos, pos["entry_price"] * 0.89, pos["opened_ts"] + 60, monkeypatch)
+    kayip = _last(v7_data_dir)["pnl_usd"]
+    eng2 = V7Engine(_settings())
+    assert eng2._day_realized == pytest.approx(kayip)

@@ -70,6 +70,7 @@ LATE_STOP_PCT = -2.0    # 30dk sonrası: girişin -%2 altı SAT
 DISASTER_PCT = float(os.getenv("V7_DISASTER_PCT", "-10"))  # TEK fark: her an mutlak taban
 CEILING_SEC = 60 * 60   # 60dk tavan
 SOL_H1_MIN = float(os.getenv("V7_SOL_H1_MIN", "0.5"))  # V-final 05 Tem: sol_h1 0-0.4 bandi ortak kaybettirendi
+DAILY_LOSS_LIMIT_USD = float(os.getenv("MOM_DAILY_LOSS_LIMIT_USD", "0"))  # 0 = kapali (M1 ile ayni env)
 COOLDOWN_LOSS_SEC = float(os.getenv("MOM_COOLDOWN_STOP_MIN", "60")) * 60
 COOLDOWN_EXIT_SEC = float(os.getenv("MOM_COOLDOWN_EXIT_MIN", "15")) * 60
 
@@ -91,9 +92,13 @@ class V7Engine:
         self._cooldown_until: dict[str, float] = {}
         self._regime_logged = False
         self._kill_logged = False
+        self._day_key: str = ""                     # UTC gun anahtari (YYYY-MM-DD)
+        self._day_realized: float = 0.0             # gun ici realized PnL (limit icin)
+        self._limit_logged = False                  # zarar limiti uyarisi tek sefer
         self._huni = HuniSayac("V7")
         self._lock_fh = None
         self._load()
+        self._restore_day_realized()
 
     # ---- Dosya işleri (v2 hardening desenleri: atomik save, anında persist) ----
     def _path(self, name: str) -> Path:
@@ -142,6 +147,63 @@ class V7Engine:
         payload = {"ts": round(time.time(), 3), "ts_iso": _now_iso(), **row}
         with p.open("a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+
+    # ---- Gun ici realized PnL sayaci (M1 paterni; limit kapaliyken etkisiz) -----
+    def _day_realized_add(self, pnl: float, now: float) -> None:
+        key = time.strftime("%Y-%m-%d", time.gmtime(now))
+        if key != self._day_key:
+            self._day_key = key
+            self._day_realized = 0.0
+            self._limit_logged = False
+        self._day_realized += pnl
+
+    def _restore_day_realized(self) -> None:
+        """Restart'ta bugunun (UTC) realized PnL'ini trades dosyasindan geri yukle."""
+        self._day_key = time.strftime("%Y-%m-%d", time.gmtime())
+        try:
+            p = self._path(TRADES_FILE)
+            if not p.exists():
+                return
+            total = 0.0
+            for ln in p.read_text().splitlines():
+                if not ln.strip():
+                    continue
+                try:
+                    t = json.loads(ln)
+                    ts = float(t.get("ts") or 0.0)
+                    if time.strftime("%Y-%m-%d", time.gmtime(ts)) == self._day_key:
+                        total += float(t.get("pnl_usd") or 0.0)
+                except Exception:
+                    continue
+            self._day_realized = total
+        except Exception:
+            log.debug("V7 gun ici pnl geri yuklenemedi", exc_info=True)
+
+    def _entries_blocked(self) -> str | None:
+        """Yeni giris engeli var mi? None = serbest. Cikis yonetimi HER ZAMAN surer."""
+        if kill_is_active():
+            if not self._kill_logged:
+                self._kill_logged = True
+                log.critical("V7: kill-switch AKTIF, yeni girisler durdu (cikislar suruyor)")
+            return "kill_switch"
+        if self._kill_logged:
+            self._kill_logged = False
+            log.warning("V7: kill-switch kalkti, girisler serbest")
+        if DAILY_LOSS_LIMIT_USD > 0:
+            key = time.strftime("%Y-%m-%d", time.gmtime())
+            if key != self._day_key:  # gun devri: dunku zarar bugunu bloklamasin
+                self._day_key = key
+                self._day_realized = 0.0
+                self._limit_logged = False
+            if self._day_realized <= -DAILY_LOSS_LIMIT_USD:
+                if not self._limit_logged:
+                    self._limit_logged = True
+                    log.critical(
+                        "V7: gunluk zarar limiti asildi ($%.2f <= -$%.2f), "
+                        "bugun (UTC) yeni giris yok", self._day_realized, DAILY_LOSS_LIMIT_USD,
+                    )
+                return "daily_loss_limit"
+        return None
 
     def _acquire_lock(self) -> bool:
         import fcntl
@@ -195,14 +257,8 @@ class V7Engine:
         empty = MAX_SLOTS - len(self.positions)
         if empty <= 0 or self.balance <= 1.0:
             return
-        if kill_is_active():
-            if not self._kill_logged:
-                self._kill_logged = True
-                log.critical("V7: kill-switch AKTIF, yeni girisler durdu (cikislar suruyor)")
+        if self._entries_blocked():  # kill-switch / gunluk zarar limiti (varsayilan kapali)
             return
-        if self._kill_logged:
-            self._kill_logged = False
-            log.warning("V7: kill-switch kalkti, girisler serbest")
         try:
             pairs = scan_all(self.settings.scan_chains)
         except Exception as e:
@@ -380,6 +436,7 @@ class V7Engine:
         })
         self.balance += proceeds
         self.realized_pnl += pnl
+        self._day_realized_add(pnl, now)
         cd = COOLDOWN_LOSS_SEC if reason in ("stop_gec", "stop_felaket") else COOLDOWN_EXIT_SEC
         if pos.get("token_address"):
             self._cooldown_until[pos["token_address"]] = now + cd
