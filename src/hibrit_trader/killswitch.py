@@ -19,6 +19,7 @@ def activate(reason: str = "manuel") -> None:
     KILL_FILE.parent.mkdir(parents=True, exist_ok=True)
     KILL_FILE.write_text(f"{datetime.now(timezone.utc).isoformat()} — {reason}\n")
     _event(f"kill-switch AKTIF — {reason}", reason=reason)
+    notify(f"KILL AKTIF ({reason}): filo durduruldu, yeni islem acilmaz.")
 
 
 def deactivate() -> None:
@@ -27,6 +28,7 @@ def deactivate() -> None:
         KILL_FILE.unlink()
     if was:
         _event("kill-switch kapatildi")
+        notify("Kill-switch kaldirildi: filo normal akisa dondu.")
 
 
 def _event(message: str, **fields) -> None:

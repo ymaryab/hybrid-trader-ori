@@ -29,6 +29,9 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setenv("HIBRIT_BRAIN_ENABLED", "0")
     # Golge olcum testte gercek Jupiter/RPC cagrisi yapmasin
     monkeypatch.setenv("BROKER_GOLGE_OLCUM", "0")
+    # Telegram bildirimi testte gercek mesaj atmasin (killswitch.notify erken doner)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "")
 
 
 @pytest.fixture(autouse=True)
