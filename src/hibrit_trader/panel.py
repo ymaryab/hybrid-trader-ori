@@ -162,6 +162,11 @@ def _start_engine() -> None:
             # Denetim: ay devrinde kapali islem defterini CSV'ye yazar
             from hibrit_trader import denetim
             threading.Thread(target=denetim.run_forever, daemon=True).start()
+        if os.getenv("CANLI_GOSTERGE_ENABLED", "1") != "0" and _canli_bagli_mi():
+            # Canli cuzdan gostergesi: SOL bakiye + acik canli poz degeri, kendi
+            # dongusunde (RPC kotasi panel poll'undan bagimsiz), sadece okur
+            from hibrit_trader import canli_gosterge
+            threading.Thread(target=canli_gosterge.run_forever, daemon=True).start()
         return
     _restore_phantom_session()
     sorunlar = settings.validate()
@@ -171,6 +176,17 @@ def _start_engine() -> None:
     t.start()
     if os.getenv("HIBRIT_BRAIN_AUTO", "1") != "0":
         engine.schedule_brain_startup()
+
+
+def _canli_bagli_mi() -> bool:
+    """BROKER_MODE=live + kilit acik mi? Startup ve sayfa render ortak kontrolu."""
+    if os.getenv("BROKER_MODE", "paper").strip().lower() != "live":
+        return False
+    from hibrit_trader.broker import live_kilit_acik
+    try:
+        return live_kilit_acik()
+    except Exception:
+        return False
 
 
 def _liquidity_for_pool(pool_address: str) -> float:
@@ -491,6 +507,14 @@ def _equity_series(prefix: str, minutes: int) -> dict:
                 continue
     if "balance" in state:  # canli uc nokta: ust ozetle AYNI hesap (_live_equity)
         points.append((time.time(), _live_equity(state)))
+    return {
+        "start_balance": start_bal,
+        "points": _seri_pencere(points, minutes),
+    }
+
+
+def _seri_pencere(points: list[tuple[float, float]], minutes: int) -> list[list]:
+    """Seriyi pencereye kirp + seyrelt; ms cinsine cevir (tum equity endpointleri)."""
     points.sort(key=lambda p: p[0])
     if minutes > 0:
         cutoff = time.time() - minutes * 60
@@ -499,10 +523,7 @@ def _equity_series(prefix: str, minutes: int) -> dict:
     if len(points) > 1500:  # tarayıcıyı boğma
         stride = len(points) // 1500 + 1
         points = points[::stride] + [points[-1]]
-    return {
-        "start_balance": start_bal,
-        "points": [[round(ts * 1000), eq] for ts, eq in points],
-    }
+    return [[round(ts * 1000), eq] for ts, eq in points]
 
 
 def _oku_json(path: Path) -> dict:
@@ -582,6 +603,20 @@ def _motor_ozet(data_dir: Path, prefix: str, now: float, limit: int,
     }
 
 
+def _canli_blok() -> dict | None:
+    """CANLI kart verisi: canli_gosterge snapshot'indan turetilir, RPC cagrisi yok."""
+    from hibrit_trader import canli_gosterge
+    snap = canli_gosterge.son()
+    if not snap:
+        return None
+    baz = canli_gosterge.baz_usd()
+    pct = round((snap["mtm"] / baz - 1) * 100, 2) if baz > 0 else None
+    return {"mtm": snap["mtm"], "baz": baz, "pnl_pct": pct,
+            "sol": snap["sol"], "sol_fiyat": snap["sol_fiyat"],
+            "poz_usd": snap["poz_usd"], "acik_poz": snap["acik_poz"],
+            "islem_n": snap["islem_n"], "ts": snap["ts"]}
+
+
 @app.get("/api/filo")
 def api_filo(limit: int = Query(30)) -> dict:
     """AKTIF filo TEK tick: uc motor (v6/v7/x1) + kiyas satiri tek geciste, tek 'now' ile.
@@ -599,6 +634,9 @@ def api_filo(limit: int = Query(30)) -> dict:
     out["cmp"] = {p: out[p]["summary"]["realized_pnl"]
                   for p in ("v6", "v7", "x1")}
     out["kill"] = is_active()
+    canli = _canli_blok()
+    if canli is not None:
+        out["canli"] = canli
     return out
 
 
@@ -635,6 +673,28 @@ def api_v6_equity(minutes: int = Query(0, ge=0)) -> dict:
 @app.get("/api/v7/equity")
 def api_v7_equity(minutes: int = Query(0, ge=0)) -> dict:
     return _equity_series("v7", minutes)
+
+
+@app.get("/api/canli/equity")
+def api_canli_equity(minutes: int = Query(0, ge=0)) -> dict:
+    """Gercek cuzdan egrisi: canli_equity.jsonl + snapshot uc noktasi, baz referans."""
+    from hibrit_trader import canli_gosterge
+    points: list[tuple[float, float]] = []
+    ep = Path(os.getenv("MOMENTUM_DATA_DIR", "data")) / "canli_equity.jsonl"
+    if ep.exists():
+        for ln in ep.read_text().splitlines():
+            if not ln.strip():
+                continue
+            try:
+                d = json.loads(ln)
+                points.append((float(d["ts"]), float(d["eq"])))
+            except Exception:
+                continue
+    snap = canli_gosterge.son()
+    if snap:  # canli uc nokta: seri bayat bitmesin (motor serileriyle ayni ilke)
+        points.append((time.time(), snap["mtm"]))
+    return {"start_balance": canli_gosterge.baz_usd(),
+            "points": _seri_pencere(points, minutes)}
 
 
 @app.get("/api/v8/equity")
@@ -1250,11 +1310,14 @@ def _filo_kart_canli(bagli: bool) -> str:
         return ('<div class="kart" id="kart-canli">'
                 '<div class="khead"><b style="color:#e3b341">CANLI</b>'
                 '<span class="rozet" style="background:#da3633;color:#fff">gerçek para</span></div>'
-                f'<div class="bosmetin">V7 fill\'leri gerçek cüzdandan geçiyor. '
-                f'Alım bileti tavanı ${tavan} (LIVE_MAX_USD); muhasebe ve yarış '
-                'paper boyutta sürer. Fill\'ler tx imzalı, denetim defterine düşer.</div>'
+                '<div class="mtmbig" id="mtm-canli">yükleniyor…</div>'
+                '<div class="ksub" id="sub-canli">-</div>'
+                '<canvas class="spark" id="spark-canli" height="36"></canvas>'
+                '<div class="kfoot" id="foot-canli">-</div>'
                 '<button id="killBtn" disabled>...</button>'
-                f'<div class="kfoot">cüzdan: {_CANLI_CUZDAN[:4]}…{_CANLI_CUZDAN[-4:]}</div></div>')
+                f'<div class="kfoot">V7 canlı · alım tavanı ${tavan} · muhasebe paper '
+                "boyutta · fill'ler tx imzalı, denetim defterine düşer · cüzdan "
+                f'{_CANLI_CUZDAN[:4]}…{_CANLI_CUZDAN[-4:]}</div></div>')
     return ('<div class="kart bos" id="kart-canli">'
             '<div class="khead"><b>CANLI</b><span class="rozet">kilitli</span></div>'
             '<div class="kilit">&#128274;</div>'
@@ -1289,12 +1352,17 @@ def _filo_chart(m: dict, canli_bagli: bool = False) -> str:
                 f'<div class="eqwrap"><span id="eq{m["id"]}trend" class="trendroz"></span>'
                 f'<canvas id="eq{m["id"]}chart"></canvas></div>')
     if m["id"] == "canli":
-        metin = ("V7 canlı: cüzdan eğrisi henüz bağlanmadı, fill'ler denetim defterinde"
-                 if canli_bagli else
-                 "kazanan bağlandığında gerçek para eğrisi burada akacak")
+        if canli_bagli:
+            from hibrit_trader import canli_gosterge
+            return ('<div class="chhead"><span class="dot" style="background:#e3b341"></span>'
+                    '<b>CANLI</b> <span class="chdesc">gerçek cüzdan (SOL + açık poz), '
+                    f'baz ${canli_gosterge.baz_usd():.2f}</span>'
+                    '<span id="eqcanlilabel" class="eqlabel"></span></div>'
+                    '<div class="eqwrap"><span id="eqcanlitrend" class="trendroz"></span>'
+                    '<canvas id="eqcanlichart"></canvas></div>')
         return ('<div class="chhead"><span class="dot" style="background:#e3b341"></span>'
                 '<b>CANLI</b></div>'
-                f'<div class="ph">{metin}</div>')
+                '<div class="ph">kazanan bağlandığında gerçek para eğrisi burada akacak</div>')
     return ('<div class="chhead"><span class="dot"></span><b>V-NEXT</b></div>'
             '<div class="ph">aday bot eklendiğinde eğrisi burada</div>')
 
@@ -1499,6 +1567,7 @@ const f=(x,d=2)=>x==null?"-":Number(x).toFixed(d);
 const cls=x=>x>0?"pos":(x<0?"neg":"");
 const eqCharts={};  // canli chartlar: filo tick'i ayni poll'un equity'sini uca basar
 const MOTORLAR="__MOTORLAR__";  // sunucu _FILO_MOTORLAR listesinden basar (tek konfig)
+const CANLI_BAGLI="__CANLI_BAGLI__";  // sunucu render aninda true/false basar
 
 // ---- ARSIV: Golge (donuk, acilinca bir kez) -----------------------------------
 async function arsivGolge(){
@@ -1940,6 +2009,21 @@ function basBot(m,d){
   eqCharts["eq"+m.id]&&eqCharts["eq"+m.id].setLive(s.equity);
   return s;
 }
+function basCanli(c){
+  // CANLI karti: /api/filo cevabindaki canli blogundan (canli_gosterge snapshot)
+  const el=document.getElementById("mtm-canli");
+  if(!el)return;
+  const dp=c.mtm-c.baz;
+  el.innerHTML=`<b class="${cls(dp)}">$${f(c.mtm)}</b>`;
+  document.getElementById("sub-canli").innerHTML=
+    `<span class="${cls(c.pnl_pct)}">${c.pnl_pct>0?"+":""}${f(c.pnl_pct)}%</span> · ${c.islem_n} canlı işlem`;
+  document.getElementById("foot-canli").innerHTML=
+    `poz ${"●".repeat(c.acik_poz)}${"○".repeat(Math.max(5-c.acik_poz,0))} ${c.acik_poz}/5`+
+    ` · ${f(c.sol,3)} SOL · baz $${f(c.baz)}`;
+  const lb=document.getElementById("eqcanlilabel");
+  if(lb)lb.innerHTML=`MTM <b class="${cls(dp)}">$${f(c.mtm)}</b>`;
+  eqCharts["eqcanli"]&&eqCharts["eqcanli"].setLive(c.mtm);
+}
 function basCmp(c){
   // kiyas satiri ayni /api/filo cevabinin cmp blogundan: ikinci okuma/hesap yok
   document.getElementById("cmp3").innerHTML=
@@ -2006,6 +2090,7 @@ async function filoTick(){
     const k=document.getElementById("kart-"+m.id);
     if(k)k.classList.toggle("lider",m.id===lid);
   }
+  if(CANLI_BAGLI&&d.canli)basCanli(d.canli);
   basCmp(d.cmp); basIslemler(d); basRejim(d); basKill(d.kill);
   updEtiket();
 }
@@ -2039,6 +2124,8 @@ for(const m of MOTORLAR){
   eqCharts["eq"+m.id]=mkEqChart("eq"+m.id, "/api/"+m.id+"/equity", true, true,
     m.renk, "spark-"+m.id);
 }
+if(CANLI_BAGLI)eqCharts["eqcanli"]=mkEqChart("eqcanli","/api/canli/equity",true,true,
+  "#e3b341","spark-canli");
 function eqSyncButtons(){
   const el=document.getElementById("eqsyncbtns");
   el.innerHTML=SYNCWINS.map(([l,m])=>
@@ -2060,13 +2147,8 @@ def momentum_page() -> str:
     arka=True motorlar ana ekran yerine katlanir "Arka plan deneyleri" bolumune
     basilir; MOTORLAR JS listesi degismez, canli guncelleme aynen surer."""
     # Mod rozeti + CANLI karti render aninda okunur (sayfa yenilemede guncel)
-    from hibrit_trader.broker import live_kilit_acik
     mode = os.getenv("BROKER_MODE", "paper").strip().lower()
-    try:
-        kilit = live_kilit_acik()
-    except Exception:
-        kilit = False
-    canli_bagli = mode == "live" and kilit
+    canli_bagli = _canli_bagli_mi()
     if canli_bagli:
         mod_rozet = '<span class="badge err">CANLI (V7)</span>'
     elif mode == "live":
@@ -2094,7 +2176,8 @@ def momentum_page() -> str:
             .replace("<!--CHARTCOL-->", chartlar)
             .replace("<!--ARKA-->", arka)
             .replace("<!--MODROZET-->", mod_rozet)
-            .replace('"__MOTORLAR__"', motor_js))
+            .replace('"__MOTORLAR__"', motor_js)
+            .replace('"__CANLI_BAGLI__"', "true" if canli_bagli else "false"))
 
 
 @app.post("/api/kill")

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
+import time
 
 from hibrit_trader.config import CHAIN_ENTRY_PRIORITY
 
@@ -263,6 +265,53 @@ def test_momentum_mod_rozeti_ve_canli_karti(client, monkeypatch, tmp_path):
     # kill butonu bagli sablonda da var: JS listener'i null'a dusmez,
     # canli moddayken acil durdurma kontrolu ekranda kalir
     assert 'id="killBtn"' in h
+    # tam gosterge: MTM alani + spark + gercek cuzdan charti + JS bayragi
+    assert 'id="mtm-canli"' in h and 'id="sub-canli"' in h
+    assert 'id="spark-canli"' in h and 'id="foot-canli"' in h
+    assert 'id="eqcanlichart"' in h and 'id="eqcanlilabel"' in h
+    assert "const CANLI_BAGLI=true;" in h
+    assert "baz $119.59" in h
+    # paper'a donunce gosterge alanlari yok, bayrak false
+    monkeypatch.delenv("BROKER_MODE", raising=False)
+    h = client.get("/momentum").text
+    assert "const CANLI_BAGLI=false;" in h
+    assert 'id="mtm-canli"' not in h and 'id="eqcanlichart"' not in h
+
+
+def test_api_filo_canli_blogu(client, monkeypatch, tmp_path):
+    monkeypatch.setenv("MOMENTUM_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("CANLI_BAZ_USD", raising=False)
+    # snapshot yokken canli alani hic yok (paper kurulum etkilenmez)
+    monkeypatch.setattr("hibrit_trader.canli_gosterge._son", None)
+    d = client.get("/api/filo").json()
+    assert "canli" not in d
+    snap = {"ts": 1000.0, "mtm": 148.56, "sol": 1.5, "sol_fiyat": 80.0,
+            "poz_usd": 28.56, "acik_poz": 1, "islem_n": 2}
+    monkeypatch.setattr("hibrit_trader.canli_gosterge._son", snap)
+    c = client.get("/api/filo").json()["canli"]
+    assert c["mtm"] == 148.56 and c["baz"] == 119.59
+    assert c["pnl_pct"] == round((148.56 / 119.59 - 1) * 100, 2)
+    assert c["islem_n"] == 2 and c["acik_poz"] == 1 and c["sol"] == 1.5
+
+
+def test_api_canli_equity_serisi(client, monkeypatch, tmp_path):
+    monkeypatch.setenv("MOMENTUM_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("CANLI_BAZ_USD", raising=False)
+    now = time.time()
+    (tmp_path / "canli_equity.jsonl").write_text(
+        json.dumps({"ts": now - 300, "eq": 100.0}) + "\n"
+        + json.dumps({"ts": now - 120, "eq": 119.59}) + "\n"
+        + json.dumps({"ts": now - 30, "eq": 121.0}) + "\n")
+    snap = {"ts": now, "mtm": 122.5, "sol": 1.5, "sol_fiyat": 80.0,
+            "poz_usd": 0.0, "acik_poz": 0, "islem_n": 0}
+    monkeypatch.setattr("hibrit_trader.canli_gosterge._son", snap)
+    d = client.get("/api/canli/equity").json()
+    assert d["start_balance"] == 119.59  # kesikli referans cizgisi bazdan
+    assert [p[1] for p in d["points"]] == [100.0, 119.59, 121.0, 122.5]
+    assert d["points"][0][0] == round((now - 300) * 1000)
+    # pencere kirpma: pencere disindaki son eski nokta capa olarak kalir
+    d = client.get("/api/canli/equity?minutes=1").json()
+    assert [p[1] for p in d["points"]] == [119.59, 121.0, 122.5]
 
 
 def test_momentum_js_guardsiz_listener_yok(client):
