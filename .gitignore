@@ -1,8 +1,14 @@
-# Gizli — asla commit etme
+# Gizli, asla commit etme
 .env
 .env.local
 *.key
 *.keypair.json
+
+# Cuzdan anahtari: ~/.solana/bot_cuzdan.json REPO DISIDIR (scripts/keypair_uret.py
+# ciktisi). Yine de koruma agi: olasi anahtar dosyalari repoya girmesin.
+.solana/
+bot_cuzdan.json
+id.json
 
 # Python
 .venv/
