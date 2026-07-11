@@ -328,3 +328,42 @@ def test_golge_olcum_kapaliyken_thread_acmaz(data_dir, monkeypatch):
                         lambda *a, **k: acilan.append(1))
     broker.golge_olcum("M1", "al", TOK, 1.0, usd=100.0)
     assert acilan == []
+
+
+# ---- live SOL swap secimi (ASAMA 0, 11 Tem: kasa SOL, alim SOL->token) ------------------
+
+def test_live_execute_sol_swap_al_ve_sat(data_dir, monkeypatch):
+    monkeypatch.setenv("LIVE_UNLOCKED", "1")
+    (data_dir / "LIVE_ONAY").write_text("canli-islem-onayliyorum", encoding="utf-8")
+    br = make_exec_broker("live", http=FakeClient())
+    monkeypatch.setattr(broker, "_cuzdan_yukle", lambda mode: object())
+    monkeypatch.setattr(br, "_decimals", lambda mint: 9)
+    cagri = []
+
+    def sahte_al(http, rpc, kp, mint, usd, bps):
+        cagri.append(("sol_to_token", usd, bps))
+        return {"signature": "SIGAL", "in_amount": 1_250_000_000,
+                "out_amount": 500 * 10 ** 9, "cost_usd": 100.0,
+                "sol_price_usd": 80.0}
+
+    def sahte_sat(http, rpc, kp, mint, amount_raw, bps):
+        cagri.append(("token_to_sol", amount_raw, bps))
+        return {"signature": "SIGSAT", "in_amount": amount_raw,
+                "out_amount": 1_237_500_000, "proceeds_usd": 99.0,
+                "sol_price_usd": 80.0}
+
+    monkeypatch.setattr("hibrit_trader.jupiter.swap_sol_to_token", sahte_al)
+    monkeypatch.setattr("hibrit_trader.jupiter.swap_token_to_sol", sahte_sat)
+
+    al = br.execute(ExecOrder(engine="V7", yon="al", token_address=TOK,
+                              usd=100.0, ref_fiyat=0.2))
+    assert al.ok and al.tx_id == "SIGAL"
+    assert al.miktar_token == pytest.approx(500.0)
+    assert al.fiyat == pytest.approx(0.2)  # cost_usd / miktar
+
+    sat = br.execute(ExecOrder(engine="V7", yon="sat", token_address=TOK,
+                               amount_token=500.0, ref_fiyat=0.2))
+    assert sat.ok and sat.tx_id == "SIGSAT"
+    assert sat.fiyat == pytest.approx(99.0 / 500.0)  # proceeds_usd / miktar
+    assert cagri == [("sol_to_token", 100.0, 50),
+                     ("token_to_sol", 500 * 10 ** 9, 50)]

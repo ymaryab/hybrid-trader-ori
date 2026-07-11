@@ -334,21 +334,23 @@ class LiveExecBroker(DryrunExecBroker):
         try:
             from solana.rpc.api import Client as RpcClient
 
-            from hibrit_trader.jupiter import swap_token_to_usdc, swap_usdc_to_token
+            # Kasa SOL cinsinden: alim SOL->token, satis token->SOL (11 Tem karari)
+            from hibrit_trader.jupiter import swap_sol_to_token, swap_token_to_sol
             rpc = RpcClient(_rpc_url())
             if order.yon == "al":
-                res = swap_usdc_to_token(self._http, rpc, keypair,
-                                         order.token_address, order.usd,
-                                         order.slippage_bps)
+                res = swap_sol_to_token(self._http, rpc, keypair,
+                                        order.token_address, order.usd,
+                                        order.slippage_bps)
                 miktar_token = res["out_amount"] / 10 ** dec
-                fiyat = order.usd / miktar_token if miktar_token > 0 else 0.0
+                fiyat = res["cost_usd"] / miktar_token if miktar_token > 0 else 0.0
             else:
                 amount_raw = max(1, int(order.amount_token * 10 ** dec))
-                res = swap_token_to_usdc(self._http, rpc, keypair,
-                                         order.token_address, amount_raw,
-                                         order.slippage_bps)
+                res = swap_token_to_sol(self._http, rpc, keypair,
+                                        order.token_address, amount_raw,
+                                        order.slippage_bps)
                 miktar_token = order.amount_token
-                fiyat = (res["out_amount"] / 1_000_000) / order.amount_token
+                fiyat = (res["proceeds_usd"] / order.amount_token
+                         if order.amount_token > 0 else 0.0)
         except Exception as e:
             log.error("BROKER live islem hatasi %s %s: %s",
                       order.engine, order.yon, e)

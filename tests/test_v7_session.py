@@ -22,6 +22,7 @@ def v7_data_dir(tmp_path, monkeypatch):
     # rejim_reject_kaydet: paylasilan kuyruk temiz, gercek daemon thread acilmasin
     monkeypatch.setattr("hibrit_trader.entry_fresh._watch", {})
     monkeypatch.setattr("hibrit_trader.entry_fresh._start_recheck_thread", lambda: None)
+    monkeypatch.delenv("BROKER_MODE", raising=False)  # testte daima paper exec
     return tmp_path
 
 
@@ -261,3 +262,91 @@ def test_daily_loss_restartta_trades_dosyasindan_yuklenir(v7_data_dir, monkeypat
     kayip = _last(v7_data_dir)["pnl_usd"]
     eng2 = V7Engine(_settings())
     assert eng2._day_realized == pytest.approx(kayip)
+
+
+# ---- Yurutme katmani kablolamasi (ASAMA 0: fill'ler exec broker uzerinden) ---------
+
+from hibrit_trader.broker import ExecFill  # noqa: E402
+
+
+class _StubExec:
+    def __init__(self, mode, fills=None):
+        self.mode = mode
+        self.orders = []
+        self._fills = list(fills or [])
+
+    def execute(self, order):
+        self.orders.append(order)
+        if self._fills:
+            return self._fills.pop(0)
+        return ExecFill(ok=False, neden="stub")
+
+
+def test_exec_varsayilan_paper_ve_muhasebe_ayni(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    assert eng._exec.mode == "paper" and eng._exec_arizali is False
+    pos = _open(eng)
+    # paper muhasebe birebir: miktar = usd / eff_price, tx alani yok
+    assert pos["amount_token"] == pytest.approx(100.0 / pos["entry_price"])
+    assert "tx_al" not in pos
+    _tick_price(eng, pos, pos["entry_price"] * 1.05, pos["opened_ts"] + 60, monkeypatch)
+    t = _last(v7_data_dir)
+    assert "signature" not in t and "signature_al" not in t
+
+
+def test_exec_dryrun_hatasi_yarisi_etkilemez(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    eng._exec = _StubExec("dryrun")  # her execute ok=False doner
+    pos = _open(eng)
+    assert pos and "tx_al" not in pos  # paper muhasebe aynen surdu
+    o = eng._exec.orders[0]
+    assert o.yon == "al" and o.usd == 100.0 and o.slippage_bps == 50
+    assert o.ref_fiyat == pytest.approx(pos["entry_price"])
+    _tick_price(eng, pos, pos["entry_price"] * 1.05, pos["opened_ts"] + 60, monkeypatch)
+    assert eng.positions == []  # dryrun satis hatasi cikisi engellemez
+    assert "signature" not in _last(v7_data_dir)
+
+
+def test_exec_live_alim_basarisiz_giris_yok(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    eng._exec = _StubExec("live")
+    assert eng._open_position(_pair(), 100.0, sol_h1=0.77) is False
+    assert eng.positions == []
+    assert eng.balance == v7.START_BALANCE  # bakiye mutasyonu fill'den sonra
+
+
+def test_exec_live_fill_fiyat_miktar_imza_baglayici(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    al = ExecFill(ok=True, fiyat=1.05, miktar_token=95.0, tx_id="SIGAL")
+    sat = ExecFill(ok=True, fiyat=1.20, miktar_token=95.0, tx_id="SIGSAT")
+    eng._exec = _StubExec("live", [al, sat])
+    pos = _open(eng)
+    assert pos["entry_price"] == 1.05
+    assert pos["amount_token"] == 95.0
+    assert pos["tx_al"] == "SIGAL"
+    _tick_price(eng, pos, 1.30, pos["opened_ts"] + 60, monkeypatch)
+    t = _last(v7_data_dir)
+    assert t["exit_price"] == 1.20  # canli satis fiyati, paper slip degil
+    assert t["signature"] == "SIGSAT" and t["signature_al"] == "SIGAL"
+    o_sat = eng._exec.orders[1]
+    assert o_sat.yon == "sat" and o_sat.amount_token == 95.0
+
+
+def test_exec_live_satis_basarisiz_pozisyon_acik_kalir(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    al = ExecFill(ok=True, fiyat=1.0, miktar_token=100.0, tx_id="S1")
+    eng._exec = _StubExec("live", [al])  # satis icin fill yok -> ok=False
+    pos = _open(eng)
+    _tick_price(eng, pos, 1.10, pos["opened_ts"] + 60, monkeypatch)
+    assert len(eng.positions) == 1  # kapanmadi, sonraki kadansta tekrar
+    assert not (v7_data_dir / v7.TRADES_FILE).exists()
+
+
+def test_exec_arizali_girisleri_kapatir_cikislar_surer(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    pos = _open(eng)
+    eng._exec_arizali = True
+    assert eng._entries_blocked() == "exec_arizali"
+    assert _enter(eng, monkeypatch, _pair(pool="ZP9", token="ZT9")) == [pos]
+    _tick_price(eng, pos, pos["entry_price"] * 1.05, pos["opened_ts"] + 60, monkeypatch)
+    assert eng.positions == []  # cikis calisti

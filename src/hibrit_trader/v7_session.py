@@ -36,6 +36,7 @@ from pathlib import Path
 
 import httpx
 
+from hibrit_trader.broker import ExecOrder, PaperExecBroker, make_exec_broker
 from hibrit_trader.config import GAS_COST_USD
 from hibrit_trader.entry_fresh import (
     HuniSayac,
@@ -97,6 +98,15 @@ class V7Engine:
         self._limit_logged = False                  # zarar limiti uyarisi tek sefer
         self._huni = HuniSayac("V7")
         self._lock_fh = None
+        # Yurutme katmani (BROKER_MODE: paper/dryrun/live). Paper'da davranis
+        # birebir ayni; kurulamazsa fail-closed: girisler kapali, cikislar paper.
+        try:
+            self._exec = make_exec_broker()
+            self._exec_arizali = False
+        except Exception as e:
+            self._exec = PaperExecBroker()
+            self._exec_arizali = True
+            log.critical("V7: yurutme katmani kurulamadi (%s); girisler KAPALI", e)
         self._load()
         self._restore_day_realized()
 
@@ -181,6 +191,8 @@ class V7Engine:
 
     def _entries_blocked(self) -> str | None:
         """Yeni giris engeli var mi? None = serbest. Cikis yonetimi HER ZAMAN surer."""
+        if self._exec_arizali:
+            return "exec_arizali"  # tek-seferlik CRITICAL __init__'te atildi
         if kill_is_active():
             if not self._kill_logged:
                 self._kill_logged = True
@@ -204,6 +216,26 @@ class V7Engine:
                     )
                 return "daily_loss_limit"
         return None
+
+    def _exec_fill(self, yon: str, token_address: str, *, usd: float = 0.0,
+                   amount_token: float = 0.0, ref_fiyat: float = 0.0):
+        """Fill'i yurutme katmanindan gecirir. Donus: (devam, canli_fill).
+
+        paper/dryrun: muhasebe paper kalir, canli_fill None, devam True
+        (dryrun quote hatasi yarisi ASLA etkilemez). live: fill basarisizsa
+        devam False; basariliysa canli_fill baglayicidir."""
+        try:
+            fill = self._exec.execute(ExecOrder(
+                engine="V7", yon=yon, token_address=token_address,
+                usd=usd, amount_token=amount_token, ref_fiyat=ref_fiyat))
+        except Exception as e:
+            log.error("V7 yurutme hatasi (%s %s): %s", yon, token_address[:8], e)
+            fill = None
+        if self._exec.mode != "live":
+            return True, None
+        if fill is None or not fill.ok:
+            return False, None
+        return True, fill
 
     def _acquire_lock(self) -> bool:
         import fcntl
@@ -336,6 +368,17 @@ class V7Engine:
             return False
         slip = _mom_slippage(usd, pair.liquidity_usd)
         eff_price = taze.fiyat * (1 + slip)
+        devam, canli = self._exec_fill("al", pair.token_address,
+                                       usd=usd, ref_fiyat=eff_price)
+        if not devam:
+            log.error("V7 GIRIS IPTAL %s: canli alim gerceklesmedi", pair.name)
+            return False
+        amount_token = usd / eff_price
+        if canli is not None:  # sadece live: gercek fill fiyati/miktari baglayici
+            if canli.fiyat > 0:
+                eff_price = canli.fiyat
+            if canli.miktar_token > 0:
+                amount_token = canli.miktar_token
         now = time.time()
         pos = {
             "trade_id": new_trade_id(pair.pool_address, now),
@@ -344,7 +387,7 @@ class V7Engine:
             "token_address": pair.token_address,
             "pool_address": pair.pool_address,
             "entry_price": eff_price,
-            "amount_token": usd / eff_price,
+            "amount_token": amount_token,
             "cost_usd": round(usd, 4),
             "opened_ts": now,
             "opened_at": _now_iso(),
@@ -359,6 +402,8 @@ class V7Engine:
             "mae_pct": 0.0,
             "last_price": eff_price,
         }
+        if canli is not None and canli.tx_id:
+            pos["tx_al"] = canli.tx_id
         self.balance -= (usd + gas)
         self.positions.append(pos)
         self._save()
@@ -401,6 +446,15 @@ class V7Engine:
         cost = pos["cost_usd"]
         slip = _mom_slippage(cost, pos["liq_entry"])
         eff_price = price * (1 - slip)
+        devam, canli = self._exec_fill("sat", pos["token_address"],
+                                       amount_token=pos["amount_token"],
+                                       ref_fiyat=eff_price)
+        if not devam:
+            log.error("V7 SATIS ERTELENDI %s: canli satis gerceklesmedi, "
+                      "sonraki kadansta tekrar denenecek", pos["pair"])
+            return
+        if canli is not None and canli.fiyat > 0:  # sadece live baglayici
+            eff_price = canli.fiyat
         gas = GAS_COST_USD.get(pos["chain"], 0.1)
         proceeds = pos["amount_token"] * eff_price - gas
         pnl = proceeds - cost
@@ -408,7 +462,7 @@ class V7Engine:
         pnl_pct = (eff_price / pos["entry_price"] - 1) * 100 if pos["entry_price"] > 0 else 0.0
 
         # v2 hardening deseni: önce kayıt, sonra mutasyon, anında save
-        self._append_trade({
+        row = {
             "trade_id": pos["trade_id"],
             "pair": pos["pair"],
             "chain": pos["chain"],
@@ -433,7 +487,12 @@ class V7Engine:
             "friction_pct": round(pos.get("entry_slip_pct", 0.0) + slip * 100, 4),
             "opened_at": pos["opened_at"],
             "closed_at": _now_iso(),
-        })
+        }
+        if canli is not None and canli.tx_id:
+            row["signature"] = canli.tx_id  # denetim defteri tx imzasi kolonu
+        if pos.get("tx_al"):
+            row["signature_al"] = pos["tx_al"]
+        self._append_trade(row)
         self.balance += proceeds
         self.realized_pnl += pnl
         self._day_realized_add(pnl, now)
