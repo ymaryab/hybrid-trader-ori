@@ -1376,7 +1376,12 @@ _MOMENTUM_HTML = """<!doctype html>
 <th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table></div>
 <details id="arkaBox" style="margin-top:28px;border-top:1px solid #30363d;padding-top:8px">
 <summary style="cursor:pointer;color:#8b949e"><b>ARKA PLAN DENEYLERİ · çalışır durumda (x1) · tıkla aç</b></summary>
-<div id="arkaIc"><!--ARKA--></div>
+<div id="arkaIc"><!--ARKA-->
+<h2>SON İŞLEMLER · x1</h2>
+<div class="tablewrap"><table id="isltrArka"><thead><tr><th>bot</th><th>pair</th><th>exit</th>
+<th>pnl $</th><th>pnl%</th><th>mfe/mae</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th>
+<th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table></div>
+</div>
 </details>
 <details id="arsivBox" style="margin-top:28px;border-top:1px solid #30363d;padding-top:8px">
 <summary style="cursor:pointer;color:#8b949e"><b>ARŞİV · durdurulan motorlar (m1 · m2 · v2 · v3 · v4 · v5 · gölge · v8 · v9 · v10) · tıkla aç</b></summary>
@@ -1941,19 +1946,23 @@ function mfeMaeBar(mfe,mae){
     `<line x1="${mid}" y1="0" x2="${mid}" y2="${H}" stroke="#8b949e" stroke-width="1"/></svg>`;
 }
 function basIslemler(d){
-  // birlesik son islemler: uc botun trades'i ts'e gore tek tabloda
-  const rows=[];
-  for(const m of MOTORLAR)for(const t of d[m.id].trades||[])rows.push([m,t]);
-  rows.sort((a,b)=>(b[1].ts||0)-(a[1].ts||0));
-  document.querySelector("#isltr tbody").innerHTML=rows.slice(0,40).map(([m,t])=>
-    `<tr class="${t.pnl_usd<0?"loss":""}">`+
-    `<td><span class="dot" style="background:${m.renk}"></span> ${m.ad}</td>`+
-    `<td>${t.pair}</td><td><span class="exchip ${exitSinif(t.exit_reason)}">${t.exit_reason}</span></td>`+
-    `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
-    `<td title="mfe ${f(t.mfe_pct,1)}% / mae ${f(t.mae_pct,1)}%">${mfeMaeBar(t.mfe_pct,t.mae_pct)}</td>`+
-    `<td>${f(t.chg_h1,1)}</td><td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
-    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")
-    ||"<tr><td colspan=11>henüz yok</td></tr>";
+  // son islemler iki tabloda: on plan botlari (#isltr), arka plan botlari (#isltrArka);
+  // ayni /api/filo cevabindan basilir, veri uretimi degismez
+  const on=[],arkaRows=[];
+  for(const m of MOTORLAR)for(const t of d[m.id].trades||[])(m.arka?arkaRows:on).push([m,t]);
+  const bas=(sec,rows)=>{
+    rows.sort((a,b)=>(b[1].ts||0)-(a[1].ts||0));
+    document.querySelector(sec).innerHTML=rows.slice(0,40).map(([m,t])=>
+      `<tr class="${t.pnl_usd<0?"loss":""}">`+
+      `<td><span class="dot" style="background:${m.renk}"></span> ${m.ad}</td>`+
+      `<td>${t.pair}</td><td><span class="exchip ${exitSinif(t.exit_reason)}">${t.exit_reason}</span></td>`+
+      `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
+      `<td title="mfe ${f(t.mfe_pct,1)}% / mae ${f(t.mae_pct,1)}%">${mfeMaeBar(t.mfe_pct,t.mae_pct)}</td>`+
+      `<td>${f(t.chg_h1,1)}</td><td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
+      `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")
+      ||"<tr><td colspan=11>henüz yok</td></tr>";
+  };
+  bas("#isltr tbody",on); bas("#isltrArka tbody",arkaRows);
 }
 function basRejim(d){
   // rejim rozeti: ayni /api/filo cevabindaki en guncel sol_chg_h1 kaydi
@@ -2014,7 +2023,8 @@ def momentum_page() -> str:
         for m in _FILO_MOTORLAR if m.get("arka")
     )
     motor_js = json.dumps([
-        {"id": m["id"], "ad": m["ad"], "renk": m["renk"], "slots": m["slots"]}
+        {"id": m["id"], "ad": m["ad"], "renk": m["renk"], "slots": m["slots"],
+         "arka": bool(m.get("arka"))}
         for m in _FILO_MOTORLAR if m["tip"] == "bot"
     ])
     return (_MOMENTUM_HTML

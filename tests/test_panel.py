@@ -363,6 +363,22 @@ def test_x1_arka_plan_bolumu(client):
     assert "repeat(4,minmax(0,1fr))" in h
 
 
+def test_islem_tablosu_x1_arkaya(client):
+    h = client.get("/momentum").text
+    # arka bayragi JS konfigde: x1 arka, v6/v7 on plan
+    assert '"id": "x1", "ad": "X1", "renk": "#d29922", "slots": 3, "arka": true' in h
+    assert '"id": "v6", "ad": "V6", "renk": "#3fb950", "slots": 5, "arka": false' in h
+    assert '"id": "v7", "ad": "V7", "renk": "#58a6ff", "slots": 5, "arka": false' in h
+    # x1'in kendi islem tablosu arka bolumde (arsivden once), ana tablo disari
+    arka = h[h.index('id="arkaBox"'):h.index('id="arsivBox"')]
+    assert 'id="isltrArka"' in arka
+    assert "SON İŞLEMLER · x1" in arka
+    assert 'id="isltr"' in h[:h.index('id="arkaBox"')]
+    # JS: satirlar arka bayragina gore iki tabloya ayrilir, ayni /api/filo cevabindan
+    assert "(m.arka?arkaRows:on).push([m,t])" in h
+    assert 'bas("#isltr tbody",on); bas("#isltrArka tbody",arkaRows);' in h
+
+
 def test_kart_sparkline_24_saat(client):
     h = client.get("/momentum").text
     # spark verisi saf fonksiyonda: 24 saat pencere + ~72 nokta seyreltme
