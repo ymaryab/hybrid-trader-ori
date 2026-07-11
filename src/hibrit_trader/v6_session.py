@@ -44,17 +44,20 @@ from pathlib import Path
 import httpx
 
 from hibrit_trader.config import GAS_COST_USD
-from hibrit_trader.entry_fresh import HuniSayac, rejim_reject_kaydet, taze_teyit
+from hibrit_trader.entry_fresh import (
+    HuniSayac,
+    rejim_reject_kaydet,
+    safety_reject_kaydet,
+    taze_teyit,
+)
 from hibrit_trader.fast_price import get_feed
 from hibrit_trader.killswitch import is_active as kill_is_active
 from hibrit_trader.live_sim import fetch_pool_snapshot
 from hibrit_trader.momentum_session import (
     SCAN_INTERVAL_SEC,
-    SOL_H1_CACHE_SEC,
-    SOL_H1_STALE_MAX_SEC,
-    SOL_USDC_POOL,
     _data_dir,
     _mom_slippage,
+    sol_chg_h1,
 )
 from hibrit_trader.paper import _now_iso, new_trade_id
 from hibrit_trader.price_sanity import guard_price
@@ -96,7 +99,6 @@ class V6Engine:
         self.created_ts: float = time.time()
         self._aggressive = os.getenv("PAPER_AGGRESSIVE", "0") == "1"
         self._cooldown_until: dict[str, float] = {}
-        self._sol_h1_cache: tuple[float, float | None] = (0.0, None)
         self._regime_logged = False
         self._huni = HuniSayac("V6")
         self._lock_fh = None
@@ -208,20 +210,9 @@ class V6Engine:
             self._enter(client)
         self._save()
 
-    # ---- Rejim (gölge ile aynı: eşik 0, fail-open, kendi cache'i) --------------
+    # ---- Rejim: SOL chg_h1 motorlar arasi paylasimli cache'ten ------------------
     def _sol_chg_h1(self, client: httpx.Client) -> float | None:
-        from hibrit_trader.config import API
-
-        ts, cached = self._sol_h1_cache
-        if time.time() - ts < SOL_H1_CACHE_SEC:
-            return cached
-        url = f"{API['geckoterminal']}/networks/solana/pools/{SOL_USDC_POOL}"
-        resp = client.get(url, headers={"accept": "application/json"}, timeout=10)
-        resp.raise_for_status()
-        chg = (resp.json()["data"]["attributes"].get("price_change_percentage") or {}).get("h1")
-        val = round(float(chg), 3) if chg is not None else None
-        self._sol_h1_cache = (time.time(), val)
-        return val
+        return sol_chg_h1(client)
 
     # ---- Giriş (gölge + TEK ek: h1 üst sınırı 50) -------------------------------
     def _enter(self, client: httpx.Client) -> None:
@@ -260,15 +251,7 @@ class V6Engine:
             return
         # Rejim FAIL-CLOSED (09 Tem): veri yoksa kapi KAPALI; son basarili
         # deger 10dk'ya kadar gecerli, sonrasinda giris yok.
-        sol_h1 = None
-        try:
-            sol_h1 = self._sol_chg_h1(client)
-        except Exception:
-            log.debug("v6 rejim: sol_chg_h1 alınamadı", exc_info=True)
-        if sol_h1 is None:
-            ts, cached = self._sol_h1_cache
-            if cached is not None and now - ts <= SOL_H1_STALE_MAX_SEC:
-                sol_h1 = cached
+        sol_h1 = self._sol_chg_h1(client)
         if sol_h1 is None:
             if not self._regime_logged:
                 self._regime_logged = True
@@ -289,10 +272,12 @@ class V6Engine:
                 break
             try:
                 report = check_token(client, pair.chain, pair.token_address)
-            except Exception:
+            except Exception as e:
+                safety_reject_kaydet(pair, "V6", "safety_hata", type(e).__name__)
                 continue
             time.sleep(0.2 if self._aggressive else 1.5)
             if not report.ok:
+                safety_reject_kaydet(pair, "V6", "safety_red", "; ".join(report.reasons[:2]))
                 continue
             if self._open_position(pair, budget_each, sol_h1, client=client):
                 empty -= 1

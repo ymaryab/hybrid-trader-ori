@@ -131,6 +131,7 @@ def _reject_kacti(pair, motor: str, scan_price: float, taze: float, fark: float)
                     "pool_address": pair.pool_address,
                     "reason": "taze_fiyat_kacti",
                     "engine": motor,
+                    "engines": {motor},
                     "price_at_reject": taze,
                     "reject_ts": now,
                     "due_ts": now + REJECT_RECHECK_SEC,
@@ -140,29 +141,64 @@ def _reject_kacti(pair, motor: str, scan_price: float, taze: float, fark: float)
         log.debug("taze_fiyat_kacti kaydi hatasi", exc_info=True)
 
 
+def safety_reject_kaydet(pair, motor: str, neden: str, detay: str = "") -> None:
+    """Guvenlik kontrolu girisi engelledi: motor etiketli gorunur reject kaydi.
+
+    neden: "safety_red" (rapor RED) | "safety_hata" (kontrol exception atti).
+    Sessiz continue'nun yerine olcum satiri; recheck kuyruguna girmez.
+    """
+    try:
+        _rejects_yaz({
+            "type": "reject",
+            "reason": neden,
+            "engine": motor,
+            "pair": pair.name,
+            "chain": pair.chain,
+            "pool_address": pair.pool_address,
+            "token_address": pair.token_address,
+            "liquidity_usd": round(getattr(pair, "liquidity_usd", 0.0), 2),
+            "chg_m5": round(getattr(pair, "chg_m5", 0.0), 2),
+            "chg_h1": round(getattr(pair, "chg_h1", 0.0), 2),
+            "price_usd": float(getattr(pair, "price_usd", 0.0) or 0.0),
+            "detay": detay,
+        })
+    except Exception:
+        log.debug("safety reject kaydi hatasi", exc_info=True)
+
+
 def rejim_reject_kaydet(cands, motor: str, sol_h1: float | None) -> None:
     """Rejim kapaliyken diger tum filtreleri GECEN adaylar: reject + 30dk recheck.
 
-    Ayni havuz recheck kuyrugundayken tekrar yazilmaz; rejim uzun sure kapali
-    kalirsa kayit kadansi dogal olarak ~30dk'ya iner.
+    Dedupe motor boyutlu: ayni havuz icin her motor kendi kayit satirini yazar,
+    recheck kuyruguna ise tek giris yapilir. Ayni motor ayni havuzu kuyruk
+    suresince tekrar yazmaz; rejim uzun sure kapali kalirsa kayit kadansi
+    dogal olarak ~30dk'ya iner.
     """
     try:
         now = time.time()
         yazilan = False
         for pair in list(cands)[:REJIM_REJECT_MAX_PER_TICK]:
             with _watch_lock:
-                if pair.pool_address in _watch or len(_watch) >= WATCH_CAP:
+                mevcut = _watch.get(pair.pool_address)
+                if mevcut is not None:
+                    engines = mevcut.setdefault("engines", {mevcut.get("engine")})
+                    if motor in engines:
+                        continue
+                    engines.add(motor)
+                elif len(_watch) >= WATCH_CAP:
                     continue
-                _watch[pair.pool_address] = {
-                    "pair": pair.name,
-                    "chain": pair.chain,
-                    "pool_address": pair.pool_address,
-                    "reason": "rejim_reject",
-                    "engine": motor,
-                    "price_at_reject": float(pair.price_usd),
-                    "reject_ts": now,
-                    "due_ts": now + REJECT_RECHECK_SEC,
-                }
+                else:
+                    _watch[pair.pool_address] = {
+                        "pair": pair.name,
+                        "chain": pair.chain,
+                        "pool_address": pair.pool_address,
+                        "reason": "rejim_reject",
+                        "engine": motor,
+                        "engines": {motor},
+                        "price_at_reject": float(pair.price_usd),
+                        "reject_ts": now,
+                        "due_ts": now + REJECT_RECHECK_SEC,
+                    }
             _rejects_yaz({
                 "type": "reject",
                 "reason": "rejim_reject",

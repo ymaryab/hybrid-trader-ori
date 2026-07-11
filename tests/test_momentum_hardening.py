@@ -200,12 +200,7 @@ def _enter_with_regime(eng, monkeypatch, sol_h1):
         ms, "check_token", lambda client, chain, token: SimpleNamespace(ok=True)
     )
     monkeypatch.setattr(ms.time, "sleep", lambda s: None)
-    if isinstance(sol_h1, Exception):
-        def raiser(client):
-            raise sol_h1
-        monkeypatch.setattr(eng, "_sol_chg_h1", raiser)
-    else:
-        monkeypatch.setattr(eng, "_sol_chg_h1", lambda client: sol_h1)
+    monkeypatch.setattr(eng, "_sol_chg_h1", lambda client: sol_h1)
     eng._enter(client=SimpleNamespace())
     return eng.positions
 
@@ -228,9 +223,10 @@ def test_regime_filter_allows_when_sol_positive(mom_data_dir, monkeypatch):
 
 
 def test_regime_filter_fail_closed_on_api_error(mom_data_dir, monkeypatch):
-    # 09 Tem: sol_chg_h1 alınamazsa giriş kapısı KAPALI (fail-closed)
+    # 09 Tem: sol_chg_h1 alınamazsa giriş kapısı KAPALI (fail-closed).
+    # 11 Tem: veri-yok/hata kararını artık paylaşımlı sol_chg_h1 verir (None döner).
     eng = MomentumEngine(_settings())
-    assert _enter_with_regime(eng, monkeypatch, sol_h1=RuntimeError("api")) == []
+    assert _enter_with_regime(eng, monkeypatch, sol_h1=None) == []
     rej = [
         json.loads(ln)
         for ln in (mom_data_dir / ms.REJECTS_FILE).read_text().splitlines()
@@ -238,17 +234,34 @@ def test_regime_filter_fail_closed_on_api_error(mom_data_dir, monkeypatch):
     assert any(r.get("reason") == "rejim_veri_yok" for r in rej)
 
 
-def test_regime_filter_api_error_with_recent_cache_allows(mom_data_dir, monkeypatch):
-    # son başarılı değer 10dk'ya kadar geçerli
-    eng = MomentumEngine(_settings())
-    eng._sol_h1_cache = (ms.time.time() - 60, 1.0)
-    assert len(_enter_with_regime(eng, monkeypatch, sol_h1=RuntimeError("api"))) == 1
+class _FailingClient:
+    def get(self, *a, **k):
+        raise RuntimeError("api")
 
 
-def test_regime_filter_api_error_with_stale_cache_blocks(mom_data_dir, monkeypatch):
-    eng = MomentumEngine(_settings())
-    eng._sol_h1_cache = (ms.time.time() - ms.SOL_H1_STALE_MAX_SEC - 10, 1.0)
-    assert _enter_with_regime(eng, monkeypatch, sol_h1=RuntimeError("api")) == []
+def test_shared_sol_h1_api_error_with_recent_cache_allows(monkeypatch):
+    # son başarılı değer SOL_H1_STALE_MAX_SEC'e kadar geçerli
+    monkeypatch.setattr(ms, "SOL_H1_CACHE_SEC", 50)
+    monkeypatch.setattr(ms, "_sol_h1_paylasimli", (ms.time.time() - 60, 1.0))
+    assert ms.sol_chg_h1(_FailingClient()) == 1.0
+
+
+def test_shared_sol_h1_api_error_with_stale_cache_blocks(monkeypatch):
+    monkeypatch.setattr(ms, "SOL_H1_CACHE_SEC", 50)
+    monkeypatch.setattr(
+        ms, "_sol_h1_paylasimli", (ms.time.time() - ms.SOL_H1_STALE_MAX_SEC - 10, 1.0)
+    )
+    assert ms.sol_chg_h1(_FailingClient()) is None
+
+
+def test_shared_sol_h1_no_data_fail_closed(monkeypatch):
+    monkeypatch.setattr(ms, "_sol_h1_paylasimli", (0.0, None))
+    assert ms.sol_chg_h1(_FailingClient()) is None
+
+
+def test_shared_sol_h1_fresh_cache_no_fetch(monkeypatch):
+    monkeypatch.setattr(ms, "_sol_h1_paylasimli", (ms.time.time() - 10, 0.42))
+    assert ms.sol_chg_h1(_FailingClient()) == 0.42  # fetch hiç denenmez
 
 
 def test_regime_filter_none_means_closed(mom_data_dir, monkeypatch):

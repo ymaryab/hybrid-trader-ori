@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -100,6 +101,39 @@ SOL_USDC_POOL = os.getenv(
 )
 SOL_H1_CACHE_SEC = 3600
 
+# ---- SOL h1 paylasimli cache (11 Tem): tum motorlar tek fetch'ten okur ------
+# Onceden her motor kendi cache'iyle ayri GET atiyordu; kota doygunlugunda
+# gec fazdaki motor (v7) fail-closed kapiya takiliyordu. Semantik ayni:
+# basarili deger SOL_H1_CACHE_SEC gecerli, fetch hatasi son degeri
+# SOL_H1_STALE_MAX_SEC'e kadar kullanir, sonrasi None (fail-closed).
+_sol_h1_lock = threading.Lock()
+_sol_h1_paylasimli: tuple[float, float | None] = (0.0, None)
+
+
+def sol_chg_h1(client: httpx.Client) -> float | None:
+    """SOL/USDC chg_h1, motorlar arasi TEK cache. Hata durumunda raise etmez."""
+    global _sol_h1_paylasimli
+    from hibrit_trader.config import API
+
+    with _sol_h1_lock:
+        ts, cached = _sol_h1_paylasimli
+        now = time.time()
+        if now - ts < SOL_H1_CACHE_SEC:
+            return cached
+        try:
+            url = f"{API['geckoterminal']}/networks/solana/pools/{SOL_USDC_POOL}"
+            resp = client.get(url, headers={"accept": "application/json"}, timeout=10)
+            resp.raise_for_status()
+            chg = (resp.json()["data"]["attributes"].get("price_change_percentage") or {}).get("h1")
+            val = round(float(chg), 3) if chg is not None else None
+            _sol_h1_paylasimli = (time.time(), val)
+            return val
+        except Exception:
+            log.debug("sol_chg_h1 paylasimli fetch hatasi", exc_info=True)
+            if cached is not None and now - ts <= SOL_H1_STALE_MAX_SEC:
+                return cached
+            return None
+
 
 def _data_dir() -> Path:
     # İzolasyon/test için override edilebilir; gerçek çalışmada "data".
@@ -136,7 +170,6 @@ class MomentumEngine:
         self._reject_seen: dict[str, float] = {}    # pool -> son reject yazım ts
         self._reject_watch: dict[str, dict] = {}    # pool -> 30dk recheck bekleyen
         self._shadow_watch: dict[str, dict] = {}    # trade_id -> 20dk fiyat izi
-        self._sol_h1_cache: tuple[float, float | None] = (0.0, None)  # (ts, chg_h1)
         self._lock_fh = None                        # tek-instance flock tutucusu
         self._cooldown_until: dict[str, float] = {}  # token -> yeniden giriş serbest ts
         self._day_key: str = ""                     # UTC gün anahtarı (YYYY-MM-DD)
@@ -375,15 +408,7 @@ class MomentumEngine:
         # "rejim" sebebiyle rejects'e düşer ve 30dk recheck'e girer (kaçan
         # fırsat ölçümü). sol_chg_h1 alınamazsa FAIL-CLOSED: son başarılı değer
         # 10dk'ya kadar geçerli, sonrasında veri yoksa giriş yok.
-        sol_h1 = None
-        try:
-            sol_h1 = self._sol_chg_h1(client)
-        except Exception:
-            log.debug("momentum rejim: sol_chg_h1 alınamadı", exc_info=True)
-        if sol_h1 is None:
-            ts, cached = self._sol_h1_cache
-            if cached is not None and now - ts <= SOL_H1_STALE_MAX_SEC:
-                sol_h1 = cached
+        sol_h1 = self._sol_chg_h1(client)
         if sol_h1 is None:
             if not self._regime_logged:
                 self._regime_logged = True
@@ -718,21 +743,10 @@ class MomentumEngine:
             return None
         return int(float(m5.get("buys") or 0)), int(float(m5.get("sells") or 0))
 
-    # ---- 3) Rejim etiketi: SOL/USDC chg_h1, saatlik cache ---------------------
+    # ---- 3) Rejim etiketi: SOL/USDC chg_h1, paylasimli cache -------------------
     def _sol_chg_h1(self, client: httpx.Client) -> float | None:
-        """SOL'un kendi chg_h1'i (SOL/USDC ana havuzu). Saatte bir GET, cache'li."""
-        from hibrit_trader.config import API
-
-        ts, cached = self._sol_h1_cache
-        if time.time() - ts < SOL_H1_CACHE_SEC:
-            return cached
-        url = f"{API['geckoterminal']}/networks/solana/pools/{SOL_USDC_POOL}"
-        resp = client.get(url, headers={"accept": "application/json"}, timeout=10)
-        resp.raise_for_status()
-        chg = (resp.json()["data"]["attributes"].get("price_change_percentage") or {}).get("h1")
-        val = round(float(chg), 3) if chg is not None else None
-        self._sol_h1_cache = (time.time(), val)
-        return val
+        """SOL'un kendi chg_h1'i, motorlar arasi tek cache'ten (raise etmez)."""
+        return sol_chg_h1(client)
 
     # ---- 4) Shadow tracker: kapanış sonrası 20dk fiyat izi --------------------
     def _register_shadow(self, pos: dict, raw_price: float, eff_price: float,

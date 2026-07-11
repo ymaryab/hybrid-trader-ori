@@ -114,7 +114,8 @@ def test_safety_reject_blocks_entry(x1_data_dir, monkeypatch):
     eng = X1Engine(_settings())
     monkeypatch.setattr(x1, "scan_all", lambda chains: [_pair()])
     monkeypatch.setattr(
-        x1, "check_token", lambda client, chain, token: SimpleNamespace(ok=False)
+        x1, "check_token",
+        lambda client, chain, token: SimpleNamespace(ok=False, reasons=["honeypot"]),
     )
     monkeypatch.setattr(x1.time, "sleep", lambda s: None)
     monkeypatch.setattr(eng, "_sol_chg_h1", lambda client: 1.0)

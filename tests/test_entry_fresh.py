@@ -270,6 +270,84 @@ def test_rejim_reject_kuyruktayken_tekrar_yazilmaz(fresh_env):
     assert len(_rejects(fresh_env)) == 1  # dedup: ayni havuz kuyruktayken atlanir
 
 
+def test_rejim_reject_dedupe_motor_boyutlu(fresh_env):
+    # Ayni havuz: her motor kendi kaydini yazar, kuyrukta TEK giris kalir
+    ef.rejim_reject_kaydet([_pair()], "V6", 0.1)
+    ef.rejim_reject_kaydet([_pair()], "V7", 0.1)
+    ef.rejim_reject_kaydet([_pair()], "V7", 0.2)  # ayni motor tekrar: yazilmaz
+    rows = _rejects(fresh_env)
+    assert [r["engine"] for r in rows] == ["V6", "V7"]
+    assert len(ef._watch) == 1
+    assert ef._watch["FP1"]["engines"] == {"V6", "V7"}
+    assert ef._watch["FP1"]["engine"] == "V6"  # recheck satiri ilk motora yazilir
+
+
+def test_rejim_reject_taze_kuyrugundaki_havuza_da_motor_kaydi(fresh_env, monkeypatch):
+    # Havuz taze_fiyat_kacti ile kuyruktayken rejim reddi gelirse kayit yazilir
+    monkeypatch.setattr(ef, "get_feed", lambda: _feed("FP1", 1.05))
+    ef.taze_teyit(_pair(), "V6")
+    ef.rejim_reject_kaydet([_pair()], "V7", 0.1)
+    rows = _rejects(fresh_env)
+    assert rows[-1]["reason"] == "rejim_reject"
+    assert rows[-1]["engine"] == "V7"
+    assert len(ef._watch) == 1  # kuyruk sismedi
+
+
+# ---- safety reject kaydi: sessiz continue yerine olcum ------------------------------
+
+def test_safety_reject_kaydi_red(fresh_env):
+    ef.safety_reject_kaydet(_pair(), "V7", "safety_red", "honeypot; mint yetkisi açık")
+    rows = _rejects(fresh_env)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["type"] == "reject"
+    assert r["reason"] == "safety_red"
+    assert r["engine"] == "V7"
+    assert r["detay"] == "honeypot; mint yetkisi açık"
+    assert ef._watch == {}  # recheck kuyruguna girmez
+
+
+def test_safety_reject_kaydi_hata(fresh_env):
+    ef.safety_reject_kaydet(_pair(), "X1", "safety_hata", "ReadTimeout")
+    r = _rejects(fresh_env)[0]
+    assert r["reason"] == "safety_hata"
+    assert r["engine"] == "X1"
+    assert r["detay"] == "ReadTimeout"
+
+
+@pytest.mark.parametrize("mod,eng_cls,motor,pair_kw", [
+    (v6, V6Engine, "V6", {}),
+    (v7, V7Engine, "V7", {}),
+    (x1, X1Engine, "X1", {"h1": 80.0, "m5": 5.0, "liq": 60_000.0}),
+])
+def test_motor_safety_red_ve_hata_kaydi(fresh_env, monkeypatch, mod, eng_cls, motor, pair_kw):
+    eng = eng_cls(_settings())
+    monkeypatch.setattr(mod, "scan_all", lambda chains: [_pair(**pair_kw)])
+    monkeypatch.setattr(eng, "_sol_chg_h1", lambda client: 1.0)
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+
+    def _boom(client, chain, token):
+        raise RuntimeError("api")
+
+    monkeypatch.setattr(mod, "check_token", _boom)
+    eng._enter(client=SimpleNamespace())
+    assert eng.positions == []
+
+    monkeypatch.setattr(
+        mod, "check_token",
+        lambda client, chain, token: SimpleNamespace(ok=False, reasons=["honeypot"]),
+    )
+    eng._enter(client=SimpleNamespace())
+    assert eng.positions == []
+
+    rows = [r for r in _rejects(fresh_env) if r["reason"].startswith("safety_")]
+    assert [(r["reason"], r["engine"]) for r in rows] == [
+        ("safety_hata", motor), ("safety_red", motor),
+    ]
+    assert rows[0]["detay"] == "RuntimeError"
+    assert rows[1]["detay"] == "honeypot"
+
+
 def test_rejim_reject_tick_basina_en_cok_5(fresh_env):
     pairs = [_pair(pool=f"P{i}", token=f"T{i}") for i in range(8)]
     ef.rejim_reject_kaydet(pairs, "V6", 0.1)

@@ -8,6 +8,8 @@ API erişilemezse karar 'belirsiz' değil 'RED' — güvenlik filtresi fail-clos
 from __future__ import annotations
 
 import os
+import threading
+import time
 from dataclasses import dataclass, field
 
 import httpx
@@ -169,7 +171,43 @@ def _check_goplus(client: httpx.Client, chain: str, token_address: str) -> Safet
         return SafetyReport(ok=False, reasons=[f"GoPlus erişilemedi: {type(e).__name__}"])
 
 
+_token_cache: dict[tuple[str, str, bool], tuple[float, SafetyReport]] = {}
+_token_cache_lock = threading.Lock()
+
+
+def _token_cache_ttl() -> float:
+    return float(os.getenv("SAFETY_CACHE_TTL_SEC", "90"))
+
+
 def check_token(
+    client: httpx.Client,
+    chain: str,
+    token_address: str,
+    *,
+    genesis_ok: bool = False,
+) -> SafetyReport:
+    """Tek token güvenlik kararı, motorlar arası paylaşımlı cache (TTL 90s).
+
+    Aynı token'i her motor ayrı ayrı sorgulamasın diye sonuç kısa süre saklanır;
+    karar mantığı _check_token_taze içinde değişmeden durur (fail-closed).
+    """
+    key = (chain, token_address, genesis_ok)
+    now = time.time()
+    with _token_cache_lock:
+        hit = _token_cache.get(key)
+        if hit is not None and now - hit[0] < _token_cache_ttl():
+            return hit[1]
+    report = _check_token_taze(client, chain, token_address, genesis_ok=genesis_ok)
+    with _token_cache_lock:
+        _token_cache[key] = (time.time(), report)
+        if len(_token_cache) > 512:
+            esik = time.time() - _token_cache_ttl()
+            for k in [k for k, (ts, _) in _token_cache.items() if ts < esik]:
+                del _token_cache[k]
+    return report
+
+
+def _check_token_taze(
     client: httpx.Client,
     chain: str,
     token_address: str,
