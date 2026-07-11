@@ -260,6 +260,19 @@ def test_momentum_mod_rozeti_ve_canli_karti(client, monkeypatch, tmp_path):
     assert "gerçek para" in h and "$25" in h
     assert "DZXZ" in h  # cuzdan kisaltmasi kfoot'ta
     assert "denetim defterin" in h
+    # kill butonu bagli sablonda da var: JS listener'i null'a dusmez,
+    # canli moddayken acil durdurma kontrolu ekranda kalir
+    assert 'id="killBtn"' in h
+
+
+def test_momentum_js_guardsiz_listener_yok(client):
+    # Hata sinifi kilidi: script govdesinde zincirleme
+    # getElementById(...).addEventListener cagrisi, eleman sablona gore
+    # yoksa TypeError ile TUM script'i oldurur (killBtn vakasi, 2026-07-11).
+    import re
+    h = client.get("/momentum").text
+    zincir = re.findall(r'getElementById\([^)]*\)\s*\.\s*addEventListener', h)
+    assert zincir == [], zincir
 
 
 def test_momentum_trend_katmani(client):

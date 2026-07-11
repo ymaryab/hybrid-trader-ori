@@ -1253,6 +1253,7 @@ def _filo_kart_canli(bagli: bool) -> str:
                 f'<div class="bosmetin">V7 fill\'leri gerçek cüzdandan geçiyor. '
                 f'Alım bileti tavanı ${tavan} (LIVE_MAX_USD); muhasebe ve yarış '
                 'paper boyutta sürer. Fill\'ler tx imzalı, denetim defterine düşer.</div>'
+                '<button id="killBtn" disabled>...</button>'
                 f'<div class="kfoot">cüzdan: {_CANLI_CUZDAN[:4]}…{_CANLI_CUZDAN[-4:]}</div></div>')
     return ('<div class="kart bos" id="kart-canli">'
             '<div class="khead"><b>CANLI</b><span class="rozet">kilitli</span></div>'
@@ -1689,7 +1690,8 @@ async function arsivV5(){
     `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
 }
 let arsivYuklendi=false;
-document.getElementById("arsivBox").addEventListener("toggle",e=>{
+const arsivBoxEl=document.getElementById("arsivBox");
+if(arsivBoxEl)arsivBoxEl.addEventListener("toggle",e=>{
   if(!e.target.open||arsivYuklendi)return;
   arsivYuklendi=true;  // BIR kez: donuk ozet + donuk chartlar (interval yok)
   arsivM1(); arsivM2();
@@ -2020,7 +2022,8 @@ function basKill(k){
   b.textContent=killAktif?"BAŞLAT":"DURDUR";
   b.className=killAktif?"bas":"dur";
 }
-document.getElementById("killBtn").addEventListener("click",async()=>{
+const killBtnEl=document.getElementById("killBtn");
+if(killBtnEl)killBtnEl.addEventListener("click",async()=>{
   if(killAktif===null)return;
   const soru=killAktif
     ?"Kill-switch kaldırılsın mı? Filo normal akışa döner."
