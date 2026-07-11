@@ -75,17 +75,6 @@ def client():
     return TestClient(panel.app)
 
 
-def test_panel_html_trend_section(client):
-    r = client.get("/")
-    assert r.status_code == 200
-    assert "trendPanel" in r.text
-    assert "brainPanel" not in r.text
-    assert "saitoBrainVisual" in r.text
-    assert "runBrainBtn" not in r.text
-    assert "decisionPanel" in r.text
-    assert "Trend Stack" in r.text
-
-
 def test_api_state_includes_decision_and_brain(client):
     r = client.get("/api/state")
     assert r.status_code == 200

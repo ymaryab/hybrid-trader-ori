@@ -1,11 +1,10 @@
-"""Panel HTML ve static JS doğrulama."""
+"""Panel HTML ve JS doğrulama."""
 
 from __future__ import annotations
 
 import re
 import shutil
 import subprocess
-from pathlib import Path
 
 from hibrit_trader.config import CHAIN_ENTRY_PRIORITY
 
@@ -14,69 +13,18 @@ from fastapi.testclient import TestClient
 
 from hibrit_trader import panel
 
-STATIC_JS = Path(__file__).resolve().parents[1] / "src" / "hibrit_trader" / "static" / "panel.js"
-
 
 @pytest.fixture
 def client():
     return TestClient(panel.app)
 
 
-def test_index_serves_panel_js_reference(client):
+def test_index_momentum_panelini_sunar(client):
     r = client.get("/")
     assert r.status_code == 200
-    assert '/static/panel.js' in r.text
-    assert '/static/panel.css' in r.text
-    assert '/static/panel-quantum.css' in r.text
-    assert 'data-theme' in r.text
-    assert "onclick=" not in r.text
-    assert 'walletHoldings' in r.text
-    assert 'holdingsBody' in r.text
-    assert 'runScanBtn' in r.text
-    assert 'scanPanel' in r.text
-    assert 'hudCockpit' in r.text
-    assert 'hudMetrics' in r.text
-    assert 'qc-dash' in r.text
-    assert 'trendPanel' in r.text
-    assert 'HYBRID' in r.text
-    assert 'Hybrid Trade' in r.text
-    assert 'HIBRIT_BOT' not in r.text
-    assert 'saitoBrainVisual' in r.text
-    assert 'saitoHub' in r.text
-    assert 'positionsPanel' in r.text
-    assert 'hudPositionUsd' in r.text
-    assert 'hudPositionMeta' in r.text
-    assert 'positionsTotalBar' in r.text
-    assert 'positionsTotalCost' in r.text
-    assert 'Pozisyon</span>' in r.text
-    assert 'liveSimTags' in r.text
-    assert 'phantomBtn' in r.text
-    assert 'killBtn' not in r.text
-
-
-def test_static_panel_quantum_css_served(client):
-    r = client.get("/static/panel-quantum.css")
-    assert r.status_code == 200
-    assert ".qc-dash" in r.text
-    assert ".saito-core" in r.text
-
-
-def test_static_panel_css_served(client):
-    r = client.get("/static/panel.css")
-    assert r.status_code == 200
-    assert "--accent" in r.text
-    assert "data-theme" in r.text
-
-
-def test_static_panel_js_served(client):
-    r = client.get("/static/panel.js")
-    assert r.status_code == 200
-    body = r.text
-    assert "connectPhantom" in body
-    assert "phantomBtn" in body
-    assert "refreshSolPortfolio" in body or "processPhantomPending" in body
-    assert "function shortAddr" in body
-    assert "runAdvancedScan" in body
+    assert r.text == client.get("/momentum").text
+    assert "Momentum filo" in r.text
+    assert "/static/" not in r.text
 
 
 def test_api_scan_modes(client):
@@ -132,12 +80,6 @@ def test_api_wallet_portfolio_invalid_address(client):
     assert r.status_code == 400
 
 
-def test_wallet_logo_served(client):
-    r = client.get("/static/wallet-logo.png")
-    assert r.status_code == 200
-    assert r.headers["content-type"].startswith("image/")
-
-
 def test_api_state_live_sim(client):
     r = client.get("/api/state")
     assert r.status_code == 200
@@ -158,20 +100,6 @@ def test_api_state_chain_opportunities(client):
         CHAIN_ENTRY_PRIORITY.get(c, 99),
         c,
     ))
-
-
-def test_panel_js_syntax_valid():
-    js = STATIC_JS.read_text()
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node yok")
-    proc = subprocess.run(
-        [node, "-e", f"new Function({js!r}); console.log('OK')"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert proc.returncode == 0, proc.stderr or proc.stdout
 
 
 # ---- PANEL SENKRON: /api/filo tek gercek kaynak ---------------------------------
