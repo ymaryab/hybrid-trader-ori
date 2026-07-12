@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 from typing import Optional
@@ -43,8 +44,17 @@ def usd_to_lamports(usd: float, sol_price_usd: float) -> int:
     return max(1, int(usd / sol_price_usd * LAMPORTS_PER_SOL))
 
 
-def load_keypair(private_key_b58: str) -> Keypair:
-    return Keypair.from_base58_string(private_key_b58.strip())
+def load_keypair(secret: str) -> Keypair:
+    """Iki format: base58 string veya solana-keygen JSON bayt dizisi ([..64 sayi]).
+    12 Tem InvalidChar(91) otopsisi: dosya JSON dizi iken base58 cozumu '['
+    karakterinde patliyordu; iki format da desteklenir."""
+    s = secret.strip()
+    if s.startswith("["):
+        data = bytes(json.loads(s))
+        if len(data) != 64:
+            raise ValueError(f"keypair JSON dizisi 64 bayt olmali ({len(data)} bayt)")
+        return Keypair.from_bytes(data)
+    return Keypair.from_base58_string(s)
 
 
 def get_quote(

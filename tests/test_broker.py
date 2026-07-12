@@ -105,6 +105,17 @@ def _fills(tmp_path):
     return [json.loads(x) for x in p.read_text().splitlines()]
 
 
+def _cuzdan_dosyasi(tmp_path, monkeypatch, icerik=None):
+    """Gecici gecerli keypair dosyasi (solana-keygen JSON dizi formati) kurar."""
+    from solders.keypair import Keypair
+
+    kp = Keypair()
+    p = tmp_path / "test_keypair.json"
+    p.write_text(icerik if icerik is not None else json.dumps(list(bytes(kp))))
+    monkeypatch.setenv("SOL_KEYPAIR_PATH", str(p))
+    return kp
+
+
 # ---- quote parse -----------------------------------------------------------------------
 
 def test_quote_al_parse(data_dir):
@@ -253,6 +264,7 @@ def test_live_execute_kilit_dusunce_reddeder(data_dir, monkeypatch):
     monkeypatch.setenv("LIVE_UNLOCKED", "1")
     onay = data_dir / "LIVE_ONAY"
     onay.write_text("canli-islem-onayliyorum", encoding="utf-8")
+    _cuzdan_dosyasi(data_dir, monkeypatch)
     br = make_exec_broker("live", http=FakeClient(quote=_quote_al()))
     assert isinstance(br, LiveExecBroker)
     onay.unlink()  # kilit calisirken kapanirsa
@@ -265,7 +277,9 @@ def test_live_cuzdan_yoksa_fill_yok(data_dir, monkeypatch):
     monkeypatch.setenv("LIVE_UNLOCKED", "1")
     (data_dir / "LIVE_ONAY").write_text("canli-islem-onayliyorum",
                                         encoding="utf-8")
+    _cuzdan_dosyasi(data_dir, monkeypatch)
     br = make_exec_broker("live", http=FakeClient(quote=_quote_al()))
+    (data_dir / "test_keypair.json").unlink()  # kurulduktan sonra cuzdan kaybolur
     fill = br.execute(ExecOrder(engine="T", yon="al", token_address=TOK,
                                 usd=10.0, ref_fiyat=0.2))
     assert fill.ok is False and fill.neden == "cuzdan_yok"
@@ -285,6 +299,65 @@ def test_cuzdan_repo_ici_yol_reddedilir(data_dir, monkeypatch):
     monkeypatch.setenv("SOL_KEYPAIR_PATH", repo_ici)
     with pytest.raises(RuntimeError, match="repo icinde olamaz"):
         _cuzdan_yukle("live")
+
+
+# ---- cuzdan formatlari (12 Tem InvalidChar(91) otopsisi) ---------------------------------
+
+def test_load_keypair_json_dizi_formati(data_dir):
+    from solders.keypair import Keypair
+
+    from hibrit_trader.jupiter import load_keypair
+
+    kp = Keypair()
+    yuklenen = load_keypair(json.dumps(list(bytes(kp))))
+    assert yuklenen.pubkey() == kp.pubkey()
+
+
+def test_load_keypair_base58_formati(data_dir):
+    from solders.keypair import Keypair
+
+    from hibrit_trader.jupiter import load_keypair
+
+    kp = Keypair()
+    yuklenen = load_keypair(str(kp))
+    assert yuklenen.pubkey() == kp.pubkey()
+
+
+def test_load_keypair_kisa_json_dizi_reddedilir(data_dir):
+    from hibrit_trader.jupiter import load_keypair
+
+    with pytest.raises(ValueError, match="64 bayt"):
+        load_keypair("[1, 2, 3]")
+
+
+def test_cuzdan_bozuk_format_cuzdan_yok_hatasi(data_dir, monkeypatch):
+    _cuzdan_dosyasi(data_dir, monkeypatch, icerik="[1, 2, 3]")
+    with pytest.raises(RuntimeError, match="cuzdan_yok: keypair cozumlenemedi"):
+        _cuzdan_yukle("live")
+
+
+def test_cuzdan_json_dizi_dosyadan_yuklenir(data_dir, monkeypatch):
+    kp = _cuzdan_dosyasi(data_dir, monkeypatch)
+    assert _cuzdan_yukle("live").pubkey() == kp.pubkey()
+
+
+def test_live_init_cuzdan_probu_pubkey_loglar(data_dir, monkeypatch, caplog):
+    monkeypatch.setenv("LIVE_UNLOCKED", "1")
+    (data_dir / "LIVE_ONAY").write_text("canli-islem-onayliyorum", encoding="utf-8")
+    kp = _cuzdan_dosyasi(data_dir, monkeypatch)
+    br = make_exec_broker("live", http=FakeClient())
+    assert isinstance(br, LiveExecBroker)
+    assert str(kp.pubkey()) in caplog.text   # pubkey boot'ta loglanir
+    assert str(kp) not in caplog.text        # gizli anahtar ASLA loglanmaz
+
+
+def test_live_init_cuzdan_bozuksa_kurulamaz(data_dir, monkeypatch):
+    # kalici konfig hatasi ilk trade'de degil boot'ta patlar -> motor exec_arizali olur
+    monkeypatch.setenv("LIVE_UNLOCKED", "1")
+    (data_dir / "LIVE_ONAY").write_text("canli-islem-onayliyorum", encoding="utf-8")
+    _cuzdan_dosyasi(data_dir, monkeypatch, icerik="[1, 2, 3]")
+    with pytest.raises(RuntimeError, match="cuzdan_yok"):
+        make_exec_broker("live", http=FakeClient())
 
 
 # ---- fabrika ---------------------------------------------------------------------------
@@ -336,6 +409,7 @@ def test_live_execute_sol_swap_al_ve_sat(data_dir, monkeypatch):
     monkeypatch.delenv("LIVE_MAX_USD", raising=False)
     monkeypatch.setenv("LIVE_UNLOCKED", "1")
     (data_dir / "LIVE_ONAY").write_text("canli-islem-onayliyorum", encoding="utf-8")
+    _cuzdan_dosyasi(data_dir, monkeypatch)
     br = make_exec_broker("live", http=FakeClient())
     monkeypatch.setattr(broker, "_cuzdan_yukle", lambda mode: object())
     monkeypatch.setattr(br, "_decimals", lambda mint: 9)
@@ -374,6 +448,7 @@ def test_live_max_usd_tavani_sadece_alimi_kirpar(data_dir, monkeypatch):
     monkeypatch.setenv("LIVE_MAX_USD", "25")
     monkeypatch.setenv("LIVE_UNLOCKED", "1")
     (data_dir / "LIVE_ONAY").write_text("canli-islem-onayliyorum", encoding="utf-8")
+    _cuzdan_dosyasi(data_dir, monkeypatch)
     br = make_exec_broker("live", http=FakeClient())
     monkeypatch.setattr(broker, "_cuzdan_yukle", lambda mode: object())
     monkeypatch.setattr(br, "_decimals", lambda mint: 9)

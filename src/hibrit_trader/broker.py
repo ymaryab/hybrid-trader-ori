@@ -98,7 +98,12 @@ def _cuzdan_yukle(mode: str):
     if not p.is_file():
         raise RuntimeError("cuzdan_yok: keypair dosyasi bulunamadi")
     from hibrit_trader.jupiter import load_keypair  # tembel: solders yalniz burada
-    return load_keypair(p.read_text(encoding="utf-8"))
+    try:
+        return load_keypair(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        # anahtar icerigi asla loglanmaz; sadece hata sinifi disari cikar
+        raise RuntimeError(
+            f"cuzdan_yok: keypair cozumlenemedi ({type(e).__name__})") from e
 
 
 # ---- Veri siniflari -------------------------------------------------------------------
@@ -324,6 +329,10 @@ class LiveExecBroker(DryrunExecBroker):
         if not live_kilit_acik():
             raise RuntimeError(
                 "live kilidi kapali: LIVE_UNLOCKED=1 ve LIVE_ONAY dosyasi gerekli")
+        # acilis probu: hatali cuzdan konfigurasyonu ilk trade'de degil boot'ta
+        # yakalansin (12 Tem InvalidChar(91) otopsisi). Sadece pubkey loglanir.
+        keypair = _cuzdan_yukle("live")
+        log.warning("BROKER live hazir, cuzdan %s", keypair.pubkey())
         super().__init__(http=http)
 
     def execute(self, order: ExecOrder) -> ExecFill:
