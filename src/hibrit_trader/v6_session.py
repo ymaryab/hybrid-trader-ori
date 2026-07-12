@@ -29,8 +29,9 @@ GÜÇLENDİRME (2026-07-09 yeniden aktivasyon):
           entry_price_source (fast/fetch/scan) + entry_fresh_fark_pct.
 
 Fill'ler sanal: gerçek fiyat + v2'nin likidite-slippage modeli + gas.
-Kadans v2 ile aynı; 3/8 interval faz kaydırmalı (v2:0, v5:1/8, v3:1/4,
-v6:3/8, gölge:1/2, v4:3/4). V6_ENABLED=0 ile kapatılır.
+Kadans v2 ile aynı; 5/8 interval faz kaydırmalı (v2:0, v5:1/8, v3:1/4,
+v6:5/8, gölge:1/2, v4:3/4; 12 Tem: v7 canlı para taşıdığı için v6 ile
+faz takası yapıldı, v7 erken v6 geç). V6_ENABLED=0 ile kapatılır.
 """
 
 from __future__ import annotations
@@ -170,7 +171,7 @@ class V6Engine:
         self._lock_fh = fh
         return True
 
-    # ---- Ana döngü (v2 ile aynı kadans, 3/8 interval faz kaydırma) ------------
+    # ---- Ana döngü (v2 ile aynı kadans, 5/8 interval faz kaydırma) ------------
     def run_forever(self) -> None:
         if not self._acquire_lock():
             return
@@ -186,7 +187,7 @@ class V6Engine:
         if feed is not None:  # restart sonrasi acik pozisyon havuzlarini feed'e geri tak
             for pos in self.positions:
                 feed.add_pool(pos["pool_address"])
-        time.sleep(SCAN_INTERVAL_SEC * 3 / 8)
+        time.sleep(SCAN_INTERVAL_SEC * 5 / 8)
         while True:
             try:
                 self.tick()

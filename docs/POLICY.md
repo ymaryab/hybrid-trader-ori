@@ -154,3 +154,15 @@ Karne gunune kadar UYGULANMAZ; degerlendirme gundemine ek:
   altina alinacak (kacan-aday makas analizi tamamlanir).
 - entry_fresh kayit-yazma hatalarinin log seviyesi debug -> warning
   (reject kaydi kaybi prod logunda gorunur olsun).
+
+## Faz takasi: v7 one gecti (12 Tem 2026)
+
+v7 canli para tasidigi icin tarama faz sirasinda one alindi: v6 ve v7'nin
+fazlari takas edildi (v7: 5/8 -> 3/8 erken, v6: 3/8 -> 5/8 gec). Kadans,
+cache ve kurallar degismedi; sadece faz ofsetleri.
+
+Karne kiyasi okunurken dikkate alinacak: 12 Tem itibariyle faz onceligi
+v7'de. Onceki donem faz onceligi v6 lehineydi; SCAM/SOL teshis raporu
+(12 Tem otopsisi) v6'nin girip v7'nin girememesinde tarama fotografinin
+bir adim onde olmasinin payini gosterdi. 12 Tem oncesi/sonrasi v6-v7
+karsilastirmalari bu asimetri degisikligiyle birlikte yorumlanmali.

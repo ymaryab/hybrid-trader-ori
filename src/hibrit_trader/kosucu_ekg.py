@@ -15,7 +15,7 @@ Agresif ek polling yok. Sadece su dosyalara yazar:
   data/kosucu_ekg.jsonl       (tick kayitlari)
   data/kosucu_ekg_state.json  (izleme listesi, restart dayanikli)
 
-Kadans 1/4 interval faz kaydirmali (golge:1/2, v6:3/8, v7:5/8, v4:3/4,
+Kadans 1/4 interval faz kaydirmali (golge:1/2, v6:5/8, v7:3/8, v4:3/4,
 v8:7/8, v9:1/8, ekg:1/4). EKG_ENABLED=0 ile kapatilir.
 """
 

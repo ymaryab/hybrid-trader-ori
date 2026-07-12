@@ -22,8 +22,9 @@ V7 = V6'NIN BİREBİR KOPYASI + TEK fark (2026-07-04 v6 arındırma analizi):
           Kayıt: entry_price_source + entry_fresh_fark_pct.
 
 Fill'ler sanal: gerçek fiyat + v2'nin likidite-slippage modeli + gas.
-Kadans v2 ile aynı; 5/8 interval faz kaydırmalı (v6:3/8, gölge:1/2,
-v7:5/8, v4:3/4). V7_ENABLED=0 ile kapatılır.
+Kadans v2 ile aynı; 3/8 interval faz kaydırmalı (v6:5/8, gölge:1/2,
+v7:3/8, v4:3/4; 12 Tem: v7 canlı para taşıdığı için v6 ile faz takası
+yapıldı, v7 erken v6 geç). V7_ENABLED=0 ile kapatılır.
 """
 
 from __future__ import annotations
@@ -254,7 +255,7 @@ class V7Engine:
         self._lock_fh = fh
         return True
 
-    # ---- Ana döngü (v2 ile aynı kadans, 5/8 interval faz kaydırma) ------------
+    # ---- Ana döngü (v2 ile aynı kadans, 3/8 interval faz kaydırma) ------------
     def run_forever(self) -> None:
         if not self._acquire_lock():
             return
@@ -266,7 +267,7 @@ class V7Engine:
             TP_PCT, DISASTER_PCT, GRACE_SEC // 60, LATE_STOP_PCT, CEILING_SEC // 60,
         )
         self._save()
-        time.sleep(SCAN_INTERVAL_SEC * 5 / 8)
+        time.sleep(SCAN_INTERVAL_SEC * 3 / 8)
         while True:
             try:
                 self.tick()

@@ -29,7 +29,7 @@ GIRIS TAZE-FIYAT TEYIDI (09 Tem gece): alim kaydedilmeden hemen once fiyat
 
 Fill'ler sanal: gercek fiyat + v2'nin likidite-slippage modeli + gas.
 Kadans v2 ile ayni; 3/16 interval faz kaydirmali (v9:1/8, ekg:1/4,
-v6:3/8, golge:1/2, v7:5/8, v4:3/4, v8:7/8). X1_ENABLED=0 ile kapatilir.
+v6:5/8, golge:1/2, v7:3/8, v4:3/4, v8:7/8). X1_ENABLED=0 ile kapatilir.
 """
 
 from __future__ import annotations
