@@ -145,7 +145,7 @@ def test_api_filo_tek_tick_tek_kaynak(client, monkeypatch, tmp_path):
 
     monkeypatch.setenv("MOMENTUM_DATA_DIR", str(tmp_path))
     opened = _time.time() - 7200
-    for i, p in enumerate(("v6", "v7", "x1")):
+    for i, p in enumerate(("v6", "v7", "x1", "v7c")):
         (tmp_path / f"{p}_state.json").write_text(json.dumps({
             "balance": 1000.0 + i, "start_balance": 1000.0,
             "realized_pnl": 10.0 + i,
@@ -163,14 +163,14 @@ def test_api_filo_tek_tick_tek_kaynak(client, monkeypatch, tmp_path):
     # arsivdekiler aktif filoda yok
     assert "m1" not in d and "m2" not in d
     # kiyas satiri ayni gecisin ozetinden: ikinci okuma/hesap yok, birebir esit
-    for p in ("v6", "v7", "x1"):
+    for p in ("v6", "v7", "x1", "v7c"):
         assert d["cmp"][p] == d[p]["summary"]["realized_pnl"]
     assert d["cmp"]["v6"] == 10.0
     assert d["cmp"]["x1"] == 12.0
     # equity tek formul (_live_equity): nakit + acik pozisyonun anlik degeri
     assert d["v6"]["summary"]["equity"] == 1110.0
     # ayni 'now': uc motorun pozisyon yasi birebir ayni tick'ten
-    ages = {d[p]["positions"][0]["age_min"] for p in ("v6", "v7", "x1")}
+    ages = {d[p]["positions"][0]["age_min"] for p in ("v6", "v7", "x1", "v7c")}
     assert len(ages) == 1
     # slot rozeti ayni cevaptan: 7200 sn = 2.0 saat
     assert d["v6"]["summary"]["oldest_slot_hours"] == 2.0
@@ -198,10 +198,11 @@ def test_momentum_sayfasi_tek_poll_ve_upd_etiketi(client):
     h = client.get("/momentum").text
     assert "/api/filo" in h
     assert "son güncelleme" in h
-    for eid in ("v6upd", "v7upd", "x1upd"):
+    for eid in ("v6upd", "v7upd", "x1upd", "v7cupd"):
         assert f'id="{eid}"' in h
     # aktif motorlar icin ayri fetch kalmadi: tek gercek kaynak /api/filo
-    for eski in ('fetch("/api/v6?', 'fetch("/api/v7?', 'fetch("/api/x1?'):
+    for eski in ('fetch("/api/v6?', 'fetch("/api/v7?', 'fetch("/api/x1?',
+                 'fetch("/api/v7c?'):
         assert eski not in h
     # m1/m2 arsivde: bir kez yuklenen arsiv fetch'leri var, upd etiketi yok
     assert 'fetch("/api/m1?' in h and 'fetch("/api/m2?' in h
@@ -214,14 +215,16 @@ def test_momentum_yeni_duzen(client):
     # ust bar rozetleri
     for eid in ("feedBadge", "rejimBadge"):
         assert f'id="{eid}"' in h
-    # besli kart grid: canli + uc bot + v-next, konfigden uretilir
+    # kart grid: canli + dort bot (v7c V-NEXT koltugunda), konfigden uretilir
     assert 'id="kartGrid"' in h
-    for kid in ("kart-canli", "kart-v6", "kart-v7", "kart-x1", "kart-vnext"):
+    for kid in ("kart-canli", "kart-v6", "kart-v7", "kart-x1", "kart-v7c"):
         assert f'id="{kid}"' in h
     assert "cüzdan: bağlı değil" in h
-    assert "yakında" in h
+    # V-NEXT placeholder kalkti, koltukta v7c
+    assert "V-NEXT" not in h and 'id="kart-vnext"' not in h
+    assert "majör evren" in h
     # kart/chart eslesmesi: her bot kartinin sparkline'i ve charti var
-    for p in ("v6", "v7", "x1"):
+    for p in ("v6", "v7", "x1", "v7c"):
         assert f'id="spark-{p}"' in h
         assert f'id="eq{p}chart"' in h
         assert f'id="mtm-{p}"' in h
@@ -326,8 +329,8 @@ def test_momentum_js_guardsiz_listener_yok(client):
 
 def test_momentum_trend_katmani(client):
     h = client.get("/momentum").text
-    # aktif bot chartlarinda trend rozeti; bos-durum (canli/vnext) etkilenmez
-    for p in ("v6", "v7", "x1"):
+    # aktif bot chartlarinda trend rozeti; bos-durum (canli) etkilenmez
+    for p in ("v6", "v7", "x1", "v7c"):
         assert f'id="eq{p}trend"' in h
     assert 'id="eqcanlitrend"' not in h and 'id="eqvnexttrend"' not in h
     # rozet CSS + yon renkleri + rozet metni
@@ -397,9 +400,9 @@ def test_x1_arka_plan_bolumu(client):
     assert 'id="arkaBox"' in h
     assert '<details id="arkaBox" open' not in h
     assert "ARKA PLAN DENEYLERİ" in h
-    # ana kart gridi: canli + v6 + v7 + vnext, x1 yok
+    # ana kart gridi: canli + v6 + v7 + v7c, x1 yok
     grid = h[h.index('id="kartGrid"'):h.index('id="cmp3"')]
-    for kid in ("kart-canli", "kart-v6", "kart-v7", "kart-vnext"):
+    for kid in ("kart-canli", "kart-v6", "kart-v7", "kart-v7c"):
         assert f'id="{kid}"' in grid
     assert 'id="kart-x1"' not in grid
     # x1 karti + senkron charti arka bolumde (arsivden once)
@@ -420,6 +423,7 @@ def test_islem_tablosu_x1_arkaya(client):
     assert '"id": "x1", "ad": "X1", "renk": "#d29922", "slots": 3, "arka": true' in h
     assert '"id": "v6", "ad": "V6", "renk": "#3fb950", "slots": 5, "arka": false' in h
     assert '"id": "v7", "ad": "V7", "renk": "#58a6ff", "slots": 5, "arka": false' in h
+    assert '"id": "v7c", "ad": "V7C", "renk": "#bc8cff", "slots": 5, "arka": false' in h
     # x1'in kendi islem tablosu arka bolumde (arsivden once), ana tablo disari
     arka = h[h.index('id="arkaBox"'):h.index('id="arsivBox"')]
     assert 'id="isltrArka"' in arka
@@ -443,11 +447,10 @@ def test_kart_sparkline_24_saat(client):
     assert "cizSpark(sparkId,pts,st.start,renk)" not in h
     # dar pencerede spark kendi 24s verisini ceker
     assert "minutes=1440" in h
-    # bos-durum kartlari etkilenmez: kilitli canli/vnext kartlarinda spark yok,
+    # bos-durum karti etkilenmez: kilitli canli kartinda spark yok,
     # spark yalniz bot kartlarinda (mkEqChart bagli)
     assert 'id="spark-canli"' not in h
-    assert 'id="spark-vnext"' not in h
-    for p in ("v6", "v7", "x1"):
+    for p in ("v6", "v7", "x1", "v7c"):
         assert f'id="spark-{p}"' in h
 
 

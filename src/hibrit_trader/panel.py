@@ -149,6 +149,12 @@ def _start_engine() -> None:
             from hibrit_trader.m2_session import M2Engine
             m2 = M2Engine(settings)
             threading.Thread(target=m2.run_forever, daemon=True).start()
+        if os.getenv("V7C_ENABLED", "1") != "0":
+            # V7C senaryo: v7 kurallari birebir, tek fark major evren (liq>=$3M);
+            # SABIT PAPER (BROKER_MODE'dan bagimsiz), v7c_* dosyalarina yazar
+            from hibrit_trader.v7c_session import V7CEngine
+            v7c = V7CEngine(settings)
+            threading.Thread(target=v7c.run_forever, daemon=True).start()
         if os.getenv("EKG_ENABLED", "1") != "0":
             # Koşucu EKG: pasif gözlemci, işlem yok, kosucu_ekg* dosyalarına yazar
             from hibrit_trader.kosucu_ekg import KosucuEkg
@@ -629,10 +635,10 @@ def api_filo(limit: int = Query(30)) -> dict:
     data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
     now = time.time()
     out: dict = {"ts": round(now, 3)}
-    for prefix in ("v6", "v7", "x1"):
+    for prefix in ("v6", "v7", "x1", "v7c"):
         out[prefix] = _motor_ozet(data_dir, prefix, now, limit)
     out["cmp"] = {p: out[p]["summary"]["realized_pnl"]
-                  for p in ("v6", "v7", "x1")}
+                  for p in ("v6", "v7", "x1", "v7c")}
     out["kill"] = is_active()
     canli = _canli_blok()
     if canli is not None:
@@ -673,6 +679,11 @@ def api_v6_equity(minutes: int = Query(0, ge=0)) -> dict:
 @app.get("/api/v7/equity")
 def api_v7_equity(minutes: int = Query(0, ge=0)) -> dict:
     return _equity_series("v7", minutes)
+
+
+@app.get("/api/v7c/equity")
+def api_v7c_equity(minutes: int = Query(0, ge=0)) -> dict:
+    return _equity_series("v7c", minutes)
 
 
 @app.get("/api/canli/equity")
@@ -1281,7 +1292,7 @@ def api_m2(limit: int = Query(50)) -> dict:
 # ---- /momentum sayfasi: filo konfigurasyonu -----------------------------------------
 # Kural: kart grid ve chart sutunu BU listeden uretilir (elle esleme yok). Bot
 # eklenince/cikinca kart ve chart otomatik eslesir; JS tarafi ayni listeyi
-# MOTORLAR olarak alir. "canli" ve "vnext" placeholder kartlardir.
+# MOTORLAR olarak alir. "canli" placeholder karttir.
 
 _FILO_MOTORLAR: list[dict] = [
     {"id": "canli", "tip": "canli", "ad": "CANLI", "renk": "#e3b341"},
@@ -1296,7 +1307,9 @@ _FILO_MOTORLAR: list[dict] = [
     {"id": "x1", "tip": "bot", "ad": "X1", "renk": "#d29922", "slots": 3,
      "rozet": "koşucu avcısı", "arka": True,
      "desc": "koşucu avcısı: h1&ge;50 + m5&gt;0 + liq&ge;$20k · bilet&le;$70 · yarım tp mfe&ge;+15 · trail -18 · 6sa tavan"},
-    {"id": "vnext", "tip": "yakinda", "ad": "V-NEXT", "renk": "#8b949e"},
+    {"id": "v7c", "tip": "bot", "ad": "V7C", "renk": "#bc8cff", "slots": 5,
+     "rozet": "majör evren",
+     "desc": "v7 kuralları birebir, tek fark evren: majör/likit liq&ge;$3M · h1 10..50 · tp+2 · fren -%10 · rejim sol_h1&ge;0.5 · PAPER sabit"},
 ]
 
 
@@ -1336,11 +1349,7 @@ def _filo_kart(m: dict, canli_bagli: bool = False) -> str:
                 f'<div class="ksub" id="sub-{m["id"]}">-</div>'
                 f'<canvas class="spark" id="spark-{m["id"]}" height="36"></canvas>'
                 f'<div class="kfoot" id="foot-{m["id"]}">-</div></div>')
-    if m["id"] == "canli":
-        return _filo_kart_canli(bagli=canli_bagli)
-    return ('<div class="kart bos" id="kart-vnext">'
-            '<div class="khead"><b>V-NEXT</b><span class="rozet">yakında</span></div>'
-            '<div class="bosmetin">Üç botun derslerinden doğacak aday.</div></div>')
+    return _filo_kart_canli(bagli=canli_bagli)
 
 
 def _filo_chart(m: dict, canli_bagli: bool = False) -> str:
@@ -1351,20 +1360,17 @@ def _filo_chart(m: dict, canli_bagli: bool = False) -> str:
                 f'<span id="{m["id"]}upd" class="updlabel"></span></div>'
                 f'<div class="eqwrap"><span id="eq{m["id"]}trend" class="trendroz"></span>'
                 f'<canvas id="eq{m["id"]}chart"></canvas></div>')
-    if m["id"] == "canli":
-        if canli_bagli:
-            from hibrit_trader import canli_gosterge
-            return ('<div class="chhead"><span class="dot" style="background:#e3b341"></span>'
-                    '<b>CANLI</b> <span class="chdesc">gerçek cüzdan (SOL + açık poz), '
-                    f'baz ${canli_gosterge.baz_usd():.2f}</span>'
-                    '<span id="eqcanlilabel" class="eqlabel"></span></div>'
-                    '<div class="eqwrap"><span id="eqcanlitrend" class="trendroz"></span>'
-                    '<canvas id="eqcanlichart"></canvas></div>')
+    if canli_bagli:
+        from hibrit_trader import canli_gosterge
         return ('<div class="chhead"><span class="dot" style="background:#e3b341"></span>'
-                '<b>CANLI</b></div>'
-                '<div class="ph">kazanan bağlandığında gerçek para eğrisi burada akacak</div>')
-    return ('<div class="chhead"><span class="dot"></span><b>V-NEXT</b></div>'
-            '<div class="ph">aday bot eklendiğinde eğrisi burada</div>')
+                '<b>CANLI</b> <span class="chdesc">gerçek cüzdan (SOL + açık poz), '
+                f'baz ${canli_gosterge.baz_usd():.2f}</span>'
+                '<span id="eqcanlilabel" class="eqlabel"></span></div>'
+                '<div class="eqwrap"><span id="eqcanlitrend" class="trendroz"></span>'
+                '<canvas id="eqcanlichart"></canvas></div>')
+    return ('<div class="chhead"><span class="dot" style="background:#e3b341"></span>'
+            '<b>CANLI</b></div>'
+            '<div class="ph">kazanan bağlandığında gerçek para eğrisi burada akacak</div>')
 
 
 _MOMENTUM_HTML = """<!doctype html>
