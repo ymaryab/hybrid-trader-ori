@@ -198,8 +198,10 @@ def test_momentum_sayfasi_tek_poll_ve_upd_etiketi(client):
     h = client.get("/momentum").text
     assert "/api/filo" in h
     assert "son güncelleme" in h
-    for eid in ("v6upd", "v7upd", "x1upd", "v7cupd"):
-        assert f'id="{eid}"' in h
+    # gorunumde tek bot: v6; gizli motorlarin upd etiketi basilmaz
+    assert 'id="v6upd"' in h
+    for eid in ("v7upd", "x1upd", "v7cupd"):
+        assert f'id="{eid}"' not in h
     # aktif motorlar icin ayri fetch kalmadi: tek gercek kaynak /api/filo
     for eski in ('fetch("/api/v6?', 'fetch("/api/v7?', 'fetch("/api/x1?',
                  'fetch("/api/v7c?'):
@@ -215,27 +217,34 @@ def test_momentum_yeni_duzen(client):
     # ust bar rozetleri
     for eid in ("feedBadge", "rejimBadge"):
         assert f'id="{eid}"' in h
-    # kart grid: canli + dort bot (v7c V-NEXT koltugunda), konfigden uretilir
+    # kart grid sade: canli + v6; gizli motorlar (v7/x1/v7c) gorunumde yok
     assert 'id="kartGrid"' in h
-    for kid in ("kart-canli", "kart-v6", "kart-v7", "kart-x1", "kart-v7c"):
+    for kid in ("kart-canli", "kart-v6"):
         assert f'id="{kid}"' in h
+    for kid in ("kart-v7", "kart-x1", "kart-v7c"):
+        assert f'id="{kid}"' not in h
     assert "cüzdan: bağlı değil" in h
-    # V-NEXT placeholder kalkti, koltukta v7c
     assert "V-NEXT" not in h and 'id="kart-vnext"' not in h
-    assert "majör 2-10" in h
-    # kart/chart eslesmesi: her bot kartinin sparkline'i ve charti var
-    for p in ("v6", "v7", "x1", "v7c"):
-        assert f'id="spark-{p}"' in h
-        assert f'id="eq{p}chart"' in h
-        assert f'id="mtm-{p}"' in h
+    # kart/chart eslesmesi: gorunur botun sparkline'i ve charti var
+    assert 'id="spark-v6"' in h
+    assert 'id="eqv6chart"' in h
+    assert 'id="mtm-v6"' in h
+    for p in ("v7", "x1", "v7c"):
+        assert f'id="spark-{p}"' not in h
+        assert f'id="eq{p}chart"' not in h
+        assert f'id="mtm-{p}"' not in h
+    # iki sutunlu grid (canli + v6)
+    assert "repeat(2,minmax(0,1fr))" in h
     # tek ortak zaman filtresi + birlesik islem tablosu + arsiv aynen
     assert 'id="eqsyncbtns"' in h
     assert 'id="isltr"' in h
     assert "mfeMaeBar" in h
     assert 'id="arsivBox"' in h
-    # JS konfig sunucudan basildi (tek konfig listesi, elle esleme yok)
+    # JS konfig sunucudan basildi; gizli motorlar listede de yok
     assert '"__MOTORLAR__"' not in h
     assert '"id": "v6"' in h
+    for p in ("v7", "x1", "v7c"):
+        assert f'"id": "{p}"' not in h
 
 
 def test_momentum_mod_rozeti_ve_canli_karti(client, monkeypatch, tmp_path):
@@ -249,36 +258,43 @@ def test_momentum_mod_rozeti_ve_canli_karti(client, monkeypatch, tmp_path):
     monkeypatch.setenv("BROKER_MODE", "dryrun")
     h = client.get("/momentum").text
     assert ">dryrun</span>" in h and ">paper</span>" not in h
-    # live ama kilit kapali: durust ara durum, kart hala kilitli
+    # live ama kilit kapali: rozet durust, kart TAM iskeletiyle kilitli durur
     monkeypatch.setenv("BROKER_MODE", "live")
+    monkeypatch.setenv("LIVE_MAX_USD", "25")
     h = client.get("/momentum").text
     assert "live (kilit kapalı)" in h
-    assert "cüzdan: bağlı değil" in h
+    assert "cüzdan: bağlı değil" not in h
+    assert "kilitli &#128274;" in h or "kilitli 🔒" in h
+    assert "gerçek para" not in h
+    assert 'id="mtm-canli"' in h and 'id="sol-canli"' in h
+    assert 'id="eqcanlichart"' in h and 'id="canliPoz"' in h
+    assert "kilit kapalı, giriş yok" in h
     # live + cift kilit acik: CANLI (V7) rozeti + bilgi karti
     monkeypatch.setenv("LIVE_UNLOCKED", "1")
     monkeypatch.setenv("MOMENTUM_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("LIVE_MAX_USD", "25")
     (tmp_path / "LIVE_ONAY").write_text("canli-islem-onayliyorum", encoding="utf-8")
     h = client.get("/momentum").text
     assert 'class="badge err">CANLI (V7)</span>' in h
     assert "cüzdan: bağlı değil" not in h
     assert "gerçek para" in h and "$25" in h
+    assert "kilit kapalı, giriş yok" not in h
     assert "DZXZ" in h  # cuzdan kisaltmasi kfoot'ta
     assert "denetim defterin" in h
     # kill butonu bagli sablonda da var: JS listener'i null'a dusmez,
     # canli moddayken acil durdurma kontrolu ekranda kalir
     assert 'id="killBtn"' in h
-    # tam gosterge: MTM alani + spark + gercek cuzdan charti + JS bayragi
+    # tam gosterge: MTM + serbest SOL satiri + spark + cuzdan charti + poz tablosu
     assert 'id="mtm-canli"' in h and 'id="sub-canli"' in h
+    assert 'id="sol-canli"' in h
     assert 'id="spark-canli"' in h and 'id="foot-canli"' in h
     assert 'id="eqcanlichart"' in h and 'id="eqcanlilabel"' in h
-    assert "const CANLI_BAGLI=true;" in h
+    assert 'id="canliPoz"' in h and "AÇIK POZİSYONLAR" in h
     assert "baz $119.59" in h
-    # paper'a donunce gosterge alanlari yok, bayrak false
+    # paper'a donunce gosterge alanlari yok
     monkeypatch.delenv("BROKER_MODE", raising=False)
     h = client.get("/momentum").text
-    assert "const CANLI_BAGLI=false;" in h
     assert 'id="mtm-canli"' not in h and 'id="eqcanlichart"' not in h
+    assert 'id="canliPoz"' not in h
 
 
 def test_api_filo_canli_blogu(client, monkeypatch, tmp_path):
@@ -295,6 +311,32 @@ def test_api_filo_canli_blogu(client, monkeypatch, tmp_path):
     assert c["mtm"] == 148.56 and c["baz"] == 119.59
     assert c["pnl_pct"] == round((148.56 / 119.59 - 1) * 100, 2)
     assert c["islem_n"] == 2 and c["acik_poz"] == 1 and c["sol"] == 1.5
+    assert c["pozisyonlar"] == []  # v7 state yok: bos tablo
+
+
+def test_api_filo_canli_pozisyonlar(client, monkeypatch, tmp_path):
+    # Acik pozisyonlar tablosu: v7 state'inden canli_miktar>0 kayitlar,
+    # K/Z gercek cuzdan miktari uzerinden (paper amount_token degil)
+    monkeypatch.setenv("MOMENTUM_DATA_DIR", str(tmp_path))
+    (tmp_path / "v7_state.json").write_text(json.dumps({
+        "balance": 1000.0, "start_balance": 1000.0, "realized_pnl": 0.0,
+        "positions": [
+            {"pair": "FEBU/SOL", "entry_price": 0.0002, "last_price": 0.00025,
+             "amount_token": 100000.0, "canli_miktar": 25000.0,
+             "opened_ts": time.time()},
+            {"pair": "PAPER/SOL", "entry_price": 1.0, "last_price": 1.1,
+             "amount_token": 100.0, "opened_ts": time.time()},  # canli degil
+        ]}))
+    snap = {"ts": 1000.0, "mtm": 120.0, "sol": 1.0, "sol_fiyat": 80.0,
+            "poz_usd": 6.25, "acik_poz": 1, "islem_n": 1}
+    monkeypatch.setattr("hibrit_trader.canli_gosterge._son", snap)
+    pozlar = client.get("/api/filo").json()["canli"]["pozisyonlar"]
+    assert len(pozlar) == 1  # canli_miktar'i olmayan paper poz tabloya girmez
+    p = pozlar[0]
+    assert p["pair"] == "FEBU/SOL" and p["miktar"] == 25000.0
+    assert p["giris"] == 0.0002 and p["guncel"] == 0.00025
+    assert p["kz_usd"] == round(25000.0 * 0.00005, 2)
+    assert p["kz_pct"] == 25.0
 
 
 def test_api_canli_equity_serisi(client, monkeypatch, tmp_path):
@@ -329,9 +371,10 @@ def test_momentum_js_guardsiz_listener_yok(client):
 
 def test_momentum_trend_katmani(client):
     h = client.get("/momentum").text
-    # aktif bot chartlarinda trend rozeti; bos-durum (canli) etkilenmez
-    for p in ("v6", "v7", "x1", "v7c"):
-        assert f'id="eq{p}trend"' in h
+    # gorunur bot chartinda trend rozeti; bos-durum (canli, paper) etkilenmez
+    assert 'id="eqv6trend"' in h
+    for p in ("v7", "x1", "v7c"):
+        assert f'id="eq{p}trend"' not in h
     assert 'id="eqcanlitrend"' not in h and 'id="eqvnexttrend"' not in h
     # rozet CSS + yon renkleri + rozet metni
     assert ".trendroz" in h
@@ -394,41 +437,34 @@ console.log("OK");
     assert proc.returncode == 0, proc.stderr or proc.stdout
 
 
-def test_x1_arka_plan_bolumu(client):
+def test_gizli_motorlar_gorunumde_yok(client):
+    # 12 Tem karari: canli test doneminde ekranda yalniz V6 + CANLI; v7/x1/v7c
+    # motorlari calismaya devam eder (api/filo uretir) ama gorunumden cikar
     h = client.get("/momentum").text
-    # katlanir bolum var, varsayilan kapali (open attr yok), arsiv deseninin aynisi
-    assert 'id="arkaBox"' in h
-    assert '<details id="arkaBox" open' not in h
-    assert "ARKA PLAN DENEYLERİ" in h
-    # ana kart gridi: canli + v6 + v7 + v7c, x1 yok
     grid = h[h.index('id="kartGrid"'):h.index('id="cmp3"')]
-    for kid in ("kart-canli", "kart-v6", "kart-v7", "kart-v7c"):
+    for kid in ("kart-canli", "kart-v6"):
         assert f'id="{kid}"' in grid
-    assert 'id="kart-x1"' not in grid
-    # x1 karti + senkron charti arka bolumde (arsivden once)
+    for kid in ("kart-v7", "kart-x1", "kart-v7c"):
+        assert f'id="{kid}"' not in h
+    # arka bolum bos ve gizli (element kalir, JS null gormesin)
+    assert '<details id="arkaBox" style="display:none;' in h
     arka = h[h.index('id="arkaBox"'):h.index('id="arsivBox"')]
-    assert 'id="kart-x1"' in arka
-    assert 'id="spark-x1"' in arka
-    assert 'id="eqx1chart"' in arka
-    assert 'id="eqx1trend"' in arka
-    # motor calisir durumda: MOTORLAR JS listesi x1'i icerir, poll/kiyas surer
-    assert '"id": "x1"' in h
-    # ana ekran 4 sutun
-    assert "repeat(4,minmax(0,1fr))" in h
+    assert 'id="eqx1chart"' not in arka
+    # motorlar API'de uretmeye devam eder (gorunum disi, veri degil)
+    d = client.get("/api/filo").json()
+    for p in ("v6", "v7", "x1", "v7c"):
+        assert p in d and p in d["cmp"]
 
 
-def test_islem_tablosu_x1_arkaya(client):
+def test_islem_tablosu_sadece_gorunur_motorlar(client):
     h = client.get("/momentum").text
-    # arka bayragi JS konfigde: x1 arka, v6/v7 on plan
-    assert '"id": "x1", "ad": "X1", "renk": "#d29922", "slots": 3, "arka": true' in h
+    # JS konfig: yalniz v6 (gizli motorlar listede yok, kiyas satiri v6+canli)
     assert '"id": "v6", "ad": "V6", "renk": "#3fb950", "slots": 5, "arka": false' in h
-    assert '"id": "v7", "ad": "V7", "renk": "#58a6ff", "slots": 5, "arka": false' in h
-    assert '"id": "v7c", "ad": "V7C", "renk": "#bc8cff", "slots": 5, "arka": false' in h
-    # x1'in kendi islem tablosu arka bolumde (arsivden once), ana tablo disari
-    arka = h[h.index('id="arkaBox"'):h.index('id="arsivBox"')]
-    assert 'id="isltrArka"' in arka
-    assert "SON İŞLEMLER · x1" in arka
+    for p in ('"id": "v7"', '"id": "x1"', '"id": "v7c"'):
+        assert p not in h
+    # ana islem tablosu duruyor; arka tablo elementi kalir (JS guard'i icin)
     assert 'id="isltr"' in h[:h.index('id="arkaBox"')]
+    assert 'id="isltrArka"' in h
     # JS: satirlar arka bayragina gore iki tabloya ayrilir, ayni /api/filo cevabindan
     assert "(m.arka?arkaRows:on).push([m,t])" in h
     assert 'bas("#isltr tbody",on); bas("#isltrArka tbody",arkaRows);' in h
@@ -447,11 +483,12 @@ def test_kart_sparkline_24_saat(client):
     assert "cizSpark(sparkId,pts,st.start,renk)" not in h
     # dar pencerede spark kendi 24s verisini ceker
     assert "minutes=1440" in h
-    # bos-durum karti etkilenmez: kilitli canli kartinda spark yok,
-    # spark yalniz bot kartlarinda (mkEqChart bagli)
+    # bos-durum karti etkilenmez: paper'da canli placeholder, spark yok;
+    # spark yalniz gorunur bot kartinda (mkEqChart bagli)
     assert 'id="spark-canli"' not in h
-    for p in ("v6", "v7", "x1", "v7c"):
-        assert f'id="spark-{p}"' in h
+    assert 'id="spark-v6"' in h
+    for p in ("v7", "x1", "v7c"):
+        assert f'id="spark-{p}"' not in h
 
 
 def test_spark_hazirla_birim(client):

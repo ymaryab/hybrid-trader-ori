@@ -168,9 +168,11 @@ def _start_engine() -> None:
             # Denetim: ay devrinde kapali islem defterini CSV'ye yazar
             from hibrit_trader import denetim
             threading.Thread(target=denetim.run_forever, daemon=True).start()
-        if os.getenv("CANLI_GOSTERGE_ENABLED", "1") != "0" and _canli_bagli_mi():
+        if (os.getenv("CANLI_GOSTERGE_ENABLED", "1") != "0"
+                and os.getenv("BROKER_MODE", "paper").strip().lower() == "live"):
             # Canli cuzdan gostergesi: SOL bakiye + acik canli poz degeri, kendi
-            # dongusunde (RPC kotasi panel poll'undan bagimsiz), sadece okur
+            # dongusunde (RPC kotasi panel poll'undan bagimsiz), sadece okur.
+            # Kilit kapaliyken de calisir: kilitli kart MTM/SOL gosterebilsin.
             from hibrit_trader import canli_gosterge
             threading.Thread(target=canli_gosterge.run_forever, daemon=True).start()
         return
@@ -623,6 +625,23 @@ def _canli_blok() -> dict | None:
             "islem_n": snap["islem_n"], "ts": snap["ts"]}
 
 
+def _canli_pozlar(v7_positions: list[dict]) -> list[dict]:
+    """Canli acik pozisyon tablosu: v7 state'inden canli_miktar>0 olanlar."""
+    out = []
+    for p in v7_positions:
+        miktar = float(p.get("canli_miktar") or 0.0)
+        if miktar <= 0:
+            continue
+        giris = float(p.get("entry_price") or 0.0)
+        guncel = float(p.get("last_price") or giris)
+        kz_usd = miktar * (guncel - giris)
+        kz_pct = round((guncel / giris - 1) * 100, 2) if giris > 0 else 0.0
+        out.append({"pair": p.get("pair", "?"), "miktar": miktar,
+                    "giris": giris, "guncel": guncel,
+                    "kz_usd": round(kz_usd, 2), "kz_pct": kz_pct})
+    return out
+
+
 @app.get("/api/filo")
 def api_filo(limit: int = Query(30)) -> dict:
     """AKTIF filo TEK tick: uc motor (v6/v7/x1) + kiyas satiri tek geciste, tek 'now' ile.
@@ -642,7 +661,10 @@ def api_filo(limit: int = Query(30)) -> dict:
     out["kill"] = is_active()
     canli = _canli_blok()
     if canli is not None:
+        canli["pozisyonlar"] = _canli_pozlar(out["v7"]["positions"])
         out["canli"] = canli
+        # kiyas satiri canli kalemi: MTM bazli (realized degil), ayni snapshot'tan
+        out["cmp"]["canli"] = {"mtm": canli["mtm"], "pnl_pct": canli["pnl_pct"]}
     return out
 
 
@@ -1299,16 +1321,19 @@ _FILO_MOTORLAR: list[dict] = [
     {"id": "v6", "tip": "bot", "ad": "V6", "renk": "#3fb950", "slots": 5,
      "rozet": "hızlı göz",
      "desc": "güçlendirilmiş gölge: liq&ge;$100k · h1 10..50 · tp+2 · 30dk sabır, stop-2 · 60dk tavan · rejim sol_h1&ge;0.5 · hızlı göz 2s"},
+    # gizli: motor calismaya ve /api/filo'da veri uretmeye devam eder; sadece
+    # panel gorunumunden (kart+chart+islem tablosu+kiyas) cikarilir. Canli test
+    # doneminde ekranda yalniz V6 + CANLI kalir (12 Tem karari).
     {"id": "v7", "tip": "bot", "ad": "V7", "renk": "#58a6ff", "slots": 5,
-     "rozet": "fren -%10",
+     "rozet": "fren -%10", "gizli": True,
      "desc": "-%10 felaket freni · sabır iptal, anında sat · rejim sol_h1&ge;0.5"},
     # arka: kart+chart ana ekrandan "Arka plan deneyleri" katlanir bolumune iner;
     # motor, veri uretimi ve kiyas kayitlari aynen surer (sadece gorunum).
     {"id": "x1", "tip": "bot", "ad": "X1", "renk": "#d29922", "slots": 3,
-     "rozet": "koşucu avcısı", "arka": True,
+     "rozet": "koşucu avcısı", "arka": True, "gizli": True,
      "desc": "koşucu avcısı: h1&ge;50 + m5&gt;0 + liq&ge;$20k · bilet&le;$70 · yarım tp mfe&ge;+15 · trail -18 · 6sa tavan"},
     {"id": "v7c", "tip": "bot", "ad": "V7C", "renk": "#bc8cff", "slots": 5,
-     "rozet": "majör 2-10",
+     "rozet": "majör 2-10", "gizli": True,
      "desc": "v7 iskeleti majör/likit evrende: liq&ge;$3M · h1 2..10 · tp+2 · fren -%10 · rejim sol_h1&ge;0.5 · PAPER sabit"},
 ]
 
@@ -1316,19 +1341,29 @@ _FILO_MOTORLAR: list[dict] = [
 _CANLI_CUZDAN = "DZXZGD5FURZDwa5BWByxxd7iLdCvGxSCy6RWHsgupaYa"
 
 
-def _filo_kart_canli(bagli: bool) -> str:
-    """CANLI karti iki sablonlu: kilitli placeholder / V7 bagli bilgi karti."""
-    if bagli:
-        tavan = os.getenv("LIVE_MAX_USD", "").strip() or "-"
+def _filo_kart_canli(durum: str) -> str:
+    """CANLI karti uc durumlu: bagli (gercek para) / kilitli (tam iskelet +
+    kilit rozeti) / yok (placeholder). Kilitliyken de tam gosterge basilir ki
+    cuzdan MTM/SOL izlenebilsin; sadece rozet degisir."""
+    if durum in ("bagli", "kilitli"):
+        pct = os.getenv("LIVE_MAX_PCT", "25").strip() or "25"
+        usd = os.getenv("LIVE_MAX_USD", "").strip()
+        if pct == "0":
+            tavan = f"${usd or '-'}"
+        else:
+            tavan = f"MTM %{pct}" + (f", üst ${usd}" if usd else "")
+        rozet = ('<span class="rozet" style="background:#da3633;color:#fff">gerçek para</span>'
+                 if durum == "bagli" else
+                 '<span class="rozet">kilitli &#128274;</span>')
         return ('<div class="kart" id="kart-canli">'
-                '<div class="khead"><b style="color:#e3b341">CANLI</b>'
-                '<span class="rozet" style="background:#da3633;color:#fff">gerçek para</span></div>'
+                f'<div class="khead"><b style="color:#e3b341">CANLI</b>{rozet}</div>'
                 '<div class="mtmbig" id="mtm-canli">yükleniyor…</div>'
                 '<div class="ksub" id="sub-canli">-</div>'
+                '<div class="ksub" id="sol-canli">serbest SOL: -</div>'
                 '<canvas class="spark" id="spark-canli" height="36"></canvas>'
                 '<div class="kfoot" id="foot-canli">-</div>'
                 '<button id="killBtn" disabled>...</button>'
-                f'<div class="kfoot">V7 canlı · alım tavanı ${tavan} · muhasebe paper '
+                f'<div class="kfoot">V7 canlı · alım tavanı {tavan} · muhasebe paper '
                 "boyutta · fill'ler tx imzalı, denetim defterine düşer · cüzdan "
                 f'{_CANLI_CUZDAN[:4]}…{_CANLI_CUZDAN[-4:]}</div></div>')
     return ('<div class="kart bos" id="kart-canli">'
@@ -1339,7 +1374,7 @@ def _filo_kart_canli(bagli: bool) -> str:
             '<div class="kfoot">cüzdan: bağlı değil</div></div>')
 
 
-def _filo_kart(m: dict, canli_bagli: bool = False) -> str:
+def _filo_kart(m: dict, canli_durum: str = "yok") -> str:
     if m["tip"] == "bot":
         return (f'<div class="kart" id="kart-{m["id"]}" title="{m["desc"]}">'
                 f'<div class="khead"><b style="color:{m["renk"]}">{m["ad"]}</b>'
@@ -1349,10 +1384,10 @@ def _filo_kart(m: dict, canli_bagli: bool = False) -> str:
                 f'<div class="ksub" id="sub-{m["id"]}">-</div>'
                 f'<canvas class="spark" id="spark-{m["id"]}" height="36"></canvas>'
                 f'<div class="kfoot" id="foot-{m["id"]}">-</div></div>')
-    return _filo_kart_canli(bagli=canli_bagli)
+    return _filo_kart_canli(canli_durum)
 
 
-def _filo_chart(m: dict, canli_bagli: bool = False) -> str:
+def _filo_chart(m: dict, canli_durum: str = "yok") -> str:
     if m["tip"] == "bot":
         return (f'<div class="chhead"><span class="dot" style="background:{m["renk"]}"></span>'
                 f'<b>{m["ad"]}</b> <span class="chdesc">{m["desc"]}</span>'
@@ -1360,14 +1395,19 @@ def _filo_chart(m: dict, canli_bagli: bool = False) -> str:
                 f'<span id="{m["id"]}upd" class="updlabel"></span></div>'
                 f'<div class="eqwrap"><span id="eq{m["id"]}trend" class="trendroz"></span>'
                 f'<canvas id="eq{m["id"]}chart"></canvas></div>')
-    if canli_bagli:
+    if canli_durum in ("bagli", "kilitli"):
         from hibrit_trader import canli_gosterge
+        ek = "" if canli_durum == "bagli" else " · kilit kapalı, giriş yok"
         return ('<div class="chhead"><span class="dot" style="background:#e3b341"></span>'
                 '<b>CANLI</b> <span class="chdesc">gerçek cüzdan (SOL + açık poz), '
-                f'baz ${canli_gosterge.baz_usd():.2f}</span>'
+                f'baz ${canli_gosterge.baz_usd():.2f}{ek}</span>'
                 '<span id="eqcanlilabel" class="eqlabel"></span></div>'
                 '<div class="eqwrap"><span id="eqcanlitrend" class="trendroz"></span>'
-                '<canvas id="eqcanlichart"></canvas></div>')
+                '<canvas id="eqcanlichart"></canvas></div>'
+                '<h2>AÇIK POZİSYONLAR · canlı</h2>'
+                '<div class="tablewrap"><table id="canliPoz"><thead><tr>'
+                '<th>token</th><th>miktar</th><th>giriş</th><th>güncel</th>'
+                '<th>K/Z $</th><th>K/Z %</th></tr></thead><tbody></tbody></table></div>')
     return ('<div class="chhead"><span class="dot" style="background:#e3b341"></span>'
             '<b>CANLI</b></div>'
             '<div class="ph">kazanan bağlandığında gerçek para eğrisi burada akacak</div>')
@@ -1393,7 +1433,7 @@ _MOMENTUM_HTML = """<!doctype html>
    color:#8b949e;font-size:12px;margin-left:6px;border:1px solid #30363d}
  .badge.ok{color:#3fb950;border-color:#238636}
  .badge.err{background:#da3633;color:#fff;border-color:#da3633}
- #kartGrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0 6px}
+ #kartGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:16px 0 6px}
  @media(max-width:1100px){#kartGrid{grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}}
  .kart{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px 14px;
    min-height:158px;display:flex;flex-direction:column}
@@ -1573,7 +1613,6 @@ const f=(x,d=2)=>x==null?"-":Number(x).toFixed(d);
 const cls=x=>x>0?"pos":(x<0?"neg":"");
 const eqCharts={};  // canli chartlar: filo tick'i ayni poll'un equity'sini uca basar
 const MOTORLAR="__MOTORLAR__";  // sunucu _FILO_MOTORLAR listesinden basar (tek konfig)
-const CANLI_BAGLI="__CANLI_BAGLI__";  // sunucu render aninda true/false basar
 
 // ---- ARSIV: Golge (donuk, acilinca bir kez) -----------------------------------
 async function arsivGolge(){
@@ -2023,19 +2062,38 @@ function basCanli(c){
   el.innerHTML=`<b class="${cls(dp)}">$${f(c.mtm)}</b>`;
   document.getElementById("sub-canli").innerHTML=
     `<span class="${cls(c.pnl_pct)}">${c.pnl_pct>0?"+":""}${f(c.pnl_pct)}%</span> · ${c.islem_n} canlı işlem`;
+  const solEl=document.getElementById("sol-canli");
+  if(solEl)solEl.innerHTML=
+    `serbest <b>${f(c.sol,4)} SOL</b> (~$${f(c.sol*c.sol_fiyat)})`;
   document.getElementById("foot-canli").innerHTML=
     `poz ${"●".repeat(c.acik_poz)}${"○".repeat(Math.max(5-c.acik_poz,0))} ${c.acik_poz}/5`+
-    ` · ${f(c.sol,3)} SOL · baz $${f(c.baz)}`;
+    ` · baz $${f(c.baz)}`;
   const lb=document.getElementById("eqcanlilabel");
   if(lb)lb.innerHTML=`MTM <b class="${cls(dp)}">$${f(c.mtm)}</b>`;
   eqCharts["eqcanli"]&&eqCharts["eqcanli"].setLive(c.mtm);
+  basCanliPoz(c.pozisyonlar||[]);
+}
+function basCanliPoz(rows){
+  // Acik canli pozisyon tablosu: v7 state'inden canli_miktar>0 kayitlar
+  const tb=document.querySelector("#canliPoz tbody");
+  if(!tb)return;
+  tb.innerHTML=rows.map(p=>
+    `<tr><td>${p.pair}</td><td>${f(p.miktar,2)}</td>`+
+    `<td>${p.giris.toPrecision(6)}</td><td>${p.guncel.toPrecision(6)}</td>`+
+    `<td class="${cls(p.kz_usd)}">${f(p.kz_usd)}</td>`+
+    `<td class="${cls(p.kz_pct)}">${p.kz_pct>0?"+":""}${f(p.kz_pct)}%</td></tr>`).join("")
+    ||"<tr><td colspan=6>açık canlı pozisyon yok</td></tr>";
 }
 function basCmp(c){
   // kiyas satiri ayni /api/filo cevabinin cmp blogundan: ikinci okuma/hesap yok
-  document.getElementById("cmp3").innerHTML=
-    `<span>Kümülatif realized PnL (her motor kendi başlangıcından): `+
-    MOTORLAR.map(m=>`${m.id} <b class="${cls(c[m.id])}">$${f(c[m.id])}</b>`).join(" · ")+
-    `</span>`;
+  let s=`<span>Kümülatif realized PnL (her motor kendi başlangıcından): `+
+    MOTORLAR.map(m=>`${m.id} <b class="${cls(c[m.id])}">$${f(c[m.id])}</b>`).join(" · ");
+  if(c&&c.canli){
+    const cp=c.canli;
+    s+=` · canlı MTM <b class="${cls(cp.pnl_pct)}">$${f(cp.mtm)}</b>`+
+      (cp.pnl_pct==null?"":` <span class="${cls(cp.pnl_pct)}">(${cp.pnl_pct>0?"+":""}${f(cp.pnl_pct)}% baza göre)</span>`);
+  }
+  document.getElementById("cmp3").innerHTML=s+`</span>`;
 }
 function exitSinif(r){
   r=r||"";
@@ -2089,14 +2147,16 @@ async function filoTick(){
   filoSonMs=Date.now();
   const eqs={};
   for(const m of MOTORLAR)eqs[m.id]=basBot(m,d[m.id]).equity;
-  // lider: en yuksek MTM'li bot karti (dinamik, ayni cevaptan)
-  let lid=null,best=-Infinity;
-  for(const m of MOTORLAR)if(eqs[m.id]>best){best=eqs[m.id];lid=m.id;}
-  for(const m of MOTORLAR){
-    const k=document.getElementById("kart-"+m.id);
-    if(k)k.classList.toggle("lider",m.id===lid);
+  // lider: en yuksek MTM'li bot karti (tek bot varsa rozet anlamsiz, basma)
+  if(MOTORLAR.length>1){
+    let lid=null,best=-Infinity;
+    for(const m of MOTORLAR)if(eqs[m.id]>best){best=eqs[m.id];lid=m.id;}
+    for(const m of MOTORLAR){
+      const k=document.getElementById("kart-"+m.id);
+      if(k)k.classList.toggle("lider",m.id===lid);
+    }
   }
-  if(CANLI_BAGLI&&d.canli)basCanli(d.canli);
+  if(d.canli)basCanli(d.canli);
   basCmp(d.cmp); basIslemler(d); basRejim(d); basKill(d.kill);
   updEtiket();
 }
@@ -2130,8 +2190,9 @@ for(const m of MOTORLAR){
   eqCharts["eq"+m.id]=mkEqChart("eq"+m.id, "/api/"+m.id+"/equity", true, true,
     m.renk, "spark-"+m.id);
 }
-if(CANLI_BAGLI)eqCharts["eqcanli"]=mkEqChart("eqcanli","/api/canli/equity",true,true,
-  "#e3b341","spark-canli");
+if(document.getElementById("eqcanlichart"))
+  eqCharts["eqcanli"]=mkEqChart("eqcanli","/api/canli/equity",true,true,
+    "#e3b341","spark-canli");
 function eqSyncButtons(){
   const el=document.getElementById("eqsyncbtns");
   el.innerHTML=SYNCWINS.map(([l,m])=>
@@ -2157,33 +2218,42 @@ def momentum_page() -> str:
     canli_bagli = _canli_bagli_mi()
     if canli_bagli:
         mod_rozet = '<span class="badge err">CANLI (V7)</span>'
+        canli_durum = "bagli"
     elif mode == "live":
         mod_rozet = '<span class="badge">live (kilit kapalı)</span>'
+        canli_durum = "kilitli"
     elif mode == "dryrun":
         mod_rozet = ('<span class="badge" style="color:#e3b341;border-color:#9e6a03">'
                      'dryrun</span>')
+        canli_durum = "yok"
     else:
         mod_rozet = '<span class="badge">paper</span>'
-    kartlar = "".join(_filo_kart(m, canli_bagli)
-                      for m in _FILO_MOTORLAR if not m.get("arka"))
-    chartlar = "".join(_filo_chart(m, canli_bagli)
-                       for m in _FILO_MOTORLAR if not m.get("arka"))
+        canli_durum = "yok"
+    gorunur = [m for m in _FILO_MOTORLAR if not m.get("gizli")]
+    kartlar = "".join(_filo_kart(m, canli_durum)
+                      for m in gorunur if not m.get("arka"))
+    chartlar = "".join(_filo_chart(m, canli_durum)
+                       for m in gorunur if not m.get("arka"))
     arka = "".join(
         f'<div style="max-width:300px;margin:12px 0">{_filo_kart(m)}</div>{_filo_chart(m)}'
-        for m in _FILO_MOTORLAR if m.get("arka")
+        for m in gorunur if m.get("arka")
     )
     motor_js = json.dumps([
         {"id": m["id"], "ad": m["ad"], "renk": m["renk"], "slots": m["slots"],
          "arka": bool(m.get("arka"))}
-        for m in _FILO_MOTORLAR if m["tip"] == "bot"
+        for m in gorunur if m["tip"] == "bot"
     ])
-    return (_MOMENTUM_HTML
+    html = (_MOMENTUM_HTML
             .replace("<!--KARTLAR-->", kartlar)
             .replace("<!--CHARTCOL-->", chartlar)
             .replace("<!--ARKA-->", arka)
             .replace("<!--MODROZET-->", mod_rozet)
-            .replace('"__MOTORLAR__"', motor_js)
-            .replace('"__CANLI_BAGLI__"', "true" if canli_bagli else "false"))
+            .replace('"__MOTORLAR__"', motor_js))
+    if not arka:
+        # arka plan bolumu bos: kutuyu gizle (element kalir, JS null gormesin)
+        html = html.replace('<details id="arkaBox" style="',
+                            '<details id="arkaBox" style="display:none;')
+    return html
 
 
 @app.post("/api/kill")
