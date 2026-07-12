@@ -194,3 +194,29 @@ Ertelenen vidalar guncellemesi (canli etiketiyle):
   %20'yi asarsa alim toleransini 100 bps'e cikarma karari o veriyle alinir.
 - YENI karne-sonrasi vida (B6): canli fee muhasebesi (fee_usd=0 yaziliyor,
   priority fee pnl'de yok); LIVE_MAX_USD artirilmadan once ele alinacak.
+
+## Canli kesinti dersi: Signature tip hatasi ve kayitsiz alimlar (12 Tem 2026)
+
+Olay: keypair duzeltmesi (f17367c) sonrasi V7 ilk canli alimlara ulasti.
+Bilet tavani calisti ($218 -> $25) ama sign_and_send onay adiminda imza
+str olarak confirm_transaction'a (Signature bekler) gecince tip hatasiyla
+coktu. Tx ZINCIRE ULASMISKEN broker islem_hatasi dondu; v7 alimi yok
+sayip pozisyon kaydetmedi ve her kadansta yeniden aldi. 4 kayitsiz alim,
+~1.30 SOL (~$100) tokene donustu; LIVE_ONAY silinerek durduruldu.
+Tokenlar Phantom'dan satildi (~$119 geri geldi, hafif primli).
+
+Ders: "basarisiz alim guvenli taraf" varsayimi SADECE gonderim oncesi
+hatalar icin dogru. Gonderim sonrasi hata = para cikmis olabilir.
+
+Uygulanan duzeltme:
+- sign_and_send imzayi Signature nesnesi olarak confirm'e gecirir.
+- Onay adimi coker ama tx zincirde dogrulanirsa basari sayilir.
+- Zincirde dogrulanamazsa islem_belirsiz: broker belirsiz_kilit acar,
+  canli islemler restart'a kadar reddedilir (tekrar deneme yasagi;
+  bu kesici degil dogru muhasebe, 12 Tem kaybinin kendisi tekrar alimdi).
+
+KARAR BEKLEYEN MADDE (onaysiz uygulanmaz): genel devre kesici, yani
+N ardisik islem_hatasi sonrasi canli islemlerin otomatik durdurulmasi
+(taslak: N=3, sadece restart geri alir). 12 Tem'de belirsiz_kilit tek
+basina yeterliydi; genel kesicinin gonderim oncesi zararsiz hatalarda
+(quote/preflight) canliyi gereksiz dusurme maliyeti var. Karar kullanicida.

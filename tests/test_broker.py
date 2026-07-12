@@ -371,6 +371,120 @@ def test_fabrika_dryrun(data_dir):
     assert isinstance(make_exec_broker("dryrun", http=FakeClient()), DryrunExecBroker)
 
 
+# ---- sign_and_send onay yolu (12 Tem Signature tip olayi) --------------------------------
+
+class _SahteVT:
+    """VersionedTransaction yerine gecer: imza mekanigi test disi."""
+
+    def __init__(self, message=None, keypairs=None):
+        self.message = message
+
+    @classmethod
+    def from_bytes(cls, raw):
+        return cls("mesaj")
+
+    def __bytes__(self):
+        return b"imzali-tx"
+
+
+class _SahteRpc:
+    def __init__(self, *, confirm_exc=None, zincirde=False):
+        from types import SimpleNamespace
+
+        from solders.signature import Signature
+
+        self._ns = SimpleNamespace
+        self.sig = Signature.default()
+        self.confirm_exc = confirm_exc
+        self.zincirde = zincirde
+        self.confirm_arg = None
+        self.status_sorgusu = 0
+
+    def send_raw_transaction(self, raw):
+        return self._ns(value=self.sig)
+
+    def confirm_transaction(self, sig, commitment=None):
+        self.confirm_arg = sig
+        if self.confirm_exc is not None:
+            raise self.confirm_exc
+
+    def get_signature_statuses(self, sigs):
+        self.status_sorgusu += 1
+        durum = self._ns(err=None) if self.zincirde else None
+        return self._ns(value=[durum])
+
+
+def _sign_and_send_kur(monkeypatch, rpc):
+    from hibrit_trader import jupiter
+
+    monkeypatch.setattr(jupiter, "VersionedTransaction", _SahteVT)
+    monkeypatch.setattr(jupiter.time, "sleep", lambda s: None)
+    return jupiter
+
+
+def test_sign_and_send_confirm_signature_nesnesi(data_dir, monkeypatch):
+    from solders.signature import Signature
+
+    rpc = _SahteRpc()
+    jupiter = _sign_and_send_kur(monkeypatch, rpc)
+    sig = jupiter.sign_and_send(rpc, "dHg=", object())
+    assert isinstance(rpc.confirm_arg, Signature)  # str degil (12 Tem olayi)
+    assert sig == str(rpc.sig)
+
+
+def test_sign_and_send_onay_hatasi_zincirdeyse_basari(data_dir, monkeypatch):
+    rpc = _SahteRpc(confirm_exc=TypeError("onay patladi"), zincirde=True)
+    jupiter = _sign_and_send_kur(monkeypatch, rpc)
+    assert jupiter.sign_and_send(rpc, "dHg=", object()) == str(rpc.sig)
+
+
+def test_sign_and_send_onay_hatasi_zincirde_yoksa_belirsiz(data_dir, monkeypatch):
+    rpc = _SahteRpc(confirm_exc=TypeError("onay patladi"), zincirde=False)
+    jupiter = _sign_and_send_kur(monkeypatch, rpc)
+    with pytest.raises(RuntimeError, match="islem_belirsiz"):
+        jupiter.sign_and_send(rpc, "dHg=", object())
+    assert rpc.status_sorgusu == 3  # karar tek sorguya birakilmaz
+
+
+# ---- live belirsiz islem kilidi (12 Tem tekrarli alim olayi) ----------------------------
+
+def _live_broker(data_dir, monkeypatch):
+    monkeypatch.setenv("LIVE_UNLOCKED", "1")
+    (data_dir / "LIVE_ONAY").write_text("canli-islem-onayliyorum", encoding="utf-8")
+    _cuzdan_dosyasi(data_dir, monkeypatch)
+    return make_exec_broker("live", http=FakeClient(quote=_quote_al()))
+
+
+def _al_emri():
+    return ExecOrder(engine="T", yon="al", token_address=TOK,
+                     usd=10.0, ref_fiyat=0.2)
+
+
+def test_live_belirsiz_islem_tekrar_denemeyi_yasaklar(data_dir, monkeypatch):
+    br = _live_broker(data_dir, monkeypatch)
+
+    def _belirsiz(*a, **k):
+        raise RuntimeError("islem_belirsiz:SIGABC")
+
+    monkeypatch.setattr("hibrit_trader.jupiter.swap_sol_to_token", _belirsiz)
+    fill = br.execute(_al_emri())
+    assert fill.ok is False and fill.neden == "islem_belirsiz"
+    # para cikmis olabilir: sonraki emir swap katmanina hic ulasmadan reddedilir
+    assert br.execute(_al_emri()).neden == "belirsiz_kilit"
+
+
+def test_live_islem_hatasi_kilit_acmaz(data_dir, monkeypatch):
+    # gonderim oncesi hatalar (quote/preflight) tekrar denemeyi engellemez
+    br = _live_broker(data_dir, monkeypatch)
+
+    def _patla(*a, **k):
+        raise ValueError("rpc dustu")
+
+    monkeypatch.setattr("hibrit_trader.jupiter.swap_sol_to_token", _patla)
+    for _ in range(3):
+        assert br.execute(_al_emri()).neden == "islem_hatasi"
+
+
 def test_paper_execute_ref_fiyat(data_dir):
     fill = PaperExecBroker().execute(
         ExecOrder(engine="T", yon="al", token_address=TOK, usd=100.0, ref_fiyat=0.5))

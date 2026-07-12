@@ -6,6 +6,7 @@ import base64
 import json
 import logging
 import os
+import time
 from typing import Optional
 
 import httpx
@@ -106,6 +107,20 @@ def build_swap_tx(
     return tx_b64
 
 
+def _zincir_durumu_ok(rpc: Client, sig, deneme: int = 3, bekleme_sn: float = 2.0) -> bool:
+    """Onay adimi coktuyse son care: imza zincirde basarili mi diye sor."""
+    for i in range(deneme):
+        try:
+            durum = rpc.get_signature_statuses([sig]).value[0]
+            if durum is not None and durum.err is None:
+                return True
+        except Exception:
+            pass
+        if i < deneme - 1:
+            time.sleep(bekleme_sn)
+    return False
+
+
 def sign_and_send(
     rpc: Client,
     swap_tx_b64: str,
@@ -117,9 +132,18 @@ def sign_and_send(
     result = rpc.send_raw_transaction(bytes(signed))
     if result.value is None:
         raise RuntimeError(f"İşlem reddedildi: {result}")
-    sig = str(result.value)
-    rpc.confirm_transaction(sig, commitment=Confirmed)
-    return sig
+    # 12 Tem olayi: sig str'a cevrilince confirm_transaction (Signature bekler)
+    # patliyordu; tx zincire ulasmisken hata donuyor, motor alimi yok sayip
+    # tekrar deniyordu. Nesne olarak birakilir, str sadece donuste.
+    sig = result.value
+    try:
+        rpc.confirm_transaction(sig, commitment=Confirmed)
+    except Exception as e:
+        if _zincir_durumu_ok(rpc, sig):
+            log.warning("onay adimi hata verdi ama tx zincirde: %s (%s)", sig, e)
+            return str(sig)
+        raise RuntimeError(f"islem_belirsiz:{sig}") from e
+    return str(sig)
 
 
 def swap_sol_to_token(

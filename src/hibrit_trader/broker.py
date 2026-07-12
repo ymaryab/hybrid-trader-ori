@@ -333,9 +333,15 @@ class LiveExecBroker(DryrunExecBroker):
         # yakalansin (12 Tem InvalidChar(91) otopsisi). Sadece pubkey loglanir.
         keypair = _cuzdan_yukle("live")
         log.warning("BROKER live hazir, cuzdan %s", keypair.pubkey())
+        self._belirsiz_kilit = False
         super().__init__(http=http)
 
     def execute(self, order: ExecOrder) -> ExecFill:
+        if self._belirsiz_kilit:
+            # 12 Tem olayi: para cikmis olabilirken tekrar almak kasayi bosaltti.
+            # Belirsiz islem sonrasi tekrar deneme yasak; sadece restart acar.
+            log.error("BROKER live: belirsiz islem kilidi acik, islem reddedildi")
+            return ExecFill(ok=False, neden="belirsiz_kilit")
         if not live_kilit_acik():  # her cagrida yeniden kontrol
             log.error("BROKER live: kilit kapali, islem reddedildi")
             return ExecFill(ok=False, neden="kilit_kapali")
@@ -376,10 +382,19 @@ class LiveExecBroker(DryrunExecBroker):
                 fiyat = (res["proceeds_usd"] / order.amount_token
                          if order.amount_token > 0 else 0.0)
         except Exception as e:
+            gecikme_ms = round((time.monotonic() - t0) * 1000, 1)
+            if str(e).startswith("islem_belirsiz"):
+                # tx zincirde olabilir; para cikmis olabilir, muhasebe yok.
+                self._belirsiz_kilit = True
+                log.critical("BROKER live BELIRSIZ ISLEM %s %s: %s; canli "
+                             "islemler durduruldu, restart gerekir",
+                             order.engine, order.yon, e)
+                return ExecFill(ok=False, neden="islem_belirsiz",
+                                gecikme_ms=gecikme_ms)
             log.error("BROKER live islem hatasi %s %s: %s",
                       order.engine, order.yon, e)
             return ExecFill(ok=False, neden="islem_hatasi",
-                            gecikme_ms=round((time.monotonic() - t0) * 1000, 1))
+                            gecikme_ms=gecikme_ms)
         gecikme_ms = round((time.monotonic() - t0) * 1000, 1)
         log.warning("BROKER LIVE %s %s fiyat %.8g miktar %.6g tx %s (%.0f ms)",
                     order.engine, order.yon, fiyat, miktar_token,
