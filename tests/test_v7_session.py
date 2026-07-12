@@ -372,3 +372,172 @@ def test_exec_arizali_girisleri_kapatir_cikislar_surer(v7_data_dir, monkeypatch)
     assert _enter(eng, monkeypatch, _pair(pool="ZP9", token="ZT9")) == [pos]
     _tick_price(eng, pos, pos["entry_price"] * 1.05, pos["opened_ts"] + 60, monkeypatch)
     assert eng.positions == []  # cikis calisti
+
+
+# ---- Canli asimetri B1: kademeli satis toleransi (12 Tem) ---------------------------
+
+def test_satis_bps_tp_150_alim_50_kalir(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    eng._exec = _StubExec("dryrun")
+    pos = _open(eng)
+    _tick_price(eng, pos, pos["entry_price"] * 1.02, pos["opened_ts"] + 60, monkeypatch)
+    assert eng._exec.orders[0].yon == "al" and eng._exec.orders[0].slippage_bps == 50
+    o_sat = eng._exec.orders[-1]
+    assert o_sat.yon == "sat" and o_sat.slippage_bps == 150
+    t = _last(v7_data_dir)
+    assert t["exit_reason"] == "tp_2"
+    # poll yolunda olcum kolonlari: kaynak poll, gecikme yok
+    assert t["price_source"] == "poll" and t["tetik_gecikme_sec"] is None
+
+
+def test_satis_bps_stop_felaket_1000_dryrun_tek_deneme(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    eng._exec = _StubExec("dryrun")
+    pos = _open(eng)
+    _tick_price(eng, pos, pos["entry_price"] * 0.88, pos["opened_ts"] + 60, monkeypatch)
+    assert _last(v7_data_dir)["exit_reason"] == "stop_felaket"
+    assert eng._exec.orders[-1].slippage_bps == 1000
+    assert len(eng._exec.orders) == 2  # al + tek satis: tekrar sadece live'da
+
+
+def test_satis_bps_stop_gec_300(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    eng._exec = _StubExec("dryrun")
+    pos = _open(eng)
+    _tick_price(eng, pos, pos["entry_price"] * 0.97,
+                pos["opened_ts"] + v7.GRACE_SEC + 1, monkeypatch)
+    assert _last(v7_data_dir)["exit_reason"] == "stop_gec"
+    assert eng._exec.orders[-1].slippage_bps == 300
+
+
+def test_satis_bps_timeout_150(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    eng._exec = _StubExec("dryrun")
+    pos = _open(eng)
+    _tick_price(eng, pos, pos["entry_price"] * 1.005,
+                pos["opened_ts"] + v7.CEILING_SEC + 1, monkeypatch)
+    assert _last(v7_data_dir)["exit_reason"] == "timeout_60"
+    assert eng._exec.orders[-1].slippage_bps == 150
+
+
+def test_stop_yolunda_satis_tekrari_basarili(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    al = ExecFill(ok=True, fiyat=1.0, miktar_token=100.0, tx_id="S1")
+    fail = ExecFill(ok=False, neden="slippage")
+    sat = ExecFill(ok=True, fiyat=0.88, miktar_token=100.0, tx_id="S2")
+    eng._exec = _StubExec("live", [al, fail, fail, sat])
+    pos = _open(eng)
+    uykular: list[float] = []
+    monkeypatch.setattr(v7.time, "sleep", lambda s: uykular.append(s))
+    _tick_price(eng, pos, 0.88, pos["opened_ts"] + 60, monkeypatch)
+    assert eng.positions == []
+    assert [o.yon for o in eng._exec.orders] == ["al", "sat", "sat", "sat"]
+    assert all(o.slippage_bps == 1000 for o in eng._exec.orders[1:])
+    assert uykular == [v7.STOP_RETRY_SEC, v7.STOP_RETRY_SEC]
+    t = _last(v7_data_dir)
+    assert t["exit_reason"] == "stop_felaket" and t["signature"] == "S2"
+
+
+def test_stop_yolunda_tum_tekrarlar_basarisiz_pozisyon_acik(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    al = ExecFill(ok=True, fiyat=1.0, miktar_token=100.0, tx_id="S1")
+    eng._exec = _StubExec("live", [al])  # satis fill'i yok: 3 deneme de ok=False
+    pos = _open(eng)
+    uykular: list[float] = []
+    monkeypatch.setattr(v7.time, "sleep", lambda s: uykular.append(s))
+    _tick_price(eng, pos, 0.88, pos["opened_ts"] + 60, monkeypatch)
+    assert len(eng.positions) == 1  # SATIS ERTELENDI, sonraki kadansta tekrar
+    assert len(eng._exec.orders) == 4  # al + 3 satis denemesi
+    assert uykular == [v7.STOP_RETRY_SEC, v7.STOP_RETRY_SEC]
+    assert not (v7_data_dir / v7.TRADES_FILE).exists()
+
+
+def test_tp_yolunda_live_satis_tek_deneme(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    al = ExecFill(ok=True, fiyat=1.0, miktar_token=100.0, tx_id="S1")
+    eng._exec = _StubExec("live", [al])
+    pos = _open(eng)
+    uykular: list[float] = []
+    monkeypatch.setattr(v7.time, "sleep", lambda s: uykular.append(s))
+    _tick_price(eng, pos, pos["entry_price"] * 1.02, pos["opened_ts"] + 60, monkeypatch)
+    assert len(eng.positions) == 1  # basarisiz tp satisi ertelenir, tekrar YOK
+    assert len(eng._exec.orders) == 2  # al + tek satis denemesi
+    assert uykular == []
+
+
+# ---- Canli asimetri B2: hizli goz (fast_exit_tick + feed kablolamasi) ---------------
+
+class _FakeFeed:
+    def __init__(self, prices=None):
+        self.prices = dict(prices or {})
+        self.eklenen: list[str] = []
+        self.cikan: list[str] = []
+
+    def get_price(self, pool, max_age_sec=10.0):
+        return self.prices.get(pool)
+
+    def add_pool(self, pool):
+        self.eklenen.append(pool)
+
+    def remove_pool(self, pool):
+        self.cikan.append(pool)
+
+
+def test_open_position_havuzu_feede_ekler(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    feed = _FakeFeed()
+    monkeypatch.setattr(v7, "get_feed", lambda: feed)
+    pos = _open(eng)
+    assert feed.eklenen == [pos["pool_address"]]
+
+
+def test_fast_exit_tick_feed_fiyatiyla_kapatir(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    pos = _open(eng)
+    now = pos["opened_ts"] + 60
+    feed = _FakeFeed({pos["pool_address"]: (pos["entry_price"] * 0.88, now - 1.0)})
+    monkeypatch.setattr(v7, "get_feed", lambda: feed)
+    monkeypatch.setattr(v7.time, "time", lambda: now)
+    eng.fast_exit_tick()
+    assert eng.positions == []
+    t = _last(v7_data_dir)
+    assert t["exit_reason"] == "stop_felaket"
+    assert t["price_source"] == "fast"
+    assert t["tetik_gecikme_sec"] == pytest.approx(1.0)
+    assert feed.cikan == [pos["pool_address"]]  # kapanan havuz feed'ten cikti
+
+
+def test_fast_exit_tick_feed_kapaliyken_dokunmaz(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    pos = _open(eng)
+    monkeypatch.setattr(v7, "get_feed", lambda: None)
+    eng.fast_exit_tick()
+    assert eng.positions == [pos]
+
+
+def test_fast_exit_tick_taze_kayit_yoksa_dokunmaz(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    pos = _open(eng)
+    feed = _FakeFeed()  # havuz icin kayit yok (bayat/eksik) -> 30s tick kapsar
+    monkeypatch.setattr(v7, "get_feed", lambda: feed)
+    monkeypatch.setattr(v7.time, "time", lambda: pos["opened_ts"] + 60)
+    eng.fast_exit_tick()
+    assert eng.positions == [pos]
+
+
+def test_manage_exits_feed_oncelikli_poll_cagrilmaz(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    pos = _open(eng)
+    now = pos["opened_ts"] + 60
+    feed = _FakeFeed({pos["pool_address"]: (pos["entry_price"] * 1.02, now - 0.5)})
+    monkeypatch.setattr(v7, "get_feed", lambda: feed)
+
+    def _poll_yasak(client, chain, pool):
+        raise AssertionError("feed varken fetch_pool_snapshot cagrilmamali")
+
+    monkeypatch.setattr(v7, "fetch_pool_snapshot", _poll_yasak)
+    monkeypatch.setattr(v7.time, "time", lambda: now)
+    eng._manage_exits(client=SimpleNamespace())
+    t = _last(v7_data_dir)
+    assert t["exit_reason"] == "tp_2" and t["price_source"] == "fast"
+    assert t["tetik_gecikme_sec"] == pytest.approx(0.5)

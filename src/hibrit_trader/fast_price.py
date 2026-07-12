@@ -6,8 +6,9 @@ M1 ve M2 cikis kontrolleri fiyati buradan okur; feed bayat/kapali/hatali
 ise motorlar mevcut polling zincirine (fetch_pool_price) geri duser,
 yani HICBIR kosulda kor kalmazlar.
 
-Tek instance (process ici singleton daemon thread). v7/X1/live_sim bu
-modulu import ETMEZ, onlara sifir dokunus. FAST_PRICE_ENABLED=0 ile
+Tek instance (process ici singleton daemon thread). Kullanicilar: M1/M2,
+v6 ve v7 (12 Tem canli asimetri B2: v7 canli para tasidigi icin hizli goz
+eklendi). X1/live_sim bu modulu import ETMEZ. FAST_PRICE_ENABLED=0 ile
 tamamen kapatilir (get_feed None doner, motorlar eski davranista kalir).
 """
 

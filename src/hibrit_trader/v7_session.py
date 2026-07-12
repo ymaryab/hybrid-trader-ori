@@ -20,6 +20,15 @@ V7 = V6'NIN BİREBİR KOPYASI + TEK fark (2026-07-04 v6 arındırma analizi):
           tazelenir (fast<=3s -> tek fetch -> tarama, fail-open). Taze fiyat
           taramanın +%2'den fazla üstündeyse giriş iptal (taze_fiyat_kacti).
           Kayıt: entry_price_source + entry_fresh_fark_pct.
+  HIZLI GÖZ (12 Tem, canlı asimetri B2): çıkış kontrolü fast_price feed'inden
+          2s kadansla (v6 deseni). Pozisyon açılınca havuz feed'e dinamik
+          eklenir, kapanınca çıkar. Fren canlı parada 30s bekleyemez.
+          Ölçüm: trade kaydında price_source (fast/poll) + tetik_gecikme_sec.
+  KADEMELİ SATIŞ TOLERANSI (12 Tem, canlı asimetri B1): canlı satışta
+          slippage nedene göre: normal 150 / stop_gec 300 / stop_felaket
+          1000 bps; zarar durdurmada kesinlik dolgu kalitesinden önceliklidir.
+          Stop yolunda başarısız satış kadans beklemeden 3x3s tekrar denenir.
+          Alım 50 bps'te kalır (başarısız alım güvenli taraftır).
 
 Fill'ler sanal: gerçek fiyat + v2'nin likidite-slippage modeli + gas.
 Kadans v2 ile aynı; 3/8 interval faz kaydırmalı (v6:5/8, gölge:1/2,
@@ -45,6 +54,7 @@ from hibrit_trader.entry_fresh import (
     safety_reject_kaydet,
     taze_teyit,
 )
+from hibrit_trader.fast_price import get_feed
 from hibrit_trader.killswitch import is_active as kill_is_active
 from hibrit_trader.live_sim import fetch_pool_snapshot
 from hibrit_trader.momentum_session import (
@@ -75,6 +85,16 @@ SOL_H1_MIN = float(os.getenv("V7_SOL_H1_MIN", "0.5"))  # V-final 05 Tem: sol_h1 
 DAILY_LOSS_LIMIT_USD = float(os.getenv("MOM_DAILY_LOSS_LIMIT_USD", "0"))  # 0 = kapali (M1 ile ayni env)
 COOLDOWN_LOSS_SEC = float(os.getenv("MOM_COOLDOWN_STOP_MIN", "60")) * 60
 COOLDOWN_EXIT_SEC = float(os.getenv("MOM_COOLDOWN_EXIT_MIN", "15")) * 60
+
+# Hizli goz (12 Tem, canli asimetri B2): 30s tam tick arasinda fast feed'ten
+# 2s kadansli cikis kontrolu (v6 deseni).
+EXIT_INTERVAL_SEC = float(os.getenv("M_EXIT_INTERVAL_SEC", "2"))
+# Kademeli satis toleransi (12 Tem, canli asimetri B1). Not: .env'deki
+# MAX_SLIPPAGE_BPS eski live.py yolunu besler, bu tabloya BAGLI DEGILDIR.
+EXIT_SLIPPAGE_BPS = {"tp_2": 150, "timeout_60": 150,
+                     "stop_gec": 300, "stop_felaket": 1000}
+STOP_RETRY_ADET = 3     # stop yolunda basarisiz satis: kadans beklemeden tekrar
+STOP_RETRY_SEC = 3.0
 
 STATE_FILE = "v7_state.json"
 TRADES_FILE = "v7_trades.jsonl"
@@ -219,7 +239,8 @@ class V7Engine:
         return None
 
     def _exec_fill(self, yon: str, token_address: str, *, usd: float = 0.0,
-                   amount_token: float = 0.0, ref_fiyat: float = 0.0):
+                   amount_token: float = 0.0, ref_fiyat: float = 0.0,
+                   slippage_bps: int = 50):
         """Fill'i yurutme katmanindan gecirir. Donus: (devam, canli_fill).
 
         paper/dryrun: muhasebe paper kalir, canli_fill None, devam True
@@ -228,7 +249,8 @@ class V7Engine:
         try:
             fill = self._exec.execute(ExecOrder(
                 engine="V7", yon=yon, token_address=token_address,
-                usd=usd, amount_token=amount_token, ref_fiyat=ref_fiyat))
+                usd=usd, amount_token=amount_token, ref_fiyat=ref_fiyat,
+                slippage_bps=slippage_bps))
         except Exception as e:
             log.error("V7 yurutme hatasi (%s %s): %s", yon, token_address[:8], e)
             fill = None
@@ -267,13 +289,26 @@ class V7Engine:
             TP_PCT, DISASTER_PCT, GRACE_SEC // 60, LATE_STOP_PCT, CEILING_SEC // 60,
         )
         self._save()
+        feed = get_feed()
+        if feed is not None:  # restart sonrasi acik pozisyon havuzlarini feed'e geri tak
+            for pos in self.positions:
+                feed.add_pool(pos["pool_address"])
         time.sleep(SCAN_INTERVAL_SEC * 3 / 8)
         while True:
             try:
                 self.tick()
             except Exception:
                 log.exception("v7 tick hatası")
-            time.sleep(SCAN_INTERVAL_SEC)
+            deadline = time.time() + SCAN_INTERVAL_SEC
+            while True:
+                kalan = deadline - time.time()
+                if kalan <= 0:
+                    break
+                time.sleep(min(EXIT_INTERVAL_SEC, kalan))
+                try:
+                    self.fast_exit_tick()
+                except Exception:
+                    log.exception("v7 hizli cikis hatası")
 
     def tick(self) -> None:
         with httpx.Client(timeout=10.0) as client:
@@ -410,49 +445,100 @@ class V7Engine:
         self.balance -= (usd + gas)
         self.positions.append(pos)
         self._save()
+        feed = get_feed()
+        if feed is not None:  # hizli goz: havuzu 1s feed'ine dinamik ekle
+            feed.add_pool(pos["pool_address"])
         log.warning("V7 BUY %s $%.2f @ %.8g (h1 %.1f%%, liq $%.0f)",
                     pair.name, usd, eff_price, pair.chg_h1, pair.liquidity_usd)
         return True
 
     # ---- Çıkış: tp_2 / stop_felaket (-%10) / stop_gec / timeout_60 ---------------
+    def _eval_position(self, pos: dict, price: float, now: float,
+                       liquidity_usd: float | None = None) -> str | None:
+        """Fiyatı işle (last_price/mfe/mae) ve çıkış nedeni döndür (yoksa None)."""
+        price, ariza = guard_price(pos, price, now, "V7", liquidity_usd=liquidity_usd)
+        if ariza:
+            return None  # veri arizasi: islem tetikleme, degerleme son gecerli fiyatta
+        pos["last_price"] = price
+        entry = pos["entry_price"]
+        pnl_pct = (price / entry - 1) * 100 if entry > 0 else 0.0
+        if pnl_pct > pos["mfe_pct"]:
+            pos["mfe_pct"] = round(pnl_pct, 4)
+        if pnl_pct < pos["mae_pct"]:
+            pos["mae_pct"] = round(pnl_pct, 4)
+        age = now - pos["opened_ts"]
+        if pnl_pct >= TP_PCT:
+            return "tp_2"
+        if pnl_pct <= DISASTER_PCT:
+            return "stop_felaket"  # TEK fark: her an geçerli mutlak taban
+        if age >= GRACE_SEC and pnl_pct <= LATE_STOP_PCT:
+            return "stop_gec"
+        if age >= CEILING_SEC:
+            return "timeout_60"
+        return None
+
     def _manage_exits(self, client: httpx.Client) -> None:
         now = time.time()
+        feed = get_feed()
         for pos in list(self.positions):
-            price, liq = fetch_pool_snapshot(client, pos["chain"], pos["pool_address"])
+            rec = feed.get_price(pos["pool_address"]) if feed is not None else None
+            liq = None
+            if rec is not None:
+                price, sample_ts = rec
+                src = "fast"
+            else:
+                price, liq = fetch_pool_snapshot(client, pos["chain"], pos["pool_address"])
+                sample_ts, src = None, "poll"
             if price is None or price <= 0:
                 price = pos["last_price"]
-            price, ariza = guard_price(pos, price, now, "V7", liquidity_usd=liq)
-            if ariza:
-                continue  # veri arizasi: islem tetikleme, degerleme son gecerli fiyatta
-            pos["last_price"] = price
-            entry = pos["entry_price"]
-            pnl_pct = (price / entry - 1) * 100 if entry > 0 else 0.0
-            if pnl_pct > pos["mfe_pct"]:
-                pos["mfe_pct"] = round(pnl_pct, 4)
-            if pnl_pct < pos["mae_pct"]:
-                pos["mae_pct"] = round(pnl_pct, 4)
-            age = now - pos["opened_ts"]
-
-            reason = None
-            if pnl_pct >= TP_PCT:
-                reason = "tp_2"
-            elif pnl_pct <= DISASTER_PCT:
-                reason = "stop_felaket"  # TEK fark: her an geçerli mutlak taban
-            elif age >= GRACE_SEC and pnl_pct <= LATE_STOP_PCT:
-                reason = "stop_gec"
-            elif age >= CEILING_SEC:
-                reason = "timeout_60"
+                sample_ts, src = None, "poll"
+            reason = self._eval_position(pos, price, now, liquidity_usd=liq)
             if reason:
+                pos["_price_src"] = src
+                pos["_price_ts"] = sample_ts
+                self._close_position(pos, price, reason, now)
+
+    def fast_exit_tick(self) -> None:
+        """2s kadanslı çıkış kontrolü. SADECE fast feed'te taze fiyatı olan
+        pozisyonlara bakar; taze fiyat yoksa dokunmaz, 30s tick kapsar
+        (motor hiçbir koşulda kör kalmaz). Kapanış olmadıkça disk yazılmaz."""
+        if not self.positions:
+            return
+        feed = get_feed()
+        if feed is None:
+            return
+        now = time.time()
+        for pos in list(self.positions):
+            rec = feed.get_price(pos["pool_address"])
+            if rec is None:
+                continue
+            price, sample_ts = rec
+            reason = self._eval_position(pos, price, now)
+            if reason:
+                pos["_price_src"] = "fast"
+                pos["_price_ts"] = sample_ts
                 self._close_position(pos, price, reason, now)
 
     def _close_position(self, pos: dict, price: float, reason: str, now: float) -> None:
         cost = pos["cost_usd"]
         slip = _mom_slippage(cost, pos["liq_entry"])
         eff_price = price * (1 - slip)
-        devam, canli = self._exec_fill("sat", pos["token_address"],
-                                       amount_token=pos.get("canli_miktar")
-                                       or pos["amount_token"],
-                                       ref_fiyat=eff_price)
+        sat_bps = EXIT_SLIPPAGE_BPS.get(reason, 150)
+        deneme = STOP_RETRY_ADET if reason in ("stop_felaket", "stop_gec") else 1
+        devam, canli = False, None
+        for i in range(deneme):
+            devam, canli = self._exec_fill("sat", pos["token_address"],
+                                           amount_token=pos.get("canli_miktar")
+                                           or pos["amount_token"],
+                                           ref_fiyat=eff_price,
+                                           slippage_bps=sat_bps)
+            if devam:
+                break
+            if i + 1 < deneme:
+                log.warning("V7 SATIS TEKRAR %s (%s): deneme %d/%d basarisiz, "
+                            "%.0fs sonra yeniden", pos["pair"], reason,
+                            i + 1, deneme, STOP_RETRY_SEC)
+                time.sleep(STOP_RETRY_SEC)
         if not devam:
             log.error("V7 SATIS ERTELENDI %s: canli satis gerceklesmedi, "
                       "sonraki kadansta tekrar denenecek", pos["pair"])
@@ -464,6 +550,10 @@ class V7Engine:
         pnl = proceeds - cost
         hold_sec = round(now - pos["opened_ts"], 1)
         pnl_pct = (eff_price / pos["entry_price"] - 1) * 100 if pos["entry_price"] > 0 else 0.0
+        # hiz kenari olcumu: fast yolunda tetik gecikmesi = simdi - feed ornek zamani
+        price_src = pos.pop("_price_src", "poll")
+        price_ts = pos.pop("_price_ts", None)
+        tetik_gecikme = round(now - price_ts, 3) if price_ts else None
 
         # v2 hardening deseni: önce kayıt, sonra mutasyon, anında save
         row = {
@@ -489,6 +579,8 @@ class V7Engine:
             "hold_sec": hold_sec,
             "exit_reason": reason,
             "friction_pct": round(pos.get("entry_slip_pct", 0.0) + slip * 100, 4),
+            "price_source": price_src,
+            "tetik_gecikme_sec": tetik_gecikme,
             "opened_at": pos["opened_at"],
             "closed_at": _now_iso(),
         }
@@ -508,5 +600,8 @@ class V7Engine:
         except ValueError:
             pass
         self._save()
+        feed = get_feed()
+        if feed is not None:  # hizli goz: kapanan havuzu feed'ten cikar
+            feed.remove_pool(pos["pool_address"])
         log.warning("V7 SELL %s pnl $%.2f (%.2f%%) — %s, hold %.0fs (mfe %.1f%% mae %.1f%%)",
                     pos["pair"], pnl, pnl_pct, reason, hold_sec, pos["mfe_pct"], pos["mae_pct"])

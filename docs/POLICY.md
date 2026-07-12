@@ -166,3 +166,31 @@ v7'de. Onceki donem faz onceligi v6 lehineydi; SCAM/SOL teshis raporu
 (12 Tem otopsisi) v6'nin girip v7'nin girememesinde tarama fotografinin
 bir adim onde olmasinin payini gosterdi. 12 Tem oncesi/sonrasi v6-v7
 karsilastirmalari bu asimetri degisikligiyle birlikte yorumlanmali.
+
+## Canli asimetri taramasi: B1/B2 uygulandi (12 Tem 2026)
+
+Tam rapor: docs/CANLI_ASIMETRI_RAPORU.md. Uygulanan (cikis YOLU altyapisi;
+giris kurallari ve tp/stop/fren ESIKLERI degismedi):
+
+- B1 kademeli satis toleransi: v7 canli satis slippage nedene gore
+  normal (tp_2/timeout) 150 / stop_gec 300 / stop_felaket 1000 bps;
+  stop yolunda basarisiz satis kadans beklemeden 3x3s tekrar denenir.
+  Alim 50 bps'te kaldi (basarisiz alim guvenli taraf, para kaybettirmez).
+  NOT: .env'deki MAX_SLIPPAGE_BPS SADECE eski live.py motorunu besler;
+  v7'nin broker yoluna bagli degildir, yaniltici olmasin.
+- B2 v7 hizli goz: cikis kontrolu fast_price feed'inden 2s kadansla
+  (v6 deseni birebir: feed'e dinamik havuz ekleme/cikarma, fren dahil tum
+  cikis kurallari, price_source + tetik_gecikme_sec olcum kolonlari).
+
+Ertelenen vidalar guncellemesi (canli etiketiyle):
+
+- Jotchua-tipi rug ek onlem YOK karari: karar paper varsayimiyla alinmisti;
+  B1+B2 uygulanmasiyla karar YENIDEN GECERLIDIR (fren artik 2s cozunurlukte
+  ve satis toleransi rug kosuluna gore genis).
+- X1 rejim kapisi: canliyi etkilemez (X1 paper), karne gunu gundemi aynen.
+- v6/v7 slot_dolu kaydi ve entry_fresh log seviyesi: canli para riski yok,
+  karne gunu gundemi aynen.
+- YENI karne-sonrasi vida (B5): canli alim islem_hatasi orani izlenecek;
+  %20'yi asarsa alim toleransini 100 bps'e cikarma karari o veriyle alinir.
+- YENI karne-sonrasi vida (B6): canli fee muhasebesi (fee_usd=0 yaziliyor,
+  priority fee pnl'de yok); LIVE_MAX_USD artirilmadan once ele alinacak.
