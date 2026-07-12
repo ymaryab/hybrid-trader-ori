@@ -264,6 +264,103 @@ def test_shared_sol_h1_fresh_cache_no_fetch(monkeypatch):
     assert ms.sol_chg_h1(_FailingClient()) == 0.42  # fetch hiç denenmez
 
 
+# ---- Rejim gecis bildirimi: 0.5 esigi kesilince Telegram --------------------------
+
+
+def _bildirimler(monkeypatch):
+    gonderilen = []
+    monkeypatch.setattr("hibrit_trader.killswitch.notify",
+                        lambda msg, *a, **k: gonderilen.append(msg))
+    return gonderilen
+
+
+def test_rejim_bildirim_ilk_ornek_baz_restart_spam_yok(monkeypatch):
+    g = _bildirimler(monkeypatch)
+    ms._rejim_gecis_bildir(0.8, ms.time.time())  # restart sonrasi ilk gozlem
+    assert g == []
+    ms._rejim_gecis_bildir(0.2, ms.time.time())  # gercek gecis
+    assert g == ["Rejim kapandi: sol_h1 0.20"]
+
+
+def test_rejim_bildirim_yukari_kesis_metni(monkeypatch):
+    g = _bildirimler(monkeypatch)
+    now = ms.time.time()
+    ms._rejim_gecis_bildir(0.2, now)
+    ms._rejim_gecis_bildir(0.63, now + 1)
+    assert g == ["Rejim ACILDI: sol_h1 0.63"]
+    # esik dahil: 0.5 acik sayilir (motor kapisiyla ayni yon)
+    ms._rejim_gecis_bildir(0.4, now + 700)
+    ms._rejim_gecis_bildir(0.5, now + 1400)
+    assert g[-1] == "Rejim ACILDI: sol_h1 0.50"
+
+
+def test_rejim_bildirim_ayni_durumda_tekrar_yok(monkeypatch):
+    g = _bildirimler(monkeypatch)
+    now = ms.time.time()
+    ms._rejim_gecis_bildir(0.2, now)
+    ms._rejim_gecis_bildir(0.7, now + 1)
+    ms._rejim_gecis_bildir(0.9, now + 700)   # hala acik: bildirim yok
+    ms._rejim_gecis_bildir(0.55, now + 1400)
+    assert len(g) == 1
+
+
+def test_rejim_bildirim_10dk_spam_korumasi_geciktirir_kaybetmez(monkeypatch):
+    g = _bildirimler(monkeypatch)
+    now = ms.time.time()
+    ms._rejim_gecis_bildir(0.2, now)          # baz: kapali
+    ms._rejim_gecis_bildir(0.8, now + 1)      # ACILDI gonderilir
+    ms._rejim_gecis_bildir(0.1, now + 300)    # 10dk dolmadi: engellenir
+    assert len(g) == 1
+    # durum guncellenmedi: esik alti surerse sonraki ornekte gonderilir
+    ms._rejim_gecis_bildir(0.1, now + 700)
+    assert g == ["Rejim ACILDI: sol_h1 0.80", "Rejim kapandi: sol_h1 0.10"]
+
+
+def test_rejim_bildirim_none_durumu_degistirmez(monkeypatch):
+    g = _bildirimler(monkeypatch)
+    now = ms.time.time()
+    ms._rejim_gecis_bildir(0.8, now)
+    ms._rejim_gecis_bildir(None, now + 700)
+    assert g == []
+    ms._rejim_gecis_bildir(0.2, now + 1400)
+    assert len(g) == 1
+
+
+class _SolOkClient:
+    def __init__(self, h1):
+        self.h1 = h1
+
+    def get(self, *a, **k):
+        h1 = self.h1
+
+        class _R:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"data": {"attributes": {
+                    "price_change_percentage": {"h1": str(h1)}}}}
+
+        return _R()
+
+
+def test_sol_chg_h1_taze_fetch_bildirimi_tetikler(monkeypatch):
+    g = _bildirimler(monkeypatch)
+    monkeypatch.setattr(ms, "SOL_H1_CACHE_SEC", 0)  # her cagri taze fetch
+    assert ms.sol_chg_h1(_SolOkClient(0.2)) == 0.2  # baz: kapali, bildirim yok
+    assert ms.sol_chg_h1(_SolOkClient(0.71)) == 0.71
+    assert g == ["Rejim ACILDI: sol_h1 0.71"]
+
+
+def test_sol_chg_h1_cache_okumasi_bildirim_uretmez(monkeypatch):
+    g = _bildirimler(monkeypatch)
+    ms._rejim_gecis_bildir(0.2, ms.time.time())  # baz: kapali
+    # taze cache'ten okuma (fetch yok): deger esik ustu olsa da bildirim yok
+    monkeypatch.setattr(ms, "_sol_h1_paylasimli", (ms.time.time() - 10, 0.9))
+    assert ms.sol_chg_h1(_FailingClient()) == 0.9
+    assert g == []
+
+
 def test_regime_filter_none_means_closed(mom_data_dir, monkeypatch):
     eng = MomentumEngine(_settings())
     assert _enter_with_regime(eng, monkeypatch, sol_h1=None) == []

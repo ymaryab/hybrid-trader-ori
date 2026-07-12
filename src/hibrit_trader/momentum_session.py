@@ -109,30 +109,72 @@ SOL_H1_CACHE_SEC = 3600
 _sol_h1_lock = threading.Lock()
 _sol_h1_paylasimli: tuple[float, float | None] = (0.0, None)
 
+# ---- Rejim gecis bildirimi: 0.5 esigi kesilince Telegram (paylasimli cache'ten) --
+# Ilk gozlem baz alinir (restart bildirim uretmez); durum degisince BIR kez,
+# iki bildirim arasi en az 10dk. Bildirim engellenirse durum GUNCELLENMEZ,
+# esik ustu kalirsa sonraki taze ornekte gonderilir (gecikir, kaybolmaz).
+REJIM_BILDIRIM_ESIK = 0.5
+REJIM_BILDIRIM_MIN_ARALIK_SEC = 600.0
+_rejim_bildirim_lock = threading.Lock()
+_rejim_bildirim_durum: bool | None = None
+_rejim_bildirim_son_ts = 0.0
+
+
+def _rejim_gecis_bildir(val: float | None, now: float) -> None:
+    global _rejim_bildirim_durum, _rejim_bildirim_son_ts
+    if val is None:
+        return
+    acik = val >= REJIM_BILDIRIM_ESIK
+    with _rejim_bildirim_lock:
+        if _rejim_bildirim_durum is None:
+            _rejim_bildirim_durum = acik
+            return
+        if acik == _rejim_bildirim_durum:
+            return
+        if now - _rejim_bildirim_son_ts < REJIM_BILDIRIM_MIN_ARALIK_SEC:
+            return
+        _rejim_bildirim_durum = acik
+        _rejim_bildirim_son_ts = now
+    msg = (f"Rejim ACILDI: sol_h1 {val:.2f}" if acik
+           else f"Rejim kapandi: sol_h1 {val:.2f}")
+    log.warning("REJIM BILDIRIM: %s", msg)
+    try:
+        from hibrit_trader.killswitch import notify
+        notify(msg)
+    except Exception:
+        log.debug("rejim bildirimi gonderilemedi", exc_info=True)
+
 
 def sol_chg_h1(client: httpx.Client) -> float | None:
     """SOL/USDC chg_h1, motorlar arasi TEK cache. Hata durumunda raise etmez."""
     global _sol_h1_paylasimli
     from hibrit_trader.config import API
 
+    taze = False
     with _sol_h1_lock:
         ts, cached = _sol_h1_paylasimli
         now = time.time()
         if now - ts < SOL_H1_CACHE_SEC:
-            return cached
-        try:
-            url = f"{API['geckoterminal']}/networks/solana/pools/{SOL_USDC_POOL}"
-            resp = client.get(url, headers={"accept": "application/json"}, timeout=10)
-            resp.raise_for_status()
-            chg = (resp.json()["data"]["attributes"].get("price_change_percentage") or {}).get("h1")
-            val = round(float(chg), 3) if chg is not None else None
-            _sol_h1_paylasimli = (time.time(), val)
-            return val
-        except Exception:
-            log.debug("sol_chg_h1 paylasimli fetch hatasi", exc_info=True)
-            if cached is not None and now - ts <= SOL_H1_STALE_MAX_SEC:
-                return cached
-            return None
+            val = cached
+        else:
+            try:
+                url = f"{API['geckoterminal']}/networks/solana/pools/{SOL_USDC_POOL}"
+                resp = client.get(url, headers={"accept": "application/json"}, timeout=10)
+                resp.raise_for_status()
+                chg = (resp.json()["data"]["attributes"].get("price_change_percentage") or {}).get("h1")
+                val = round(float(chg), 3) if chg is not None else None
+                _sol_h1_paylasimli = (time.time(), val)
+                taze = True
+            except Exception:
+                log.debug("sol_chg_h1 paylasimli fetch hatasi", exc_info=True)
+                if cached is not None and now - ts <= SOL_H1_STALE_MAX_SEC:
+                    val = cached
+                else:
+                    val = None
+    if taze:
+        # bildirim kilit DISINDA: Telegram POST'u diger motorlarin okumasini bloklamasin
+        _rejim_gecis_bildir(val, time.time())
+    return val
 
 
 def _data_dir() -> Path:
