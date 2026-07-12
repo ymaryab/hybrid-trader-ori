@@ -1,24 +1,26 @@
-"""V7C senaryo motoru: V7 kurallari BIREBIR, tek fark aday evreni (major/likit).
+"""V7C senaryo motoru: V7 iskeleti, major/likit evren + majore uygun h1 bandi 2..10.
 
-Amac: evren farkinin etkisini izole olcmek. V7 memecoin taramasinda avlanirken
-V7C ayni kurallarla major evrende avlanir; baska hicbir kural degismez.
+Amac: evren farkinin etkisini olcmek. V7 memecoin taramasinda avlanirken V7C
+ayni cikis/rejim/boyut kurallariyla major evrende avlanir; giris bandi major
+oynakligina gore 2..10'a cekildi, baska hicbir kural degismez.
 
 Diger motorlara SIFIR dokunus. Sadece su dosyalara yazar:
   data/v7c_state.json     (sanal bakiye + acik pozisyonlar)
   data/v7c_trades.jsonl   (her sanal kapanista kayit)
   data/v7c_universe.json  (major evren, gunde bir tazelenir)
 
-EVREN (tek fark): M1 altyapisi yeniden kullanilir. SEED_TOKENS gunde bir
+EVREN: M1 altyapisi yeniden kullanilir. SEED_TOKENS gunde bir
 DexScreener'dan dogrulanir (Jupiter hakem + tutarli havuz + hafif honeypot),
 en likit havuzu >= V7C_MIN_LIQ_USD (varsayilan $3M) olanlar evrene girer.
 
-KURALLAR (v7 ile birebir):
-  GIRIS : h1 bandi 10..50, likidite esigi, safety check, taze teyit,
-          kasaya oranli boyut (balance/empty), 5 slot, baslangic $1000.
+KURALLAR (v7 iskeletinde iki fark: evren + h1 bandi):
+  GIRIS : h1 bandi 2..10 (major oynakligina uygun; memecoin bandi 10..50
+          majorlerde neredeyse hic tetiklenmiyordu), likidite esigi, safety
+          check, taze teyit, kasaya oranli boyut (balance/empty), 5 slot,
+          baslangic $1000.
   REJIM : sol_h1 < 0.5 iken giris yok (fail-closed, paylasimli cache).
   CIKIS : tp +%2 / -%10 felaket freni (her an) / 30dk sabir sonrasi -%2 stop /
-          60dk tavan. Not: majorlerde h1 10-50 bandi nadir tetiklenir;
-          bu bilincli, izolasyon deneyinin kendisi bu.
+          60dk tavan.
 
 MOD: SABIT PAPER. BROKER_MODE zincirinden BAGIMSIZ; global mod live olsa
 bile V7C paper kalir (exec katmani dogrudan PaperExecBroker).
@@ -59,9 +61,9 @@ from hibrit_trader.safety import check_token
 
 log = logging.getLogger(__name__)
 
-# ---- V7C esikleri: v7 varsayilanlari BIREBIR; tek parametrik fark evren likiditesi
-CHG_H1_MIN = 10.0
-CHG_H1_MAX = 50.0
+# ---- V7C esikleri: v7 varsayilanlari; farklar evren likiditesi + h1 bandi 2..10
+CHG_H1_MIN = 2.0
+CHG_H1_MAX = 10.0
 LIQ_MIN_USD = float(os.getenv("V7C_MIN_LIQ_USD", "3000000"))  # evren + giris esigi
 UNIVERSE_REFRESH_SEC = 24 * 3600
 MAX_SLOTS = 5

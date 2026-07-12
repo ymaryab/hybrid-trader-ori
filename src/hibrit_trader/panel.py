@@ -1308,8 +1308,8 @@ _FILO_MOTORLAR: list[dict] = [
      "rozet": "koşucu avcısı", "arka": True,
      "desc": "koşucu avcısı: h1&ge;50 + m5&gt;0 + liq&ge;$20k · bilet&le;$70 · yarım tp mfe&ge;+15 · trail -18 · 6sa tavan"},
     {"id": "v7c", "tip": "bot", "ad": "V7C", "renk": "#bc8cff", "slots": 5,
-     "rozet": "majör evren",
-     "desc": "v7 kuralları birebir, tek fark evren: majör/likit liq&ge;$3M · h1 10..50 · tp+2 · fren -%10 · rejim sol_h1&ge;0.5 · PAPER sabit"},
+     "rozet": "majör 2-10",
+     "desc": "v7 iskeleti majör/likit evrende: liq&ge;$3M · h1 2..10 · tp+2 · fren -%10 · rejim sol_h1&ge;0.5 · PAPER sabit"},
 ]
 
 

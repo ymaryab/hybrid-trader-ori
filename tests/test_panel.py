@@ -222,7 +222,7 @@ def test_momentum_yeni_duzen(client):
     assert "cüzdan: bağlı değil" in h
     # V-NEXT placeholder kalkti, koltukta v7c
     assert "V-NEXT" not in h and 'id="kart-vnext"' not in h
-    assert "majör evren" in h
+    assert "majör 2-10" in h
     # kart/chart eslesmesi: her bot kartinin sparkline'i ve charti var
     for p in ("v6", "v7", "x1", "v7c"):
         assert f'id="spark-{p}"' in h

@@ -32,7 +32,7 @@ def _settings():
     return SimpleNamespace(scan_chains=("solana",))
 
 
-def _pair(pool="CP1", token="CT1", price=1.0, liq=5_000_000.0, h1=15.0, m5=-2.0):
+def _pair(pool="CP1", token="CT1", price=1.0, liq=5_000_000.0, h1=5.0, m5=-2.0):
     return SimpleNamespace(
         name="C / SOL", chain="solana", pool_address=pool, token_address=token,
         price_usd=price, liquidity_usd=liq, chg_m5=m5, chg_h1=h1,
@@ -83,11 +83,9 @@ def test_exec_paper_kalir_brokermode_live_iken(v7c_data_dir, monkeypatch):
     assert "signature" not in t and "signature_al" not in t
 
 
-# ---- v7 kurallari birebir (sabit esitligi) ---------------------------------------------
+# ---- v7 kurallari korunur; farklar: evren esigi + h1 bandi 2..10 -----------------------
 
 def test_v7_sabitleri_birebir(v7c_data_dir):
-    assert v7c.CHG_H1_MIN == v7.CHG_H1_MIN
-    assert v7c.CHG_H1_MAX == v7.CHG_H1_MAX
     assert v7c.TP_PCT == v7.TP_PCT == 2.0
     assert v7c.GRACE_SEC == v7.GRACE_SEC == 30 * 60
     assert v7c.LATE_STOP_PCT == v7.LATE_STOP_PCT == -2.0
@@ -96,8 +94,10 @@ def test_v7_sabitleri_birebir(v7c_data_dir):
     assert v7c.SOL_H1_MIN == v7.SOL_H1_MIN == 0.5
     assert v7c.MAX_SLOTS == v7.MAX_SLOTS == 5
     assert v7c.START_BALANCE == 1000.0
-    # TEK fark: evren/giris likidite esigi
+    # farklar: evren/giris likidite esigi + majore uygun h1 bandi
     assert v7c.LIQ_MIN_USD == 3_000_000.0
+    assert v7c.CHG_H1_MIN == 2.0
+    assert v7c.CHG_H1_MAX == 10.0
 
 
 def test_liq_esigi_env_ile_parametrik(v7c_data_dir, monkeypatch):
@@ -111,15 +111,16 @@ def test_liq_esigi_env_ile_parametrik(v7c_data_dir, monkeypatch):
     assert v7c.LIQ_MIN_USD == 3_000_000.0
 
 
-# ---- Giris bandi: h1 10..50, liq >= 3M, rejim sol_h1 >= 0.5 ---------------------------
+# ---- Giris bandi: h1 2..10, liq >= 3M, rejim sol_h1 >= 0.5 ----------------------------
 
-def test_entry_h1_bandi_v7_ile_ayni(v7c_data_dir, monkeypatch):
+def test_entry_h1_bandi_2_10(v7c_data_dir, monkeypatch):
     eng = V7CEngine(_settings())
-    assert _enter(eng, monkeypatch, _pair(h1=9.9)) == []
-    assert _enter(eng, monkeypatch, _pair(h1=50.1)) == []
-    assert len(_enter(eng, monkeypatch, _pair(h1=50.0))) == 1
+    assert _enter(eng, monkeypatch, _pair(h1=1.9)) == []
+    assert _enter(eng, monkeypatch, _pair(h1=10.1)) == []
+    assert _enter(eng, monkeypatch, _pair(h1=15.0)) == []  # eski memecoin bandi artik disarida
+    assert len(_enter(eng, monkeypatch, _pair(h1=10.0))) == 1
     eng2 = V7CEngine(_settings())
-    assert len(_enter(eng2, monkeypatch, _pair(h1=10.0))) == 1
+    assert len(_enter(eng2, monkeypatch, _pair(h1=2.0))) == 1
 
 
 def test_entry_liq_3m_alti_elenir(v7c_data_dir, monkeypatch):
