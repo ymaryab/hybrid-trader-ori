@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -95,8 +96,7 @@ def data_dir(tmp_path, monkeypatch):
     monkeypatch.delenv("DRYRUN_PUBKEY", raising=False)
     monkeypatch.delenv("LIVE_UNLOCKED", raising=False)
     monkeypatch.delenv("SOL_KEYPAIR_PATH", raising=False)
-    monkeypatch.delenv("LIVE_MAX_USD", raising=False)
-    monkeypatch.delenv("LIVE_MAX_PCT", raising=False)
+    monkeypatch.delenv("LIVE_TICKET_PCT", raising=False)
     return tmp_path
 
 
@@ -450,12 +450,13 @@ def test_sign_and_send_onay_hatasi_zincirde_yoksa_belirsiz(data_dir, monkeypatch
 
 # ---- live belirsiz islem kilidi (12 Tem tekrarli alim olayi) ----------------------------
 
-def _live_broker(data_dir, monkeypatch, pct="0"):
+def _live_broker(data_dir, monkeypatch, durum=(40.0, 5.0, 80.0)):
     monkeypatch.setenv("LIVE_UNLOCKED", "1")
     (data_dir / "LIVE_ONAY").write_text("canli-islem-onayliyorum", encoding="utf-8")
     _cuzdan_dosyasi(data_dir, monkeypatch)
-    # varsayilan pct=0: tavan disi testler MTM hesabina (RPC) girmeden gecsin
-    monkeypatch.setenv("LIVE_MAX_PCT", pct)
+    # bilet hesabi RPC'ye gitmesin: sahte (mtm, serbest_sol, sol_fiyat)
+    # varsayilan MTM $40 x %25 = $10 bilet, serbest bol
+    monkeypatch.setattr(broker, "_cuzdan_durum", lambda *a: durum)
     return make_exec_broker("live", http=FakeClient(quote=_quote_al()))
 
 
@@ -489,7 +490,7 @@ def test_live_islem_hatasi_kilit_acmaz(data_dir, monkeypatch):
         assert br.execute(_al_emri()).neden == "islem_hatasi"
 
 
-# ---- live alim tavani: LIVE_MAX_PCT (MTM oranli) + LIVE_MAX_USD (kucuk olan) ------------
+# ---- live alim bileti: sabit oran, bilet = MTM x LIVE_TICKET_PCT (12 Tem nihai) ---------
 
 def _swap_yakala(monkeypatch):
     """swap_sol_to_token'a giden usd'yi yakalar, sahte basarili fill doner."""
@@ -505,59 +506,62 @@ def _swap_yakala(monkeypatch):
     return gorulen
 
 
-def test_live_tavan_pct_mtm_oranli(data_dir, monkeypatch):
-    # tek tavan LIVE_MAX_PCT: bilet MTM'nin yuzdesiyle sinirlanir (alim aninda)
-    br = _live_broker(data_dir, monkeypatch, pct="25")
-    monkeypatch.setattr(broker, "_cuzdan_mtm_usd", lambda *a: 100.0)
+def test_live_bilet_mtm_orani(data_dir, monkeypatch):
+    # bilet = MTM x LIVE_TICKET_PCT, alim aninda taze hesap
+    br = _live_broker(data_dir, monkeypatch, durum=(100.0, 5.0, 80.0))
     gorulen = _swap_yakala(monkeypatch)
     fill = br.execute(_al_emri(usd=50.0))
     assert fill.ok is True
     assert gorulen["usd"] == 25.0  # MTM $100 x %25
 
 
-def test_live_tavan_pct_altinda_bilet_dokunulmaz(data_dir, monkeypatch):
-    br = _live_broker(data_dir, monkeypatch, pct="25")
-    monkeypatch.setattr(broker, "_cuzdan_mtm_usd", lambda *a: 100.0)
+def test_live_bilet_motor_biletini_yok_sayar(data_dir, monkeypatch):
+    # motorun paper bileti (order.usd) canli tarafta kullanilmaz: buyuk de
+    # kucuk de olsa canli bilet hep MTM x oran
+    br = _live_broker(data_dir, monkeypatch, durum=(100.0, 5.0, 80.0))
     gorulen = _swap_yakala(monkeypatch)
-    assert br.execute(_al_emri(usd=10.0)).ok is True
-    assert gorulen["usd"] == 10.0  # tavanin altindaki bilet aynen gecer
-
-
-def test_live_tavan_usd_ve_pct_kucuk_olan_gecer(data_dir, monkeypatch):
-    br = _live_broker(data_dir, monkeypatch, pct="25")
-    gorulen = _swap_yakala(monkeypatch)
-    monkeypatch.setenv("LIVE_MAX_USD", "25")
-    # USD tavani kucuk: MTM $200 x %25 = 50 > 25 -> 25
-    monkeypatch.setattr(broker, "_cuzdan_mtm_usd", lambda *a: 200.0)
-    br.execute(_al_emri(usd=100.0))
+    assert br.execute(_al_emri(usd=5.0)).ok is True
     assert gorulen["usd"] == 25.0
-    # pct tavani kucuk: MTM $60 x %25 = 15 < 25 -> 15
-    monkeypatch.setattr(broker, "_cuzdan_mtm_usd", lambda *a: 60.0)
-    br.execute(_al_emri(usd=100.0))
-    assert gorulen["usd"] == 15.0
+    assert br.execute(_al_emri(usd=500.0)).ok is True
+    assert gorulen["usd"] == 25.0
 
 
-def test_live_tavan_hesap_yok_usd_yoksa_reddeder(data_dir, monkeypatch):
-    # MTM hesaplanamadi VE USD tavani yok: tavansiz canli alim olmaz (fail-closed)
-    br = _live_broker(data_dir, monkeypatch, pct="25")
-    monkeypatch.setattr(broker, "_cuzdan_mtm_usd", lambda *a: None)
+def test_live_bilet_hesap_yok_reddeder(data_dir, monkeypatch):
+    # cuzdan durumu hesaplanamadi: canli alim yok (fail-closed)
+    br = _live_broker(data_dir, monkeypatch, durum=None)
     gorulen = _swap_yakala(monkeypatch)
     fill = br.execute(_al_emri(usd=50.0))
-    assert fill.ok is False and fill.neden == "tavan_hesap_yok"
+    assert fill.ok is False and fill.neden == "bilet_hesap_yok"
     assert "usd" not in gorulen  # swap katmanina hic ulasilmadi
 
 
-def test_live_tavan_hesap_yok_usd_varsa_surer(data_dir, monkeypatch):
-    # MTM hesaplanamadi ama USD tavani var: cifte emniyetin ikinci teli tutar
-    br = _live_broker(data_dir, monkeypatch, pct="25")
-    monkeypatch.setenv("LIVE_MAX_USD", "25")
-    monkeypatch.setattr(broker, "_cuzdan_mtm_usd", lambda *a: None)
+def test_live_bilet_sifir_mtm_reddeder(data_dir, monkeypatch):
+    # MTM 0 ise bilet 0: gecersiz, alim reddedilir
+    br = _live_broker(data_dir, monkeypatch, durum=(0.0, 5.0, 80.0))
     gorulen = _swap_yakala(monkeypatch)
-    assert br.execute(_al_emri(usd=50.0)).ok is True
+    fill = br.execute(_al_emri())
+    assert fill.ok is False and fill.neden == "bilet_hesap_yok"
+    assert "usd" not in gorulen
+
+
+def test_live_yetersiz_serbest_reddeder(data_dir, monkeypatch):
+    # bilet $25 -> 0.3125 SOL + 0.05 gaz rezervi = 0.3625 > serbest 0.30
+    br = _live_broker(data_dir, monkeypatch, durum=(100.0, 0.30, 80.0))
+    gorulen = _swap_yakala(monkeypatch)
+    fill = br.execute(_al_emri())
+    assert fill.ok is False and fill.neden == "yetersiz_serbest"
+    assert "usd" not in gorulen
+
+
+def test_live_serbest_gaz_rezervi_sinirinda_gecer(data_dir, monkeypatch):
+    # 0.37 SOL >= 0.3625 gereksinim: alim gecer
+    br = _live_broker(data_dir, monkeypatch, durum=(100.0, 0.37, 80.0))
+    gorulen = _swap_yakala(monkeypatch)
+    assert br.execute(_al_emri()).ok is True
     assert gorulen["usd"] == 25.0
 
 
-def test_cuzdan_mtm_hesabi(data_dir, monkeypatch):
+def test_cuzdan_durum_hesabi(data_dir, monkeypatch):
     from types import SimpleNamespace
 
     # serbest SOL 0.2 x $80 = $16 + canli poz 25000 x 0.00025 = $6.25
@@ -569,27 +573,30 @@ def test_cuzdan_mtm_hesabi(data_dir, monkeypatch):
         get_balance=lambda pk: SimpleNamespace(value=200_000_000))
     monkeypatch.setattr("hibrit_trader.jupiter.fetch_sol_price_usd",
                         lambda c, fallback=0.0: 80.0)
-    assert broker._cuzdan_mtm_usd(None, rpc, "PUB") == pytest.approx(22.25)
+    mtm, serbest_sol, fiyat = broker._cuzdan_durum(None, rpc, "PUB")
+    assert mtm == pytest.approx(22.25)
+    assert serbest_sol == pytest.approx(0.2)
+    assert fiyat == pytest.approx(80.0)
 
 
-def test_cuzdan_mtm_fiyat_yoksa_none(data_dir, monkeypatch):
+def test_cuzdan_durum_fiyat_yoksa_none(data_dir, monkeypatch):
     from types import SimpleNamespace
 
     rpc = SimpleNamespace(
         get_balance=lambda pk: SimpleNamespace(value=200_000_000))
     monkeypatch.setattr("hibrit_trader.jupiter.fetch_sol_price_usd",
                         lambda c, fallback=0.0: 0.0)
-    assert broker._cuzdan_mtm_usd(None, rpc, "PUB") is None
+    assert broker._cuzdan_durum(None, rpc, "PUB") is None
 
 
-def test_cuzdan_mtm_bakiye_hatasi_none(data_dir, monkeypatch):
+def test_cuzdan_durum_bakiye_hatasi_none(data_dir, monkeypatch):
     from types import SimpleNamespace
 
     def _patla(pk):
         raise ValueError("rpc dustu")
 
     rpc = SimpleNamespace(get_balance=_patla)
-    assert broker._cuzdan_mtm_usd(None, rpc, "PUB") is None
+    assert broker._cuzdan_durum(None, rpc, "PUB") is None
 
 
 def test_paper_execute_ref_fiyat(data_dir):
@@ -627,13 +634,14 @@ def test_golge_olcum_kapaliyken_thread_acmaz(data_dir, monkeypatch):
 # ---- live SOL swap secimi (ASAMA 0, 11 Tem: kasa SOL, alim SOL->token) ------------------
 
 def test_live_execute_sol_swap_al_ve_sat(data_dir, monkeypatch):
-    monkeypatch.delenv("LIVE_MAX_USD", raising=False)
-    monkeypatch.setenv("LIVE_MAX_PCT", "0")  # tavansiz yol testi
+    # MTM $400 x %25 = $100 bilet
+    monkeypatch.setattr(broker, "_cuzdan_durum", lambda *a: (400.0, 5.0, 80.0))
     monkeypatch.setenv("LIVE_UNLOCKED", "1")
     (data_dir / "LIVE_ONAY").write_text("canli-islem-onayliyorum", encoding="utf-8")
     _cuzdan_dosyasi(data_dir, monkeypatch)
     br = make_exec_broker("live", http=FakeClient())
-    monkeypatch.setattr(broker, "_cuzdan_yukle", lambda mode: object())
+    monkeypatch.setattr(broker, "_cuzdan_yukle",
+                        lambda mode: SimpleNamespace(pubkey=lambda: "PUB"))
     monkeypatch.setattr(br, "_decimals", lambda mint: 9)
     cagri = []
 
@@ -666,14 +674,15 @@ def test_live_execute_sol_swap_al_ve_sat(data_dir, monkeypatch):
                      ("token_to_sol", 500 * 10 ** 9, 50)]
 
 
-def test_live_max_usd_tavani_sadece_alimi_kirpar(data_dir, monkeypatch):
-    monkeypatch.setenv("LIVE_MAX_USD", "25")
-    monkeypatch.setenv("LIVE_MAX_PCT", "0")  # saf USD tavani yolu testi
+def test_live_bilet_sadece_alimi_boyutlar(data_dir, monkeypatch):
+    # alim bileti MTM x %25 = $25; satis bilete bakmaz, gercek miktari satar
+    monkeypatch.setattr(broker, "_cuzdan_durum", lambda *a: (100.0, 2.0, 80.0))
     monkeypatch.setenv("LIVE_UNLOCKED", "1")
     (data_dir / "LIVE_ONAY").write_text("canli-islem-onayliyorum", encoding="utf-8")
     _cuzdan_dosyasi(data_dir, monkeypatch)
     br = make_exec_broker("live", http=FakeClient())
-    monkeypatch.setattr(broker, "_cuzdan_yukle", lambda mode: object())
+    monkeypatch.setattr(broker, "_cuzdan_yukle",
+                        lambda mode: SimpleNamespace(pubkey=lambda: "PUB"))
     monkeypatch.setattr(br, "_decimals", lambda mint: 9)
     cagri = []
 
@@ -695,9 +704,9 @@ def test_live_max_usd_tavani_sadece_alimi_kirpar(data_dir, monkeypatch):
     al = br.execute(ExecOrder(engine="V7", yon="al", token_address=TOK,
                               usd=215.0, ref_fiyat=0.2))
     assert al.ok and al.miktar_token == pytest.approx(125.0)
-    assert al.fiyat == pytest.approx(0.2)  # birim fiyat tavandan etkilenmez
+    assert al.fiyat == pytest.approx(0.2)  # birim fiyat biletten etkilenmez
 
-    # satis tavana takilmaz: cuzdandaki gercek miktar aynen satilir
+    # satis bilete takilmaz: cuzdandaki gercek miktar aynen satilir
     sat = br.execute(ExecOrder(engine="V7", yon="sat", token_address=TOK,
                                amount_token=125.0, ref_fiyat=0.2))
     assert sat.ok and sat.fiyat == pytest.approx(24.75 / 125.0)
@@ -705,24 +714,13 @@ def test_live_max_usd_tavani_sadece_alimi_kirpar(data_dir, monkeypatch):
                      ("token_to_sol", 125 * 10 ** 9, 50)]
 
 
-def test_live_max_usd_bos_veya_sifir_tavan_yok(monkeypatch):
-    monkeypatch.delenv("LIVE_MAX_USD", raising=False)
-    assert broker._live_max_usd() == 0.0
-    monkeypatch.setenv("LIVE_MAX_USD", "0")
-    assert broker._live_max_usd() == 0.0
-    monkeypatch.setenv("LIVE_MAX_USD", "bozuk")
-    assert broker._live_max_usd() == 0.0
-    monkeypatch.setenv("LIVE_MAX_USD", "25")
-    assert broker._live_max_usd() == 25.0
-
-
-def test_live_max_pct_varsayilan_ve_bozuk(monkeypatch):
-    # varsayilan 25 (env yoksa da oransal emniyet acik), bozuk deger de 25'e duser
-    monkeypatch.delenv("LIVE_MAX_PCT", raising=False)
-    assert broker._live_max_pct() == 25.0
-    monkeypatch.setenv("LIVE_MAX_PCT", "bozuk")
-    assert broker._live_max_pct() == 25.0
-    monkeypatch.setenv("LIVE_MAX_PCT", "0")
-    assert broker._live_max_pct() == 0.0
-    monkeypatch.setenv("LIVE_MAX_PCT", "10")
-    assert broker._live_max_pct() == 10.0
+def test_live_ticket_pct_varsayilan_ve_bozuk(monkeypatch):
+    # varsayilan 25; bozuk veya bos deger emniyetli varsayilana duser
+    monkeypatch.delenv("LIVE_TICKET_PCT", raising=False)
+    assert broker._live_ticket_pct() == 25.0
+    monkeypatch.setenv("LIVE_TICKET_PCT", "bozuk")
+    assert broker._live_ticket_pct() == 25.0
+    monkeypatch.setenv("LIVE_TICKET_PCT", "")
+    assert broker._live_ticket_pct() == 25.0
+    monkeypatch.setenv("LIVE_TICKET_PCT", "10")
+    assert broker._live_ticket_pct() == 10.0

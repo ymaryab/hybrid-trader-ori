@@ -411,7 +411,7 @@ class V7Engine:
             return False
         if canli is not None and canli.fiyat > 0:
             eff_price = canli.fiyat  # sadece live: gercek fill fiyati baglayici
-        # Muhasebe her modda paper boyutta surer; LIVE_MAX_USD tavani yarisi etkilemez.
+        # Muhasebe her modda paper boyutta surer; canli bilet (MTM x LIVE_TICKET_PCT) yarisi etkilemez.
         # Cuzdandaki gercek miktar ayrica canli_miktar'da tutulur (satis onu kullanir).
         amount_token = usd / eff_price
         now = time.time()

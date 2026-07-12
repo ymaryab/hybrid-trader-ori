@@ -260,7 +260,7 @@ def test_momentum_mod_rozeti_ve_canli_karti(client, monkeypatch, tmp_path):
     assert ">dryrun</span>" in h and ">paper</span>" not in h
     # live ama kilit kapali: rozet durust, kart TAM iskeletiyle kilitli durur
     monkeypatch.setenv("BROKER_MODE", "live")
-    monkeypatch.setenv("LIVE_MAX_USD", "25")
+    monkeypatch.setenv("LIVE_TICKET_PCT", "25")
     h = client.get("/momentum").text
     assert "live (kilit kapalı)" in h
     assert "cüzdan: bağlı değil" not in h
@@ -276,7 +276,7 @@ def test_momentum_mod_rozeti_ve_canli_karti(client, monkeypatch, tmp_path):
     h = client.get("/momentum").text
     assert 'class="badge err">CANLI (V7)</span>' in h
     assert "cüzdan: bağlı değil" not in h
-    assert "gerçek para" in h and "$25" in h
+    assert "gerçek para" in h and "bilet: MTM %25" in h
     assert "kilit kapalı, giriş yok" not in h
     assert "DZXZ" in h  # cuzdan kisaltmasi kfoot'ta
     assert "denetim defterin" in h

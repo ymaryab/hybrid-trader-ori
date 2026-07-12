@@ -1346,12 +1346,7 @@ def _filo_kart_canli(durum: str) -> str:
     kilit rozeti) / yok (placeholder). Kilitliyken de tam gosterge basilir ki
     cuzdan MTM/SOL izlenebilsin; sadece rozet degisir."""
     if durum in ("bagli", "kilitli"):
-        pct = os.getenv("LIVE_MAX_PCT", "25").strip() or "25"
-        usd = os.getenv("LIVE_MAX_USD", "").strip()
-        if pct == "0":
-            tavan = f"${usd or '-'}"
-        else:
-            tavan = f"MTM %{pct}" + (f", üst ${usd}" if usd else "")
+        pct = os.getenv("LIVE_TICKET_PCT", "25").strip() or "25"
         rozet = ('<span class="rozet" style="background:#da3633;color:#fff">gerçek para</span>'
                  if durum == "bagli" else
                  '<span class="rozet">kilitli &#128274;</span>')
@@ -1363,7 +1358,7 @@ def _filo_kart_canli(durum: str) -> str:
                 '<canvas class="spark" id="spark-canli" height="36"></canvas>'
                 '<div class="kfoot" id="foot-canli">-</div>'
                 '<button id="killBtn" disabled>...</button>'
-                f'<div class="kfoot">V7 canlı · alım tavanı {tavan} · muhasebe paper '
+                f'<div class="kfoot">V7 canlı · bilet: MTM %{pct} · muhasebe paper '
                 "boyutta · fill'ler tx imzalı, denetim defterine düşer · cüzdan "
                 f'{_CANLI_CUZDAN[:4]}…{_CANLI_CUZDAN[-4:]}</div></div>')
     return ('<div class="kart bos" id="kart-canli">'

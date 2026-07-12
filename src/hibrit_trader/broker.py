@@ -314,41 +314,35 @@ class DryrunExecBroker:
 
 # ---- Live: cift kilit arkasinda gercek islem ------------------------------------------
 
-def _live_max_usd() -> float:
-    """LIVE_MAX_USD: canli alim bileti ust siniri (USD). 0 veya bos = tavan yok."""
+def _live_ticket_pct() -> float:
+    """LIVE_TICKET_PCT: canli alim bileti, cuzdan MTM'sinin yuzdesi (varsayilan 25).
+    Bozuk deger emniyetli varsayilana duser (25)."""
     try:
-        return float(os.getenv("LIVE_MAX_USD", "0") or 0.0)
-    except ValueError:
-        return 0.0
-
-
-def _live_max_pct() -> float:
-    """LIVE_MAX_PCT: alim bileti tavani, cuzdan MTM'sinin yuzdesi (varsayilan 25).
-    0 = yuzde tavani kapali. Bozuk deger emniyetli tarafa duser (25)."""
-    try:
-        return float(os.getenv("LIVE_MAX_PCT", "25") or 0.0)
+        return float(os.getenv("LIVE_TICKET_PCT", "25") or 25.0)
     except ValueError:
         return 25.0
 
 
-def _cuzdan_mtm_usd(http: httpx.Client, rpc, pubkey) -> float | None:
-    """Alim aninda cuzdan MTM (USD): serbest SOL (RPC, taze) + acik canli poz
-    degeri (v7_state canli_miktar*last_price, dosyadan). Hesaplanamazsa None."""
+def _cuzdan_durum(http: httpx.Client, rpc, pubkey) -> tuple[float, float, float] | None:
+    """Alim aninda taze cuzdan durumu: (mtm_usd, serbest_sol, sol_fiyat_usd).
+    MTM = serbest SOL (RPC) x anlik fiyat + acik canli poz degeri (v7_state
+    canli_miktar*last_price, dosyadan). Hesaplanamazsa None (fail-closed)."""
     from hibrit_trader.jupiter import LAMPORTS_PER_SOL, fetch_sol_price_usd
 
     try:
         lamports = rpc.get_balance(pubkey).value
     except Exception as e:
-        log.warning("BROKER live: MTM icin SOL bakiyesi alinamadi: %s", e)
+        log.warning("BROKER live: SOL bakiyesi alinamadi: %s", e)
         return None
     fiyat = fetch_sol_price_usd(http, fallback=0.0)
     if fiyat <= 0:
-        log.warning("BROKER live: MTM icin SOL fiyati alinamadi")
+        log.warning("BROKER live: SOL fiyati alinamadi")
         return None
     from hibrit_trader import canli_gosterge
 
+    serbest_sol = lamports / LAMPORTS_PER_SOL
     poz_usd = canli_gosterge._v7_canli_ozet()[0]
-    return lamports / LAMPORTS_PER_SOL * fiyat + poz_usd
+    return serbest_sol * fiyat + poz_usd, serbest_sol, fiyat
 
 
 class LiveExecBroker(DryrunExecBroker):
@@ -390,32 +384,35 @@ class LiveExecBroker(DryrunExecBroker):
             from hibrit_trader.jupiter import swap_sol_to_token, swap_token_to_sol
             rpc = RpcClient(_rpc_url())
             if order.yon == "al":
-                # Canli bilet tavani: sadece alim, satis her zaman gercek miktar.
-                # Oransal tavan (LIVE_MAX_PCT, MTM'nin yuzdesi) alim aninda taze
-                # bakiyeden hesaplanir; LIVE_MAX_USD de varsa KUCUK olan gecer.
-                usd_exec = order.usd
-                tavan = _live_max_usd()
-                kaynak = "LIVE_MAX_USD"
-                pct = _live_max_pct()
-                if pct > 0:
-                    mtm = _cuzdan_mtm_usd(self._http, rpc, keypair.pubkey())
-                    if mtm is None:
-                        if tavan <= 0:
-                            # tavansiz canli alim yok: hesap yoksa emniyetli taraf
-                            log.error("BROKER live: MTM hesaplanamadi ve "
-                                      "LIVE_MAX_USD yok, alim reddedildi")
-                            return ExecFill(ok=False, neden="tavan_hesap_yok")
-                        log.warning("BROKER live: MTM hesaplanamadi, tavan "
-                                    "LIVE_MAX_USD $%.2f ile surer", tavan)
-                    else:
-                        tavan_pct = mtm * pct / 100.0
-                        if tavan <= 0 or tavan_pct < tavan:
-                            tavan = tavan_pct
-                            kaynak = f"LIVE_MAX_PCT %{pct:g} x MTM ${mtm:.2f}"
-                if 0 < tavan < usd_exec:
-                    log.warning("BROKER LIVE %s al bileti tavanlandi: $%.2f -> $%.2f "
-                                "(%s)", order.engine, usd_exec, tavan, kaynak)
-                    usd_exec = tavan
+                # Canli bilet SABIT ORAN (12 Tem nihai karari): motorun paper
+                # bileti (order.usd) canli tarafta KULLANILMAZ; bilet = MTM x
+                # LIVE_TICKET_PCT, alim aninda taze hesap. Satis her zaman
+                # gercek cuzdan miktari.
+                from hibrit_trader.jupiter import SOL_GAS_RESERVE
+
+                durum = _cuzdan_durum(self._http, rpc, keypair.pubkey())
+                if durum is None:
+                    # bilet hesabi yoksa canli alim yok (fail-closed)
+                    log.error("BROKER live: cuzdan durumu hesaplanamadi, "
+                              "alim reddedildi")
+                    return ExecFill(ok=False, neden="bilet_hesap_yok")
+                mtm, serbest_sol, sol_fiyat = durum
+                pct = _live_ticket_pct()
+                usd_exec = mtm * pct / 100.0
+                if usd_exec <= 0:
+                    log.error("BROKER live: bilet hesabi gecersiz (MTM $%.2f "
+                              "x %%%g), alim reddedildi", mtm, pct)
+                    return ExecFill(ok=False, neden="bilet_hesap_yok")
+                gerekli_sol = usd_exec / sol_fiyat + SOL_GAS_RESERVE
+                if serbest_sol < gerekli_sol:
+                    log.error("BROKER live: serbest SOL yetersiz "
+                              "(%.4f < %.4f, bilet $%.2f + gaz rezervi), "
+                              "alim reddedildi", serbest_sol, gerekli_sol,
+                              usd_exec)
+                    return ExecFill(ok=False, neden="yetersiz_serbest")
+                log.warning("BROKER LIVE %s bilet: MTM $%.2f x %%%g = $%.2f "
+                            "(paper $%.2f kullanilmadi)", order.engine, mtm,
+                            pct, usd_exec, order.usd)
                 res = swap_sol_to_token(self._http, rpc, keypair,
                                         order.token_address, usd_exec,
                                         order.slippage_bps)

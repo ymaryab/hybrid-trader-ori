@@ -334,8 +334,8 @@ def test_exec_live_fill_fiyat_imza_baglayici_muhasebe_paper_boyut(v7_data_dir, m
     assert o_sat.yon == "sat" and o_sat.amount_token == 95.0  # gercek miktar satilir
 
 
-def test_exec_live_tavanli_fill_satis_gercek_miktari_kullanir(v7_data_dir, monkeypatch):
-    # LIVE_MAX_USD=25 senaryosu: broker $25'lik alir (23.8 token @ 1.05),
+def test_exec_live_biletli_fill_satis_gercek_miktari_kullanir(v7_data_dir, monkeypatch):
+    # canli bilet MTM x oran senaryosu: broker $25'lik alir (23.8 token @ 1.05),
     # paper muhasebe $100 boyutta surer, satis cuzdandaki 23.8'i satar.
     eng = V7Engine(_settings())
     al = ExecFill(ok=True, fiyat=1.05, miktar_token=23.8, tx_id="SIGAL")
