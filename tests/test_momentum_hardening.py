@@ -264,6 +264,16 @@ def test_shared_sol_h1_fresh_cache_no_fetch(monkeypatch):
     assert ms.sol_chg_h1(_FailingClient()) == 0.42  # fetch hiç denenmez
 
 
+def test_sol_h1_son_olcum_fetch_tetiklemez(monkeypatch):
+    # panel rozet yasi: cache'teki (deger, fetch_ts) cifti aynen doner,
+    # bos cache'te (None, 0.0); hicbir kosulda GET atilmaz
+    monkeypatch.setattr(ms, "_sol_h1_paylasimli", (0.0, None))
+    assert ms.sol_h1_son_olcum() == (None, 0.0)
+    ts = ms.time.time() - 1860
+    monkeypatch.setattr(ms, "_sol_h1_paylasimli", (ts, 0.213))
+    assert ms.sol_h1_son_olcum() == (0.213, ts)  # bayat olsa da deger+ts doner
+
+
 # ---- Rejim gecis bildirimi: 0.5 esigi kesilince Telegram --------------------------
 
 

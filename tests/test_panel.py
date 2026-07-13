@@ -313,6 +313,29 @@ def test_momentum_son_islemler_canli_kolonlari(client, monkeypatch):
     assert "canli_pnl_usd" in h  # canli satirda pnl gercek cuzdan bazli
 
 
+def test_api_filo_rejim_blogu_ve_rozet_yasi(client, monkeypatch, tmp_path):
+    import time as _t
+    monkeypatch.setenv("MOMENTUM_DATA_DIR", str(tmp_path))
+    # olcum yokken rejim alani hic yok: rozet islem-kaydi yedegine duser
+    d = client.get("/api/filo").json()
+    assert "rejim" not in d
+    # cache'te 31 dk yasinda olcum: deger + yas_sec doner (fetch tetiklenmez)
+    monkeypatch.setattr("hibrit_trader.momentum_session._sol_h1_paylasimli",
+                        (_t.time() - 1860, 0.213))
+    r = client.get("/api/filo").json()["rejim"]
+    assert r["sol_h1"] == 0.213
+    assert 1855 <= r["yas_sec"] <= 1870
+    # deger None ise blok yine yok (fail-closed donem, rozet '-' gosterir)
+    monkeypatch.setattr("hibrit_trader.momentum_session._sol_h1_paylasimli",
+                        (_t.time() - 10, None))
+    assert "rejim" not in client.get("/api/filo").json()
+    # HTML: yas etiketi formati + 45 dk bayat esigi + gri/soluk stil
+    h = client.get("/momentum").text
+    assert "· ${dk} dk" in h
+    assert "45*60" in h
+    assert ".badge.bayat" in h
+
+
 def test_api_filo_canli_blogu(client, monkeypatch, tmp_path):
     monkeypatch.setenv("MOMENTUM_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("CANLI_BAZ_USD", raising=False)

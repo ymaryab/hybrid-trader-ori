@@ -659,6 +659,11 @@ def api_filo(limit: int = Query(30)) -> dict:
     out["cmp"] = {p: out[p]["summary"]["realized_pnl"]
                   for p in ("v6", "v7", "x1", "v7c")}
     out["kill"] = is_active()
+    # rejim rozeti: paylasimli sol_h1 cache'inden deger + olcum yasi (fetch tetiklemez)
+    from hibrit_trader.momentum_session import sol_h1_son_olcum
+    sol_h1_val, sol_h1_ts = sol_h1_son_olcum()
+    if sol_h1_ts > 0 and sol_h1_val is not None:
+        out["rejim"] = {"sol_h1": sol_h1_val, "yas_sec": round(now - sol_h1_ts, 1)}
     canli = _canli_blok()
     if canli is not None:
         canli["pozisyonlar"] = _canli_pozlar(out["v7"]["positions"])
@@ -1428,6 +1433,7 @@ _MOMENTUM_HTML = """<!doctype html>
    color:#8b949e;font-size:12px;margin-left:6px;border:1px solid #30363d}
  .badge.ok{color:#3fb950;border-color:#238636}
  .badge.err{background:#da3633;color:#fff;border-color:#da3633}
+ .badge.bayat{opacity:.55;color:#8b949e;border-color:#30363d}
  #kartGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:16px 0 6px}
  @media(max-width:1100px){#kartGrid{grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}}
  .kart{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px 14px;
@@ -2144,11 +2150,20 @@ function basIslemler(d){
   bas("#isltr tbody",on); bas("#isltrArka tbody",arkaRows);
 }
 function basRejim(d){
-  // rejim rozeti: ayni /api/filo cevabindaki en guncel sol_chg_h1 kaydi
+  const e=document.getElementById("rejimBadge");
+  // birincil: paylasimli cache olcumu (deger + yas); 45 dk ustu bayat=gri/soluk
+  const r=d.rejim;
+  if(r&&r.sol_h1!=null&&r.yas_sec!=null){
+    const dk=Math.round(r.yas_sec/60);
+    const bayat=r.yas_sec>45*60;
+    e.textContent=`rejim sol_h1 ${f(r.sol_h1,2)} · ${dk} dk`;
+    e.className="badge"+(bayat?" bayat":(r.sol_h1>0?" ok":""));
+    return;
+  }
+  // yedek: islem kayitlarindaki en guncel sol_chg_h1 etiketi (olcum yasi bilinmez)
   let rj=null,rt=0;
   for(const m of MOTORLAR)for(const t of d[m.id].trades||[])
     if(t.sol_chg_h1!=null&&(t.ts||0)>=rt){rt=t.ts||0;rj=t.sol_chg_h1;}
-  const e=document.getElementById("rejimBadge");
   if(rj==null){e.textContent="rejim sol_h1: -";e.className="badge";return;}
   e.textContent=`rejim sol_h1 ${f(rj,2)}`;
   e.className="badge"+(rj>0?" ok":"");

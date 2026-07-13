@@ -177,6 +177,14 @@ def sol_chg_h1(client: httpx.Client) -> float | None:
     return val
 
 
+def sol_h1_son_olcum() -> tuple[float | None, float]:
+    """Cache'teki (deger, fetch_ts) cifti; fetch TETIKLEMEZ (panel rozet yasi).
+    Olcum yoksa (None, 0.0). Motor davranisina ve TTL'e sifir etki."""
+    with _sol_h1_lock:
+        ts, val = _sol_h1_paylasimli
+    return val, ts
+
+
 def _data_dir() -> Path:
     # İzolasyon/test için override edilebilir; gerçek çalışmada "data".
     return Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
