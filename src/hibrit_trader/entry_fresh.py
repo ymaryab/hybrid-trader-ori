@@ -223,6 +223,31 @@ def rejim_reject_kaydet(cands, motor: str, sol_h1: float | None) -> None:
         log.debug("rejim_reject kaydi hatasi", exc_info=True)
 
 
+def bant_reject_kaydet(pair, motor: str, sol_h1: float | None) -> None:
+    """h1 bant kacinmasi (orn. v7 20-40) adayi eledi: gorunur olcum satiri.
+
+    Recheck kuyruguna girmez; dedup cagiran motorun sorumlulugudur.
+    sol_h1 son olcumden gelir (fetch yok), None olabilir.
+    """
+    try:
+        _rejects_yaz({
+            "type": "reject",
+            "reason": "h1_bant_skip",
+            "engine": motor,
+            "pair": pair.name,
+            "chain": pair.chain,
+            "pool_address": pair.pool_address,
+            "token_address": pair.token_address,
+            "liquidity_usd": round(getattr(pair, "liquidity_usd", 0.0), 2),
+            "chg_m5": round(getattr(pair, "chg_m5", 0.0), 2),
+            "chg_h1": round(getattr(pair, "chg_h1", 0.0), 2),
+            "price_usd": float(getattr(pair, "price_usd", 0.0) or 0.0),
+            "sol_chg_h1": sol_h1,
+        })
+    except Exception:
+        log.debug("h1_bant_skip kaydi hatasi", exc_info=True)
+
+
 class HuniSayac:
     """Gunluk giris-filtre hunisi: aday-yoklugu (plato) gunlerini olcer.
 

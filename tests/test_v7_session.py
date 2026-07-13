@@ -74,9 +74,9 @@ def test_entry_rejects_h1_below_10(v7_data_dir, monkeypatch):
 def test_entry_golge_rules_preserved(v7_data_dir, monkeypatch):
     eng = V7Engine(_settings())
     assert _enter(eng, monkeypatch, _pair(liq=99_000)) == []          # liq >= 100k
-    assert _enter(eng, monkeypatch, _pair(), sol_h1=-0.5) == []       # rejim < 0.5
-    assert _enter(eng, monkeypatch, _pair(), sol_h1=0.4) == []        # V-final: 0..0.4 bandi da kapali
-    assert len(_enter(eng, monkeypatch, _pair(h1=45.0, m5=-5.0), sol_h1=0.5)) == 1  # esik dahil, m5 sarti yok
+    assert _enter(eng, monkeypatch, _pair(), sol_h1=-0.5) == []       # rejim negatif kapali
+    assert _enter(eng, monkeypatch, _pair(), sol_h1=0.34) == []       # cift ayar: 0.35 alti kapali
+    assert len(_enter(eng, monkeypatch, _pair(h1=45.0, m5=-5.0), sol_h1=0.35)) == 1  # esik dahil, m5 sarti yok
 
 
 def test_rejim_kapaliyken_reject_kaydi(v7_data_dir, monkeypatch):
@@ -95,9 +95,82 @@ def test_rejim_kapaliyken_reject_kaydi(v7_data_dir, monkeypatch):
 def test_candidates_sorted_highest_h1_first(v7_data_dir, monkeypatch):
     eng = V7Engine(_settings())
     low = _pair(pool="PL", token="TL", h1=12.0)
-    high = _pair(pool="PH", token="TH", h1=40.0)
+    high = _pair(pool="PH", token="TH", h1=45.0)
     positions = _enter(eng, monkeypatch, [low, high])
     assert positions[0]["pool_address"] == "PH"
+
+
+# ---- 13 Tem cift ayar: rejim 0.35 + h1 20-40 bant kacinma ---------------------------
+
+def test_cift_ayar_varsayilanlar():
+    assert v7.SOL_H1_MIN == 0.35
+    assert v7.H1_SKIP_LO == 20.0
+    assert v7.H1_SKIP_HI == 40.0
+
+
+def test_rejim_sinir_035_kabul_034_red_none_kapali(v7_data_dir, monkeypatch):
+    assert _enter(V7Engine(_settings()), monkeypatch, _pair(), sol_h1=0.34) == []
+    assert _enter(V7Engine(_settings()), monkeypatch, _pair(), sol_h1=None) == []  # fail-closed
+    assert len(_enter(V7Engine(_settings()), monkeypatch, _pair(), sol_h1=0.35)) == 1
+
+
+def test_h1_bant_sinirlari(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    _enter(eng, monkeypatch, [
+        _pair(pool="P199", token="T199", h1=19.9),
+        _pair(pool="P20", token="T20", h1=20.0),
+        _pair(pool="P40", token="T40", h1=40.0),
+        _pair(pool="P401", token="T401", h1=40.1),
+    ])
+    pools = {p["pool_address"] for p in eng.positions}
+    assert pools == {"P199", "P401"}  # 19.9 ve 40.1 kabul, 20 ve 40 red
+
+
+def test_h1_bant_skip_kaydi_ve_dedup(v7_data_dir, monkeypatch):
+    from hibrit_trader.momentum_session import REJECTS_FILE
+    eng = V7Engine(_settings())
+    monkeypatch.setattr(v7, "sol_h1_son_olcum", lambda: (0.42, time.time()))
+    assert _enter(eng, monkeypatch, _pair(h1=30.0)) == []
+    rows = [json.loads(x) for x in
+            (v7_data_dir / REJECTS_FILE).read_text().splitlines()]
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["reason"] == "h1_bant_skip"
+    assert r["engine"] == "V7"
+    assert r["chg_h1"] == 30.0
+    assert r["sol_chg_h1"] == 0.42
+    assert r["pool_address"] == "ZP1"
+    # 30dk dedup: ayni havuz ikinci tickte tekrar yazilmaz
+    assert _enter(eng, monkeypatch, _pair(h1=25.0)) == []
+    rows = (v7_data_dir / REJECTS_FILE).read_text().splitlines()
+    assert len(rows) == 1
+
+
+def test_h1_bant_lo_esit_hi_kacinma_kapali(v7_data_dir, monkeypatch):
+    monkeypatch.setattr(v7, "H1_SKIP_LO", 20.0)
+    monkeypatch.setattr(v7, "H1_SKIP_HI", 20.0)
+    assert len(_enter(V7Engine(_settings()), monkeypatch, _pair(h1=30.0))) == 1
+
+
+def test_cift_ayar_env_override(monkeypatch):
+    import importlib
+    monkeypatch.setenv("V7_SOL_H1_MIN", "0.5")
+    monkeypatch.setenv("V7_H1_SKIP_LO", "25")
+    monkeypatch.setenv("V7_H1_SKIP_HI", "35")
+    try:
+        importlib.reload(v7)
+        assert v7.SOL_H1_MIN == 0.5
+        assert v7.H1_SKIP_LO == 25.0 and v7.H1_SKIP_HI == 35.0
+        assert v7.h1_bant_atla(30.0) is True
+        assert v7.h1_bant_atla(24.9) is False
+        assert v7.h1_bant_atla(35.1) is False
+    finally:
+        monkeypatch.delenv("V7_SOL_H1_MIN")
+        monkeypatch.delenv("V7_H1_SKIP_LO")
+        monkeypatch.delenv("V7_H1_SKIP_HI")
+        importlib.reload(v7)
+    assert v7.SOL_H1_MIN == 0.35
+    assert v7.H1_SKIP_LO == 20.0 and v7.H1_SKIP_HI == 40.0
 
 
 def test_entry_keeps_cooldown(v7_data_dir, monkeypatch):

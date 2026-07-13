@@ -11,11 +11,14 @@ V7 = V6'NIN BİREBİR KOPYASI + TEK fark (2026-07-04 v6 arındırma analizi):
           derinliğinde (BABYANSEM -35.8, Pauly -21.5); -%10 eşiği gölgenin
           en derin kurtarması olan -8.67'nin altında kalır, kurtarma
           bölgesine basmaz. v6 retrosu: -%10 freni +$28, sıfır ters dönen tp.
-  GİRİŞ : liq >= $100k VE 10 <= chg_h1 <= 50 (v6 ile birebir).
+  GİRİŞ : liq >= $100k VE 10 <= chg_h1 <= 50; 13 Tem cift ayar: h1 20-40
+          bandi atlanir (V6+V7 retrosu n17 -$85), 10-20 ve 40-50 gecerli.
+          Atlanan aday h1_bant_skip etiketiyle rejects'e yazilir.
   ÇIKIŞ : tp_2 / stop_felaket (-%10) / stop_gec (30dk sabır sonrası -%2) /
           timeout_60. sol_chg_h1 kaydı v6 ile aynı.
-  REJİM : V-serisi final (05 Tem): eşik 0 yerine 0.5; sol_h1 < 0.5 iken
-          giriş yok (0-0.4 bandı ortak kaybettiren parametreydi).
+  REJİM : V-serisi final (05 Tem): eşik 0 yerine 0.5; 13 Tem cift ayar:
+          esik 0.35'e indi (bos zaman bolusumu: bos vaktin %92-94'u rejim
+          kapali kaynakli). Env: V7_SOL_H1_MIN.
   GİRİŞ TAZE-FİYAT TEYİDİ (09 Tem gece): alım kaydedilmeden hemen önce fiyat
           tazelenir (fast<=3s -> tek fetch -> tarama, fail-open). Taze fiyat
           taramanın +%2'den fazla üstündeyse giriş iptal (taze_fiyat_kacti).
@@ -50,6 +53,7 @@ from hibrit_trader.broker import ExecOrder, PaperExecBroker, make_exec_broker
 from hibrit_trader.config import GAS_COST_USD
 from hibrit_trader.entry_fresh import (
     HuniSayac,
+    bant_reject_kaydet,
     rejim_reject_kaydet,
     safety_reject_kaydet,
     taze_teyit,
@@ -62,6 +66,7 @@ from hibrit_trader.momentum_session import (
     _data_dir,
     _mom_slippage,
     sol_chg_h1,
+    sol_h1_son_olcum,
 )
 from hibrit_trader.paper import _now_iso, new_trade_id
 from hibrit_trader.price_sanity import guard_price
@@ -81,7 +86,12 @@ GRACE_SEC = 30 * 60     # ilk 30dk aşağıda stop yok (sabır)
 LATE_STOP_PCT = -2.0    # 30dk sonrası: girişin -%2 altı SAT
 DISASTER_PCT = float(os.getenv("V7_DISASTER_PCT", "-10"))  # TEK fark: her an mutlak taban
 CEILING_SEC = 60 * 60   # 60dk tavan
-SOL_H1_MIN = float(os.getenv("V7_SOL_H1_MIN", "0.5"))  # V-final 05 Tem: sol_h1 0-0.4 bandi ortak kaybettirendi
+SOL_H1_MIN = float(os.getenv("V7_SOL_H1_MIN", "0.35"))  # 13 Tem cift ayar: 0.5 -> 0.35 (bos zaman bolusumu olcumu)
+# h1 bant kacinma (13 Tem cift ayar): 20-40 bandi V6+V7 retrosunda negatif
+# (n17 -$85); 10-20 ve 40-50 gecerli kalir. LO=HI yapilirsa kacinma kapanir.
+H1_SKIP_LO = float(os.getenv("V7_H1_SKIP_LO", "20"))
+H1_SKIP_HI = float(os.getenv("V7_H1_SKIP_HI", "40"))
+BANT_SKIP_DEDUP_SEC = 30 * 60
 DAILY_LOSS_LIMIT_USD = float(os.getenv("MOM_DAILY_LOSS_LIMIT_USD", "0"))  # 0 = kapali (M1 ile ayni env)
 COOLDOWN_LOSS_SEC = float(os.getenv("MOM_COOLDOWN_STOP_MIN", "60")) * 60
 COOLDOWN_EXIT_SEC = float(os.getenv("MOM_COOLDOWN_EXIT_MIN", "15")) * 60
@@ -100,6 +110,11 @@ STATE_FILE = "v7_state.json"
 TRADES_FILE = "v7_trades.jsonl"
 
 
+def h1_bant_atla(chg_h1: float) -> bool:
+    """h1 kacinma bandinda mi? LO=HI (veya LO>HI) ise kacinma kapali."""
+    return H1_SKIP_LO < H1_SKIP_HI and H1_SKIP_LO <= chg_h1 <= H1_SKIP_HI
+
+
 class V7Engine:
     """Sanal senaryo motoru. Kendi dosyaları, diğer motorlara sıfır dokunuş."""
 
@@ -112,6 +127,7 @@ class V7Engine:
         self.created_ts: float = time.time()
         self._aggressive = os.getenv("PAPER_AGGRESSIVE", "0") == "1"
         self._cooldown_until: dict[str, float] = {}
+        self._bant_skip_ts: dict[str, float] = {}   # havuz -> son h1_bant_skip kaydi
         self._regime_logged = False
         self._kill_logged = False
         self._day_key: str = ""                     # UTC gun anahtari (YYYY-MM-DD)
@@ -283,9 +299,11 @@ class V7Engine:
             return
         log.warning(
             "V7 senaryo başladı (v6 + fren) — sanal $%.2f · slot %d · "
-            "giriş liq>=$%.0f + h1 %.0f..%.0f · çıkış tp+%.0f%% / fren %%%.0f / "
+            "giriş liq>=$%.0f + h1 %.0f..%.0f (skip %.0f..%.0f) · rejim>=%.2f · "
+            "çıkış tp+%.0f%% / fren %%%.0f / "
             "%dm sabır sonrası stop%%%.0f / tavan %dm",
             self.balance, MAX_SLOTS, LIQ_MIN_USD, CHG_H1_MIN, CHG_H1_MAX,
+            H1_SKIP_LO, H1_SKIP_HI, SOL_H1_MIN,
             TP_PCT, DISASTER_PCT, GRACE_SEC // 60, LATE_STOP_PCT, CEILING_SEC // 60,
         )
         self._save()
@@ -348,8 +366,12 @@ class V7Engine:
             if pr.liquidity_usd < LIQ_MIN_USD:
                 continue
             liq_ok += 1
-            if not (CHG_H1_MIN <= getattr(pr, "chg_h1", 0.0) <= CHG_H1_MAX):
+            h1 = getattr(pr, "chg_h1", 0.0)
+            if not (CHG_H1_MIN <= h1 <= CHG_H1_MAX):
                 continue  # v6 bandı: dikey pump tepesi dışarıda
+            if h1_bant_atla(h1):
+                self._bant_skip_kaydet(pr, now)
+                continue
             cands.append(pr)
         cands.sort(key=lambda pr: pr.chg_h1, reverse=True)  # en güçlü trend önce
         self._huni.ekle(len(pairs), liq_ok, len(cands), now)
@@ -391,6 +413,20 @@ class V7Engine:
                 empty -= 1
                 held.add(pair.pool_address)
                 held.add(pair.token_address)
+
+    def _bant_skip_kaydet(self, pair, now: float) -> None:
+        """h1 kacinma bandi elemesini olcum satiri olarak yaz (30dk havuz dedup)."""
+        son = self._bant_skip_ts.get(pair.pool_address, 0.0)
+        if now - son < BANT_SKIP_DEDUP_SEC:
+            return
+        self._bant_skip_ts[pair.pool_address] = now
+        if len(self._bant_skip_ts) > 200:  # sinirsiz buyume freni
+            esik = now - BANT_SKIP_DEDUP_SEC
+            self._bant_skip_ts = {
+                p: t for p, t in self._bant_skip_ts.items() if t >= esik
+            }
+        sol_h1, _ = sol_h1_son_olcum()  # fetch yok, son paylasimli olcum
+        bant_reject_kaydet(pair, "V7", sol_h1)
 
     def _open_position(self, pair, usd: float, sol_h1: float | None = None,
                        client: httpx.Client | None = None) -> bool:

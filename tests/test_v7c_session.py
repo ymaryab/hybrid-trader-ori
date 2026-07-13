@@ -91,7 +91,9 @@ def test_v7_sabitleri_birebir(v7c_data_dir):
     assert v7c.LATE_STOP_PCT == v7.LATE_STOP_PCT == -2.0
     assert v7c.DISASTER_PCT == v7.DISASTER_PCT == -10.0
     assert v7c.CEILING_SEC == v7.CEILING_SEC == 60 * 60
-    assert v7c.SOL_H1_MIN == v7.SOL_H1_MIN == 0.5
+    # 13 Tem cift ayar: v7 esigi 0.35'e indi, v7c 0.5'te kaldi (kendi esigi)
+    assert v7c.SOL_H1_MIN == 0.5
+    assert v7.SOL_H1_MIN == 0.35
     assert v7c.MAX_SLOTS == v7.MAX_SLOTS == 5
     assert v7c.START_BALANCE == 1000.0
     # farklar: evren/giris likidite esigi + majore uygun h1 bandi
