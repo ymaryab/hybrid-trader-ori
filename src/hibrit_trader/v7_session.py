@@ -588,6 +588,12 @@ class V7Engine:
             row["signature"] = canli.tx_id  # denetim defteri tx imzasi kolonu
         if pos.get("tx_al"):
             row["signature_al"] = pos["tx_al"]
+        cm = float(pos.get("canli_miktar") or 0.0)
+        if cm > 0 and canli is not None and canli.tx_id:
+            # gercek cuzdan pnl: canli fill fiyatlari x zincirdeki miktar
+            # (paper boyut degil); panel SON ISLEMLER canli satiri bunu basar
+            row["canli_miktar"] = cm
+            row["canli_pnl_usd"] = round((eff_price - pos["entry_price"]) * cm, 4)
         self._append_trade(row)
         self.balance += proceeds
         self.realized_pnl += pnl

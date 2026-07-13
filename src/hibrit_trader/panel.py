@@ -1476,6 +1476,11 @@ _MOMENTUM_HTML = """<!doctype html>
  .ex-to{background:#21262d;color:#8b949e}
  .ex-amber{background:rgba(210,153,34,.18);color:#d29922}
  tr.loss td{background:rgba(248,81,73,.06)}
+ tr.canli td{background:rgba(227,179,65,.07)}
+ tr.canli td:first-child{border-left:3px solid #e3b341}
+ .livechip{display:inline-block;margin-left:4px;padding:0 6px;border-radius:8px;
+   background:#e3b341;color:#1c2128;font-size:10px;font-weight:bold;letter-spacing:1px}
+ .txlink{color:#58a6ff;text-decoration:none;font-size:12px}
  #killBant{background:#f85149;color:#fff;font-weight:bold;text-align:center;
    padding:10px;margin-bottom:14px;border-radius:6px;letter-spacing:1px}
  #killBtn{width:100%;margin-top:8px;padding:7px 0;font:bold 12px monospace;
@@ -1501,14 +1506,14 @@ _MOMENTUM_HTML = """<!doctype html>
 <h2>SON İŞLEMLER · aktif filo</h2>
 <div class="tablewrap"><table id="isltr"><thead><tr><th>bot</th><th>pair</th><th>exit</th>
 <th>pnl $</th><th>pnl%</th><th>mfe/mae</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th>
-<th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table></div>
+<th>giriş</th><th>çıkış</th><th>hold sn</th><th>kapanış</th><th>tx</th></tr></thead><tbody></tbody></table></div>
 <details id="arkaBox" style="margin-top:28px;border-top:1px solid #30363d;padding-top:8px">
 <summary style="cursor:pointer;color:#8b949e"><b>ARKA PLAN DENEYLERİ · çalışır durumda (x1) · tıkla aç</b></summary>
 <div id="arkaIc"><!--ARKA-->
 <h2>SON İŞLEMLER · x1</h2>
 <div class="tablewrap"><table id="isltrArka"><thead><tr><th>bot</th><th>pair</th><th>exit</th>
 <th>pnl $</th><th>pnl%</th><th>mfe/mae</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th>
-<th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table></div>
+<th>giriş</th><th>çıkış</th><th>hold sn</th><th>kapanış</th><th>tx</th></tr></thead><tbody></tbody></table></div>
 </div>
 </details>
 <details id="arsivBox" style="margin-top:28px;border-top:1px solid #30363d;padding-top:8px">
@@ -2113,17 +2118,28 @@ function basIslemler(d){
   // ayni /api/filo cevabindan basilir, veri uretimi degismez
   const on=[],arkaRows=[];
   for(const m of MOTORLAR)for(const t of d[m.id].trades||[])(m.arka?arkaRows:on).push([m,t]);
+  // v7 CANLI satirlari: YALNIZ zincirde imzasi olan gercek islemler tabloya
+  // girer; v7'nin paper/kilit-kapali kayitlari karismaz (motor gizli).
+  if(!MOTORLAR.some(m=>m.id==="v7"))
+    for(const t of ((d.v7||{}).trades||[]))if(t.signature)
+      on.push([{ad:"V7",renk:"#e3b341",canli:true},t]);
+  const fp=x=>x==null?"-":String(parseFloat(Number(x).toPrecision(5)));
   const bas=(sec,rows)=>{
     rows.sort((a,b)=>(b[1].ts||0)-(a[1].ts||0));
-    document.querySelector(sec).innerHTML=rows.slice(0,40).map(([m,t])=>
-      `<tr class="${t.pnl_usd<0?"loss":""}">`+
-      `<td><span class="dot" style="background:${m.renk}"></span> ${m.ad}</td>`+
+    document.querySelector(sec).innerHTML=rows.slice(0,40).map(([m,t])=>{
+      const cn=!!(m.canli&&t.signature);
+      const pnl=cn?t.canli_pnl_usd:t.pnl_usd;  // canli satirda gercek cuzdan pnl
+      const sig=t.signature||"";
+      const tx=sig?`<a class="txlink" href="https://solscan.io/tx/${sig}" target="_blank" rel="noopener" title="${sig}">${sig.slice(0,4)}…${sig.slice(-4)}</a>`:"";
+      return `<tr class="${(pnl<0?"loss ":"")+(cn?"canli":"")}">`+
+      `<td><span class="dot" style="background:${m.renk}"></span> ${m.ad}${cn?' <span class="livechip">CANLI</span>':""}</td>`+
       `<td>${t.pair}</td><td><span class="exchip ${exitSinif(t.exit_reason)}">${t.exit_reason}</span></td>`+
-      `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
+      `<td class="${cls(pnl)}">${f(pnl)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
       `<td title="mfe ${f(t.mfe_pct,1)}% / mae ${f(t.mae_pct,1)}%">${mfeMaeBar(t.mfe_pct,t.mae_pct)}</td>`+
       `<td>${f(t.chg_h1,1)}</td><td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
-      `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")
-      ||"<tr><td colspan=11>henüz yok</td></tr>";
+      `<td>${fp(t.entry_price)}</td><td>${fp(t.exit_price)}</td>`+
+      `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td><td>${tx}</td></tr>`;}).join("")
+      ||"<tr><td colspan=14>henüz yok</td></tr>";
   };
   bas("#isltr tbody",on); bas("#isltrArka tbody",arkaRows);
 }

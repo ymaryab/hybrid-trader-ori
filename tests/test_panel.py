@@ -297,6 +297,22 @@ def test_momentum_mod_rozeti_ve_canli_karti(client, monkeypatch, tmp_path):
     assert 'id="canliPoz"' not in h
 
 
+def test_momentum_son_islemler_canli_kolonlari(client, monkeypatch):
+    # SON ISLEMLER: giris/cikis/tx kolonlari + v7 canli satir mekanigi.
+    # Canli satirlar YALNIZ imzali (zincir) kayitlardan uretilir; v7 paper
+    # kayitlari tabloya karismaz (motor gizli, JS imza filtresi).
+    monkeypatch.delenv("BROKER_MODE", raising=False)
+    h = client.get("/momentum").text
+    assert "<th>giriş</th><th>çıkış</th>" in h
+    assert "<th>tx</th>" in h
+    assert h.count("<th>tx</th>") == 2  # aktif filo + x1 tablosu ayni semada
+    assert "solscan.io/tx/" in h
+    assert "livechip" in h and "tr.canli td" in h
+    assert "if(t.signature)" in h  # imzasiz v7 kaydi tabloya girmez
+    assert 'm.id==="v7"' in h  # v7 gorunur olursa cift satir olmaz korumasi
+    assert "canli_pnl_usd" in h  # canli satirda pnl gercek cuzdan bazli
+
+
 def test_api_filo_canli_blogu(client, monkeypatch, tmp_path):
     monkeypatch.setenv("MOMENTUM_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("CANLI_BAZ_USD", raising=False)

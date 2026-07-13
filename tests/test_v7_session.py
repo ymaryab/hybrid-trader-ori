@@ -292,6 +292,8 @@ def test_exec_varsayilan_paper_ve_muhasebe_ayni(v7_data_dir, monkeypatch):
     _tick_price(eng, pos, pos["entry_price"] * 1.05, pos["opened_ts"] + 60, monkeypatch)
     t = _last(v7_data_dir)
     assert "signature" not in t and "signature_al" not in t
+    # paper kayitta canli kolonlari YOK: panel canli satiri imzasiz kayittan uretmez
+    assert "canli_pnl_usd" not in t and "canli_miktar" not in t
 
 
 def test_exec_dryrun_hatasi_yarisi_etkilemez(v7_data_dir, monkeypatch):
@@ -352,6 +354,9 @@ def test_exec_live_biletli_fill_satis_gercek_miktari_kullanir(v7_data_dir, monke
     # PnL paper boyutta hesaplanir (yaris etkilenmez)
     assert t["pnl_usd"] == pytest.approx(
         (100.0 / 1.05) * 1.20 - 100.0 - 0.002, abs=0.01)
+    # gercek cuzdan pnl ayri kolonlarda: fill fiyat farki x zincir miktari
+    assert t["canli_miktar"] == 23.8
+    assert t["canli_pnl_usd"] == pytest.approx((1.20 - 1.05) * 23.8, abs=1e-6)
 
 
 def test_exec_live_satis_basarisiz_pozisyon_acik_kalir(v7_data_dir, monkeypatch):
