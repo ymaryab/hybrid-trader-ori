@@ -109,11 +109,12 @@ SOL_H1_CACHE_SEC = 3600
 _sol_h1_lock = threading.Lock()
 _sol_h1_paylasimli: tuple[float, float | None] = (0.0, None)
 
-# ---- Rejim gecis bildirimi: 0.5 esigi kesilince Telegram (paylasimli cache'ten) --
+# ---- Rejim gecis bildirimi: esik kesilince Telegram (paylasimli cache'ten) ------
 # Ilk gozlem baz alinir (restart bildirim uretmez); durum degisince BIR kez,
 # iki bildirim arasi en az 10dk. Bildirim engellenirse durum GUNCELLENMEZ,
 # esik ustu kalirsa sonraki taze ornekte gonderilir (gecikir, kaybolmaz).
-REJIM_BILDIRIM_ESIK = 0.5
+# 13 Tem cift ayar: v7 kapisiyla hizali (V7_SOL_H1_MIN varsayilani 0.35).
+REJIM_BILDIRIM_ESIK = float(os.getenv("REJIM_BILDIRIM_ESIK", "0.35"))
 REJIM_BILDIRIM_MIN_ARALIK_SEC = 600.0
 _rejim_bildirim_lock = threading.Lock()
 _rejim_bildirim_durum: bool | None = None

@@ -298,10 +298,10 @@ def test_rejim_bildirim_yukari_kesis_metni(monkeypatch):
     ms._rejim_gecis_bildir(0.2, now)
     ms._rejim_gecis_bildir(0.63, now + 1)
     assert g == ["Rejim ACILDI: sol_h1 0.63"]
-    # esik dahil: 0.5 acik sayilir (motor kapisiyla ayni yon)
-    ms._rejim_gecis_bildir(0.4, now + 700)
-    ms._rejim_gecis_bildir(0.5, now + 1400)
-    assert g[-1] == "Rejim ACILDI: sol_h1 0.50"
+    # esik dahil: 0.35 acik sayilir (v7 kapisiyla ayni yon, 13 Tem cift ayar)
+    ms._rejim_gecis_bildir(0.34, now + 700)
+    ms._rejim_gecis_bildir(0.35, now + 1400)
+    assert g[-1] == "Rejim ACILDI: sol_h1 0.35"
 
 
 def test_rejim_bildirim_ayni_durumda_tekrar_yok(monkeypatch):
