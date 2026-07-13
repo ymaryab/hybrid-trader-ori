@@ -152,6 +152,36 @@ def test_remove_pool_drops_cached_price():
     assert feed.get_price("EXTRA1") is None
 
 
+def test_remove_pool_refcount_ortak_havuz_koru():
+    # 13 Tem T3 otopsisi: v6 ve v7 ayni havuzda pozisyondayken v6 kapatinca
+    # v7'nin fast gozu kor kaliyordu. Sayacli izleme: ilk remove fiyati
+    # SILMEZ, son pozisyon kapaninca siler.
+    feed = FastPriceFeed()
+    ts = time.time()
+    feed.add_pool("ORTAK")  # v6 pozisyon acti
+    feed.add_pool("ORTAK")  # v7 ayni havuzda pozisyon acti
+    feed._prices["ORTAK"] = (5.0, ts)
+    feed.remove_pool("ORTAK")  # v6 kapatti
+    assert feed.get_price("ORTAK") == (5.0, ts)  # v7'nin gozu acik
+    assert "ORTAK" in feed._watched_pools()  # feed izlemeye devam eder
+    feed.remove_pool("ORTAK")  # v7 de kapatti: son pozisyon
+    assert feed.get_price("ORTAK") is None
+    assert "ORTAK" not in feed._watched_pools()
+
+
+def test_remove_pool_fazla_cagri_zararsiz():
+    # sayac eksiye dusmez: bilinmeyen/fazla remove sessiz gecer
+    feed = FastPriceFeed()
+    feed.remove_pool("YOK")
+    feed.add_pool("E1")
+    feed.remove_pool("E1")
+    feed.remove_pool("E1")
+    feed.add_pool("E1")  # tekrar acilis: sayac 1'den baslar
+    assert "E1" in feed._watched_pools()
+    feed.remove_pool("E1")
+    assert "E1" not in feed._watched_pools()
+
+
 def test_poll_once_chunks_over_30_pools():
     feed = FastPriceFeed()
     feed._pools = [f"P{i}" for i in range(30)]

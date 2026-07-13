@@ -42,7 +42,10 @@ class FastPriceFeed:
         self._lock = threading.Lock()
         self._prices: dict[str, tuple[float, float]] = {}
         self._pools: list[str] = []
-        self._extra_pools: set[str] = set()  # dinamik: acik pozisyon havuzlari (v6 vb)
+        # dinamik: acik pozisyon havuzlari, pool -> pozisyon sayaci.
+        # 13 Tem T3 otopsisi: duz set iken ortak havuzda ilk kapatan motor
+        # digerlerinin fast gozunu kor ediyordu (refcount tamiri).
+        self._extra_pools: dict[str, int] = {}
         self._pools_ts: float = 0.0
         self._thread: threading.Thread | None = None
         self._backoff: float = 0.0
@@ -52,12 +55,17 @@ class FastPriceFeed:
         """Evren disi bir havuzu gecici izlemeye al (pozisyon acilinca)."""
         if pool_address:
             with self._lock:
-                self._extra_pools.add(pool_address)
+                self._extra_pools[pool_address] = self._extra_pools.get(pool_address, 0) + 1
 
     def remove_pool(self, pool_address: str) -> None:
-        """Gecici izlemeyi birak (pozisyon kapaninca)."""
+        """Gecici izlemeyi birak (pozisyon kapaninca). Fiyat kaydi ancak
+        havuzu izleyen SON pozisyon kapaninca silinir (sayac sifir)."""
         with self._lock:
-            self._extra_pools.discard(pool_address)
+            kalan = self._extra_pools.get(pool_address, 0) - 1
+            if kalan > 0:
+                self._extra_pools[pool_address] = kalan
+                return
+            self._extra_pools.pop(pool_address, None)
             self._prices.pop(pool_address, None)
 
     def start(self) -> None:
@@ -94,7 +102,7 @@ class FastPriceFeed:
 
     def _watched_pools(self) -> list[str]:
         with self._lock:
-            extra = sorted(self._extra_pools - set(self._pools))
+            extra = sorted(set(self._extra_pools) - set(self._pools))
         return self._pools + extra
 
     def _poll_once(self, client: httpx.Client) -> None:
