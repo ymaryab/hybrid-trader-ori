@@ -55,6 +55,7 @@ from hibrit_trader.entry_fresh import (
 )
 from hibrit_trader.fast_price import get_feed
 from hibrit_trader.killswitch import is_active as kill_is_active
+from hibrit_trader.killswitch import notify
 from hibrit_trader.live_sim import fetch_pool_snapshot
 from hibrit_trader.momentum_session import (
     SCAN_INTERVAL_SEC,
@@ -484,6 +485,8 @@ class V7Engine:
         log.warning("V7 BUY (mutabakat) %s $%.2f @ %.8g: belirsiz tx zincirde "
                     "gerceklesti, pozisyon benimsendi (tx %s)",
                     aday["pair"], usd, entry, detay["tx_id"])
+        notify("V7 ALIM (mutabakat): %s $%.2f @ %.8g — belirsiz tx zincirde gerceklesti"
+               % (aday["pair"], usd, entry))
 
     # ---- Rejim: SOL chg_h1 motorlar arasi paylasimli cache'ten ------------------
     def _sol_chg_h1(self, client: httpx.Client) -> float | None:
@@ -660,6 +663,8 @@ class V7Engine:
             feed.add_pool(pos["pool_address"])
         log.warning("V7 BUY %s $%.2f @ %.8g (h1 %.1f%%, liq $%.0f)",
                     pair.name, usd, eff_price, pair.chg_h1, pair.liquidity_usd)
+        notify("V7 ALIM: %s $%.2f @ %.8g (h1 %%%.1f, liq $%.0f)"
+               % (pair.name, usd, eff_price, pair.chg_h1, pair.liquidity_usd))
         return True
 
     # ---- Çıkış: tp_2 (+%2 üzeri) / stop_gec (120dk sonrası -%2) / timeout_120 ----
@@ -849,3 +854,5 @@ class V7Engine:
             feed.remove_pool(pos["pool_address"])
         log.warning("V7 SELL %s pnl $%.2f (%.2f%%) — %s, hold %.0fs (mfe %.1f%% mae %.1f%%)",
                     pos["pair"], pnl, pnl_pct, reason, hold_sec, pos["mfe_pct"], pos["mae_pct"])
+        notify("V7 SATIM: %s pnl $%.2f (%%%.2f) — %s, hold %.0fdk"
+               % (pos["pair"], pnl, pnl_pct, reason, hold_sec / 60))
