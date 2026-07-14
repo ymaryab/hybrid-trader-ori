@@ -643,6 +643,8 @@ def test_live_execute_sol_swap_al_ve_sat(data_dir, monkeypatch):
     monkeypatch.setattr(broker, "_cuzdan_yukle",
                         lambda mode: SimpleNamespace(pubkey=lambda: "PUB"))
     monkeypatch.setattr(br, "_decimals", lambda mint: 9)
+    monkeypatch.setattr(broker, "_zincir_dolum", lambda *a, **k: None)
+    monkeypatch.setattr(broker, "_zincir_token_bakiye", lambda *a, **k: None)
     cagri = []
 
     def sahte_al(http, rpc, kp, mint, usd, bps):
@@ -684,6 +686,8 @@ def test_live_bilet_sadece_alimi_boyutlar(data_dir, monkeypatch):
     monkeypatch.setattr(broker, "_cuzdan_yukle",
                         lambda mode: SimpleNamespace(pubkey=lambda: "PUB"))
     monkeypatch.setattr(br, "_decimals", lambda mint: 9)
+    monkeypatch.setattr(broker, "_zincir_dolum", lambda *a, **k: None)
+    monkeypatch.setattr(broker, "_zincir_token_bakiye", lambda *a, **k: None)
     cagri = []
 
     def sahte_al(http, rpc, kp, mint, usd, bps):
@@ -724,3 +728,153 @@ def test_live_ticket_pct_varsayilan_ve_bozuk(monkeypatch):
     assert broker._live_ticket_pct() == 25.0
     monkeypatch.setenv("LIVE_TICKET_PCT", "10")
     assert broker._live_ticket_pct() == 10.0
+
+
+# ---- zincir gercegi (14 Tem olayi: dolum kaydi ve satis miktari) ------------------------
+
+class RpcFake:
+    """Tek amacli RPC istemcisi: method -> hazir cevap ya da Exception."""
+
+    def __init__(self, cevaplar):
+        self.cevaplar = cevaplar
+
+    def post(self, url, json=None, timeout=None):
+        c = self.cevaplar[json["method"]]
+        if isinstance(c, Exception):
+            raise c
+        return FakeResponse(c)
+
+
+def _tx_sonucu(pre, post):
+    def _bals(cift):
+        return [{"owner": o, "mint": TOK,
+                 "uiTokenAmount": {"uiAmount": mik}} for o, mik in cift]
+    return {"result": {"meta": {"preTokenBalances": _bals(pre),
+                                "postTokenBalances": _bals(post)}}}
+
+
+def test_satis_miktari_karari():
+    assert broker._satis_miktari(100.0, None) == 100.0  # RPC okunamadi: kayit
+    assert broker._satis_miktari(100.0, 0.0) is None    # zincirde yok: red
+    assert broker._satis_miktari(100.0, 60.0) == 60.0   # eksik: zincire in
+    assert broker._satis_miktari(100.0, 150.0) == 100.0 # fazla: kayit kadar
+
+
+def test_zincir_dolum_eksik_ve_kirinti_sismez():
+    # cuzdanda onceden 20 kirinti var, tx 464.5 dolum getirdi; baska owner karisir
+    fc = RpcFake({"getTransaction": _tx_sonucu(
+        pre=[("PUB", 20.0), ("BASKA", 5.0)],
+        post=[("PUB", 484.5), ("BASKA", 40.5)])})
+    assert broker._zincir_dolum(fc, "SIG", "PUB", TOK) == pytest.approx(464.5)
+
+
+def test_zincir_dolum_fazla():
+    fc = RpcFake({"getTransaction": _tx_sonucu(pre=[], post=[("PUB", 505.0)])})
+    assert broker._zincir_dolum(fc, "SIG", "PUB", TOK) == pytest.approx(505.0)
+
+
+def test_zincir_dolum_okunamazsa_none():
+    fc = RpcFake({"getTransaction": {"result": None}})
+    assert broker._zincir_dolum(fc, "SIG", "PUB", TOK,
+                                deneme=2, bekleme_sn=0.0) is None
+    fc2 = RpcFake({"getTransaction": RuntimeError("rpc down")})
+    assert broker._zincir_dolum(fc2, "SIG", "PUB", TOK,
+                                deneme=2, bekleme_sn=0.0) is None
+
+
+def test_zincir_token_bakiye_toplam_ve_hata():
+    def _hesap(mik):
+        return {"account": {"data": {"parsed": {"info": {
+            "tokenAmount": {"uiAmount": mik}}}}}}
+    fc = RpcFake({"getTokenAccountsByOwner":
+                  {"result": {"value": [_hesap(30.0), _hesap(12.5)]}}})
+    assert broker._zincir_token_bakiye(fc, "PUB", TOK) == pytest.approx(42.5)
+    fc2 = RpcFake({"getTokenAccountsByOwner": RuntimeError("rpc down")})
+    assert broker._zincir_token_bakiye(fc2, "PUB", TOK) is None
+
+
+def _live_kur(data_dir, monkeypatch):
+    monkeypatch.setattr(broker, "_cuzdan_durum", lambda *a: (400.0, 5.0, 80.0))
+    monkeypatch.setenv("LIVE_UNLOCKED", "1")
+    (data_dir / "LIVE_ONAY").write_text("canli-islem-onayliyorum", encoding="utf-8")
+    _cuzdan_dosyasi(data_dir, monkeypatch)
+    br = make_exec_broker("live", http=FakeClient())
+    monkeypatch.setattr(broker, "_cuzdan_yukle",
+                        lambda mode: SimpleNamespace(pubkey=lambda: "PUB"))
+    monkeypatch.setattr(br, "_decimals", lambda mint: 9)
+    return br
+
+
+def test_live_alim_kaydi_zincir_dolumu(data_dir, monkeypatch):
+    # quote 500 der ama zincir 464.5 doldurdu: kayit 464.5 olmali (eksik dolum)
+    br = _live_kur(data_dir, monkeypatch)
+    monkeypatch.setattr(broker, "_zincir_dolum", lambda *a, **k: 464.5)
+    monkeypatch.setattr(
+        "hibrit_trader.jupiter.swap_sol_to_token",
+        lambda *a: {"signature": "SIGAL", "in_amount": 1_250_000_000,
+                    "out_amount": 500 * 10 ** 9, "cost_usd": 100.0,
+                    "sol_price_usd": 80.0})
+    al = br.execute(ExecOrder(engine="V7", yon="al", token_address=TOK,
+                              usd=100.0, ref_fiyat=0.2))
+    assert al.ok and al.miktar_token == pytest.approx(464.5)
+    assert al.fiyat == pytest.approx(100.0 / 464.5)
+
+
+def test_live_alim_fazla_dolum_da_zincirden(data_dir, monkeypatch):
+    # zincir quote'tan fazla doldurdu: kirinti birakmamak icin kayit 505
+    br = _live_kur(data_dir, monkeypatch)
+    monkeypatch.setattr(broker, "_zincir_dolum", lambda *a, **k: 505.0)
+    monkeypatch.setattr(
+        "hibrit_trader.jupiter.swap_sol_to_token",
+        lambda *a: {"signature": "SIGAL", "in_amount": 1_250_000_000,
+                    "out_amount": 500 * 10 ** 9, "cost_usd": 100.0,
+                    "sol_price_usd": 80.0})
+    al = br.execute(ExecOrder(engine="V7", yon="al", token_address=TOK,
+                              usd=100.0, ref_fiyat=0.2))
+    assert al.ok and al.miktar_token == pytest.approx(505.0)
+
+
+def test_live_alim_dolum_okunamazsa_quote_kalir(data_dir, monkeypatch):
+    br = _live_kur(data_dir, monkeypatch)
+    monkeypatch.setattr(broker, "_zincir_dolum", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "hibrit_trader.jupiter.swap_sol_to_token",
+        lambda *a: {"signature": "SIGAL", "in_amount": 1_250_000_000,
+                    "out_amount": 500 * 10 ** 9, "cost_usd": 100.0,
+                    "sol_price_usd": 80.0})
+    al = br.execute(ExecOrder(engine="V7", yon="al", token_address=TOK,
+                              usd=100.0, ref_fiyat=0.2))
+    assert al.ok and al.miktar_token == pytest.approx(500.0)
+
+
+def test_live_satis_zincire_indirger(data_dir, monkeypatch):
+    # kayit 500 ama zincirde 464.5 var (HBULL senaryosu): satis 464.5 ile gider
+    br = _live_kur(data_dir, monkeypatch)
+    monkeypatch.setattr(broker, "_zincir_token_bakiye", lambda *a, **k: 464.5)
+    cagri = []
+
+    def sahte_sat(http, rpc, kp, mint, amount_raw, bps):
+        cagri.append(amount_raw)
+        return {"signature": "SIGSAT", "in_amount": amount_raw,
+                "out_amount": 1_150_000_000, "proceeds_usd": 92.0,
+                "sol_price_usd": 80.0}
+
+    monkeypatch.setattr("hibrit_trader.jupiter.swap_token_to_sol", sahte_sat)
+    sat = br.execute(ExecOrder(engine="V7", yon="sat", token_address=TOK,
+                               amount_token=500.0, ref_fiyat=0.2))
+    assert sat.ok and sat.miktar_token == pytest.approx(464.5)
+    assert cagri == [int(464.5 * 10 ** 9)]
+    assert sat.fiyat == pytest.approx(92.0 / 464.5)
+
+
+def test_live_satis_zincir_sifirsa_reddeder(data_dir, monkeypatch):
+    # manuel satis suphesi: zincirde 0 varsa 1-raw-birim denemesi yapilmaz
+    br = _live_kur(data_dir, monkeypatch)
+    monkeypatch.setattr(broker, "_zincir_token_bakiye", lambda *a, **k: 0.0)
+    cagri = []
+    monkeypatch.setattr("hibrit_trader.jupiter.swap_token_to_sol",
+                        lambda *a: cagri.append(1))
+    sat = br.execute(ExecOrder(engine="V7", yon="sat", token_address=TOK,
+                               amount_token=500.0, ref_fiyat=0.2))
+    assert not sat.ok and sat.neden == "zincir_bakiye_yok"
+    assert cagri == []

@@ -57,6 +57,59 @@ def _rpc_url() -> str:
     return os.getenv("SOLANA_RPC_URL") or DEFAULT_RPC["solana"]
 
 
+def _zincir_dolum(http: httpx.Client, sig: str, owner: str, mint: str,
+                  deneme: int = 3, bekleme_sn: float = 1.5) -> float | None:
+    """Onayli alim tx'inin pre/postTokenBalances farkindan owner+mint icin
+    GERCEK dolumu dondurur (ui miktar). Cuzdan bakiyesi kullanilmaz cunku
+    onceden kalan kirinti dolumu sisirir (14 Tem olayi). Okunamazsa None."""
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "getTransaction",
+               "params": [sig, {"encoding": "jsonParsed",
+                                "commitment": "confirmed",
+                                "maxSupportedTransactionVersion": 0}]}
+    for i in range(deneme):
+        try:
+            r = http.post(_rpc_url(), json=payload, timeout=15).json()
+            tx = r.get("result")
+            if tx:
+                meta = tx["meta"]
+
+                def _tok(bals):
+                    return sum((b["uiTokenAmount"]["uiAmount"] or 0.0)
+                               for b in bals or []
+                               if b.get("owner") == owner and b.get("mint") == mint)
+
+                return _tok(meta.get("postTokenBalances")) - _tok(meta.get("preTokenBalances"))
+        except Exception as e:
+            log.warning("zincir dolum okuma hatasi (%d/%d): %s", i + 1, deneme, e)
+        if i + 1 < deneme:
+            time.sleep(bekleme_sn)
+    return None
+
+
+def _zincir_token_bakiye(http: httpx.Client, owner: str, mint: str) -> float | None:
+    """Cuzdanin mint icin toplam zincir bakiyesi (ui miktar). Okunamazsa None."""
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "getTokenAccountsByOwner",
+               "params": [owner, {"mint": mint}, {"encoding": "jsonParsed"}]}
+    try:
+        r = http.post(_rpc_url(), json=payload, timeout=10).json()
+        return sum((acc["account"]["data"]["parsed"]["info"]["tokenAmount"]["uiAmount"] or 0.0)
+                   for acc in r["result"]["value"])
+    except Exception as e:
+        log.warning("zincir bakiye okuma hatasi: %s", e)
+        return None
+
+
+def _satis_miktari(kayit: float, zincir: float | None) -> float | None:
+    """Satilacak miktar karari. None donerse satis reddedilmeli (zincirde
+    bakiye yok, manuel islem suphesi). RPC okunamadiysa kayit kullanilir
+    (satis hatti asla korlesmesin)."""
+    if zincir is None:
+        return kayit
+    if zincir <= 0:
+        return None
+    return min(kayit, zincir)
+
+
 def _fills_yaz(row: dict) -> None:
     try:
         d = _exec_data_dir()
@@ -416,16 +469,44 @@ class LiveExecBroker(DryrunExecBroker):
                 res = swap_sol_to_token(self._http, rpc, keypair,
                                         order.token_address, usd_exec,
                                         order.slippage_bps)
-                miktar_token = res["out_amount"] / 10 ** dec
+                miktar_quote = res["out_amount"] / 10 ** dec
+                # 14 Tem olayi: quote miktari kaydedilince gercek dolumla
+                # sapma satisi kalici 6024'e (eksik) veya kirintiya (fazla)
+                # dusurur. Kayit = zincir gercegi.
+                gercek = _zincir_dolum(self._http, res["signature"],
+                                       str(keypair.pubkey()), order.token_address)
+                if gercek is not None and gercek > 0:
+                    if abs(gercek - miktar_quote) > 1e-9:
+                        log.warning("BROKER LIVE dolum farki: zincir %.6g vs "
+                                    "quote %.6g (fark %+.6g), kayit zincir",
+                                    gercek, miktar_quote, gercek - miktar_quote)
+                    miktar_token = gercek
+                else:
+                    log.warning("BROKER LIVE dolum zincirden okunamadi, "
+                                "quote miktari kaydedildi (%.6g)", miktar_quote)
+                    miktar_token = miktar_quote
                 fiyat = res["cost_usd"] / miktar_token if miktar_token > 0 else 0.0
             else:
-                amount_raw = max(1, int(order.amount_token * 10 ** dec))
+                zincir = _zincir_token_bakiye(self._http, str(keypair.pubkey()),
+                                              order.token_address)
+                miktar_sat = _satis_miktari(order.amount_token, zincir)
+                if miktar_sat is None:
+                    log.critical("BROKER live: zincirde token bakiyesi yok "
+                                 "(kayit %.6g, mint %s); manuel islem suphesi, "
+                                 "satis reddedildi", order.amount_token,
+                                 order.token_address)
+                    return ExecFill(ok=False, neden="zincir_bakiye_yok")
+                if miktar_sat < order.amount_token:
+                    log.warning("BROKER LIVE satis miktari zincire indirildi: "
+                                "kayit %.6g -> zincir %.6g", order.amount_token,
+                                miktar_sat)
+                amount_raw = max(1, int(miktar_sat * 10 ** dec))
                 res = swap_token_to_sol(self._http, rpc, keypair,
                                         order.token_address, amount_raw,
                                         order.slippage_bps)
-                miktar_token = order.amount_token
-                fiyat = (res["proceeds_usd"] / order.amount_token
-                         if order.amount_token > 0 else 0.0)
+                miktar_token = miktar_sat
+                fiyat = (res["proceeds_usd"] / miktar_sat
+                         if miktar_sat > 0 else 0.0)
         except Exception as e:
             gecikme_ms = round((time.monotonic() - t0) * 1000, 1)
             if str(e).startswith("islem_belirsiz"):
