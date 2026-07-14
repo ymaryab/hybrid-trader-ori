@@ -82,6 +82,15 @@ KARAR ETKISI:
 - [ ] tekrar-binis kurali karari
 - [ ] bos zaman bolusumu guncelle (ayni script, taze OHLCV)
 - [ ] fast_price fren kadansi tartismasi (istenirse ayri onayla is)
+- [ ] RPC tek saglayici riski (14 Tem stres kontrolu bulgusu): exec hatti yalniz
+      public api.mainnet-beta.solana.com kullaniyor; SOLANA_RPC_URL ve
+      SOLANA_RPC_FALLBACK_URLS bos, broker exec hatti fallback listesini zaten
+      okumuyor. Imza ONCESI kopma zararsiz (alim reddedilir) ama imza SONRASI
+      kopma islem_belirsiz uretir ve R2 mutabakat worker'i da AYNI RPC'ye sorar;
+      RPC uzun sure cokerse sonuc "cozulemedi" + kilit. Karar adaylari: ucretsiz
+      ikinci saglayici (QuickNode/Chainstack free tier) env'e eklenip broker + 
+      mutabakat hattina fallback kablolamasi; en azindan mutabakat sorgusu icin
+      ayri URL. Canli motor koduna dokunur, ayri onay ister.
 - [ ] gunluk kesici gecikmesi (14 Tem): limit -20 iken sayac -48.69'da durdu.
       Mekanizma gecikmesi analiz edilsin: limit yalniz YENI girisi kesiyor,
       acik pozisyonlarin kapanis zararlari limit asildiktan sonra da sayaca
