@@ -110,6 +110,32 @@ def _satis_miktari(kayit: float, zincir: float | None) -> float | None:
     return min(kayit, zincir)
 
 
+# ---- Canli satis stresi: Jupiter kotasi satis hattina oncelenir ------------------------
+
+SATIS_STRES_SEC = 60.0
+# Alim sonrasi RPC gecikme toleransi: bu yastan taze pozisyonda zincir
+# bakiyesi kayittan kucuk gorunuyorsa geride kalan dugum varsayilir,
+# 0-red ve kirpma uygulanmaz (kayit zaten alim tx'inin zincir dolumu).
+TAZE_POZISYON_SEC = 60.0
+_satis_stres_ts = 0.0
+
+
+def satis_stresi_bildir() -> None:
+    """Canli satis basarisiz: golge/hakem Jupiter quotelari bir sure susturulur
+    ki kota satis hattina kalsin (14 Tem 429 firtinasi dersi)."""
+    global _satis_stres_ts
+    _satis_stres_ts = time.time() + SATIS_STRES_SEC
+
+
+def satis_stresi_temizle() -> None:
+    global _satis_stres_ts
+    _satis_stres_ts = 0.0
+
+
+def satis_stresi_aktif() -> bool:
+    return time.time() < _satis_stres_ts
+
+
 def _fills_yaz(row: dict) -> None:
     try:
         d = _exec_data_dir()
@@ -170,6 +196,7 @@ class ExecOrder:
     amount_token: float = 0.0   # sat: satilacak token miktari
     ref_fiyat: float = 0.0      # paper referans fiyati (kiyas icin)
     slippage_bps: int = 50
+    acilis_ts: float | None = None  # sat: pozisyon acilis zamani (taze koruma)
 
 
 @dataclass
@@ -489,12 +516,22 @@ class LiveExecBroker(DryrunExecBroker):
             else:
                 zincir = _zincir_token_bakiye(self._http, str(keypair.pubkey()),
                                               order.token_address)
+                if (zincir is not None and zincir < order.amount_token
+                        and order.acilis_ts is not None
+                        and time.time() - order.acilis_ts < TAZE_POZISYON_SEC):
+                    log.warning("BROKER LIVE: taze pozisyon (%.0fs), zincir "
+                                "%.6g < kayit %.6g; RPC gecikmesi varsayildi, "
+                                "satis kayitla denenecek",
+                                time.time() - order.acilis_ts, zincir,
+                                order.amount_token)
+                    zincir = None
                 miktar_sat = _satis_miktari(order.amount_token, zincir)
                 if miktar_sat is None:
                     log.critical("BROKER live: zincirde token bakiyesi yok "
                                  "(kayit %.6g, mint %s); manuel islem suphesi, "
                                  "satis reddedildi", order.amount_token,
                                  order.token_address)
+                    satis_stresi_bildir()
                     return ExecFill(ok=False, neden="zincir_bakiye_yok")
                 if miktar_sat < order.amount_token:
                     log.warning("BROKER LIVE satis miktari zincire indirildi: "
@@ -509,6 +546,8 @@ class LiveExecBroker(DryrunExecBroker):
                          if miktar_sat > 0 else 0.0)
         except Exception as e:
             gecikme_ms = round((time.monotonic() - t0) * 1000, 1)
+            if order.yon == "sat":
+                satis_stresi_bildir()
             if str(e).startswith("islem_belirsiz"):
                 # tx zincirde olabilir; para cikmis olabilir, muhasebe yok.
                 self._belirsiz_kilit = True
@@ -522,6 +561,8 @@ class LiveExecBroker(DryrunExecBroker):
             return ExecFill(ok=False, neden="islem_hatasi",
                             gecikme_ms=gecikme_ms)
         gecikme_ms = round((time.monotonic() - t0) * 1000, 1)
+        if order.yon == "sat":
+            satis_stresi_temizle()
         log.warning("BROKER LIVE %s %s fiyat %.8g miktar %.6g tx %s (%.0f ms)",
                     order.engine, order.yon, fiyat, miktar_token,
                     res["signature"], gecikme_ms)
@@ -593,6 +634,10 @@ def jupiter_referans_fiyat(token_address: str, usd: float = 100.0) -> float | No
     """Bagimsiz gercek-fiyat hakemi: Jupiter'den kucuk bir alis quote'u alip
     birim fiyati dondurur. Hata/eksik veri durumunda None (fail-closed:
     cagiran taraf hakem yoksa guvenme kararini kendi verir)."""
+    if satis_stresi_aktif():
+        log.info("HAKEM atlandi: canli satis stresi, Jupiter kotasi "
+                 "satis hattina ayrildi")
+        return None
     try:
         q, _neden = _get_golge_broker()._quote(token_address, "al", usd,
                                                slippage_bps=100)
@@ -608,6 +653,10 @@ def golge_olcum(engine: str, yon: str, token_address: str, paper_fiyat: float, *
     Motoru asla bloklamaz ve asla exception sizdirmaz."""
     try:
         if os.getenv("BROKER_GOLGE_OLCUM", "1").strip() == "0":
+            return
+        if satis_stresi_aktif():
+            log.info("GOLGE atlandi (%s %s): canli satis stresi, Jupiter "
+                     "kotasi satis hattina ayrildi", engine, yon)
             return
         threading.Thread(
             target=_golge_worker,

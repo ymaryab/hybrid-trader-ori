@@ -878,3 +878,109 @@ def test_live_satis_zincir_sifirsa_reddeder(data_dir, monkeypatch):
                                amount_token=500.0, ref_fiyat=0.2))
     assert not sat.ok and sat.neden == "zincir_bakiye_yok"
     assert cagri == []
+
+
+# ---- R4: taze pozisyon korumasi + R3a: satis stresi (14 Tem taramasi) -------------------
+
+def test_live_satis_taze_pozisyonda_sifir_reddi_uygulanmaz(data_dir, monkeypatch):
+    import time as _t
+    # alimdan saniyeler sonra RPC dugumu dolumu henuz gormuyor: kayitla denenir
+    br = _live_kur(data_dir, monkeypatch)
+    monkeypatch.setattr(broker, "_zincir_token_bakiye", lambda *a, **k: 0.0)
+    cagri = []
+
+    def sahte_sat(http, rpc, kp, mint, amount_raw, bps):
+        cagri.append(amount_raw)
+        return {"signature": "SIGSAT", "in_amount": amount_raw,
+                "out_amount": 1_237_500_000, "proceeds_usd": 99.0,
+                "sol_price_usd": 80.0}
+
+    monkeypatch.setattr("hibrit_trader.jupiter.swap_token_to_sol", sahte_sat)
+    sat = br.execute(ExecOrder(engine="V7", yon="sat", token_address=TOK,
+                               amount_token=500.0, ref_fiyat=0.2,
+                               acilis_ts=_t.time()))
+    assert sat.ok and cagri == [500 * 10 ** 9]
+    broker.satis_stresi_temizle()
+
+
+def test_live_satis_taze_pozisyonda_kirpma_uygulanmaz(data_dir, monkeypatch):
+    import time as _t
+    br = _live_kur(data_dir, monkeypatch)
+    monkeypatch.setattr(broker, "_zincir_token_bakiye", lambda *a, **k: 464.5)
+    cagri = []
+
+    def sahte_sat(http, rpc, kp, mint, amount_raw, bps):
+        cagri.append(amount_raw)
+        return {"signature": "SIGSAT", "in_amount": amount_raw,
+                "out_amount": 1_237_500_000, "proceeds_usd": 99.0,
+                "sol_price_usd": 80.0}
+
+    monkeypatch.setattr("hibrit_trader.jupiter.swap_token_to_sol", sahte_sat)
+    sat = br.execute(ExecOrder(engine="V7", yon="sat", token_address=TOK,
+                               amount_token=500.0, ref_fiyat=0.2,
+                               acilis_ts=_t.time()))
+    assert sat.ok and cagri == [500 * 10 ** 9]
+    broker.satis_stresi_temizle()
+
+
+def test_live_satis_eski_pozisyonda_zincir_esas_kalir(data_dir, monkeypatch):
+    import time as _t
+    # yas > TAZE_POZISYON_SEC: 14 Tem korumasi aynen calisir (0 -> red)
+    br = _live_kur(data_dir, monkeypatch)
+    monkeypatch.setattr(broker, "_zincir_token_bakiye", lambda *a, **k: 0.0)
+    cagri = []
+    monkeypatch.setattr("hibrit_trader.jupiter.swap_token_to_sol",
+                        lambda *a: cagri.append(1))
+    sat = br.execute(ExecOrder(engine="V7", yon="sat", token_address=TOK,
+                               amount_token=500.0, ref_fiyat=0.2,
+                               acilis_ts=_t.time() - 120.0))
+    assert not sat.ok and sat.neden == "zincir_bakiye_yok"
+    assert cagri == []
+    broker.satis_stresi_temizle()
+
+
+def test_satis_stresi_golge_ve_hakemi_susturur(data_dir, monkeypatch):
+    # conftest golgeyi kapatir; burada stres kapisi olculdugu icin acilir
+    monkeypatch.setenv("BROKER_GOLGE_OLCUM", "1")
+    broker.satis_stresi_temizle()
+    try:
+        acilan = []
+        monkeypatch.setattr(broker.threading, "Thread",
+                            lambda *a, **k: acilan.append(1))
+        broker.satis_stresi_bildir()
+        assert broker.satis_stresi_aktif()
+        broker.golge_olcum("M1", "al", TOK, 1.0, usd=100.0)
+        assert acilan == []
+        assert broker.jupiter_referans_fiyat(TOK) is None
+        broker.satis_stresi_temizle()
+        assert not broker.satis_stresi_aktif()
+        broker.golge_olcum("M1", "al", TOK, 1.0, usd=100.0)
+        assert acilan == [1]
+    finally:
+        broker.satis_stresi_temizle()
+
+
+def test_live_satis_hatasi_stres_baslatir_basari_temizler(data_dir, monkeypatch):
+    broker.satis_stresi_temizle()
+    try:
+        br = _live_kur(data_dir, monkeypatch)
+        monkeypatch.setattr(broker, "_zincir_token_bakiye", lambda *a, **k: 500.0)
+
+        def patlayan(*a):
+            raise RuntimeError("jupiter dustu")
+
+        monkeypatch.setattr("hibrit_trader.jupiter.swap_token_to_sol", patlayan)
+        sat = br.execute(ExecOrder(engine="V7", yon="sat", token_address=TOK,
+                                   amount_token=500.0, ref_fiyat=0.2))
+        assert not sat.ok and broker.satis_stresi_aktif()
+
+        monkeypatch.setattr(
+            "hibrit_trader.jupiter.swap_token_to_sol",
+            lambda *a: {"signature": "SIGSAT", "in_amount": 1,
+                        "out_amount": 1_237_500_000, "proceeds_usd": 99.0,
+                        "sol_price_usd": 80.0})
+        sat2 = br.execute(ExecOrder(engine="V7", yon="sat", token_address=TOK,
+                                    amount_token=500.0, ref_fiyat=0.2))
+        assert sat2.ok and not broker.satis_stresi_aktif()
+    finally:
+        broker.satis_stresi_temizle()

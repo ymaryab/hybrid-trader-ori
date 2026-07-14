@@ -619,3 +619,41 @@ def test_manage_exits_feed_oncelikli_poll_cagrilmaz(v7_data_dir, monkeypatch):
     t = _last(v7_data_dir)
     assert t["exit_reason"] == "tp_2" and t["price_source"] == "fast"
     assert t["tetik_gecikme_sec"] == pytest.approx(0.5)
+
+
+# ---- Kor fiyat alarmi (14 Tem taramasi R1) ------------------------------------------
+
+def test_kor_fiyat_esik_altinda_sessiz(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    pos = _open(eng)
+    t0 = pos["opened_ts"]
+    monkeypatch.setattr(v7, "get_feed", lambda: None)
+    monkeypatch.setattr(v7, "fetch_pool_snapshot", lambda c, ch, p: (None, None))
+    monkeypatch.setattr(v7.time, "time", lambda: t0 + v7.KOR_FIYAT_SEC - 1)
+    eng._manage_exits(client=SimpleNamespace())
+    assert "kor_fiyat" not in pos
+
+
+def test_kor_fiyat_alarmi_ve_toparlanma(v7_data_dir, monkeypatch, caplog):
+    import logging
+
+    eng = V7Engine(_settings())
+    pos = _open(eng)
+    t0 = pos["opened_ts"]
+    monkeypatch.setattr(v7, "get_feed", lambda: None)
+    monkeypatch.setattr(v7, "fetch_pool_snapshot", lambda c, ch, p: (None, None))
+    now = t0 + v7.KOR_FIYAT_SEC + 1
+    monkeypatch.setattr(v7.time, "time", lambda: now)
+    with caplog.at_level(logging.CRITICAL):
+        eng._manage_exits(client=SimpleNamespace())
+        # ayni an ikinci tur: alarm 60s araliginda tekrarlanmaz
+        eng._manage_exits(client=SimpleNamespace())
+    assert pos["kor_fiyat"] is True
+    krit = [r for r in caplog.records if "KOR FIYAT" in r.getMessage()]
+    assert len(krit) == 1
+    # pozisyon kapatilmadi: degerleme donuk ama islem tetiklenmedi
+    assert eng.positions == [pos]
+    # taze fiyat geri gelince bayrak temizlenir
+    _tick_price(eng, pos, pos["entry_price"], now + 10, monkeypatch)
+    assert "kor_fiyat" not in pos and "_kor_alarm_ts" not in pos
+    assert pos["_taze_fiyat_ts"] == now + 10

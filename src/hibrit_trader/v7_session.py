@@ -106,6 +106,11 @@ EXIT_SLIPPAGE_BPS = {"tp_2": 150, "timeout_60": 150,
 STOP_RETRY_ADET = 3     # stop yolunda basarisiz satis: kadans beklemeden tekrar
 STOP_RETRY_SEC = 3.0
 SAT_COOLDOWN_SEC = 20.0  # ertelenen satis sonrasi soguma; yoksa 1s kadans Jupiter'i 429'a bogar
+# Kor fiyat alarmi: feed + poll ikisi de fiyat veremiyorsa degerleme
+# last_price'ta donar ve stoplar tetiklenemez; bu sessiz korluk esikten
+# sonra CRITICAL alarma baglanir (14 Tem taramasi R1).
+KOR_FIYAT_SEC = 120.0
+KOR_ALARM_ARALIK_SEC = 60.0
 
 STATE_FILE = "v7_state.json"
 TRADES_FILE = "v7_trades.jsonl"
@@ -257,7 +262,7 @@ class V7Engine:
 
     def _exec_fill(self, yon: str, token_address: str, *, usd: float = 0.0,
                    amount_token: float = 0.0, ref_fiyat: float = 0.0,
-                   slippage_bps: int = 50):
+                   slippage_bps: int = 50, acilis_ts: float | None = None):
         """Fill'i yurutme katmanindan gecirir. Donus: (devam, canli_fill).
 
         paper/dryrun: muhasebe paper kalir, canli_fill None, devam True
@@ -267,7 +272,7 @@ class V7Engine:
             fill = self._exec.execute(ExecOrder(
                 engine="V7", yon=yon, token_address=token_address,
                 usd=usd, amount_token=amount_token, ref_fiyat=ref_fiyat,
-                slippage_bps=slippage_bps))
+                slippage_bps=slippage_bps, acilis_ts=acilis_ts))
         except Exception as e:
             log.error("V7 yurutme hatasi (%s %s): %s", yon, token_address[:8], e)
             fill = None
@@ -514,6 +519,13 @@ class V7Engine:
             return "timeout_60"
         return None
 
+    def _fiyat_tazelendi(self, pos: dict, now: float) -> None:
+        pos["_taze_fiyat_ts"] = now
+        if pos.pop("kor_fiyat", None):
+            pos.pop("_kor_alarm_ts", None)
+            log.warning("V7 kor fiyat sona erdi %s: taze fiyat geri geldi",
+                        pos["pair"])
+
     def _manage_exits(self, client: httpx.Client) -> None:
         now = time.time()
         feed = get_feed()
@@ -529,6 +541,18 @@ class V7Engine:
             if price is None or price <= 0:
                 price = pos["last_price"]
                 sample_ts, src = None, "poll"
+                taze_yas = now - (pos.get("_taze_fiyat_ts") or pos["opened_ts"])
+                if taze_yas >= KOR_FIYAT_SEC:
+                    pos["kor_fiyat"] = True
+                    if now - pos.get("_kor_alarm_ts", 0.0) >= KOR_ALARM_ARALIK_SEC:
+                        pos["_kor_alarm_ts"] = now
+                        log.critical(
+                            "V7 KOR FIYAT %s: %.0fs'dir taze fiyat yok, "
+                            "degerleme donuk (last %.8g); stoplar "
+                            "tetiklenemiyor olabilir", pos["pair"],
+                            taze_yas, price)
+            else:
+                self._fiyat_tazelendi(pos, now)
             reason = self._eval_position(pos, price, now, liquidity_usd=liq)
             if reason:
                 pos["_price_src"] = src
@@ -550,6 +574,7 @@ class V7Engine:
             if rec is None:
                 continue
             price, sample_ts = rec
+            self._fiyat_tazelendi(pos, now)
             reason = self._eval_position(pos, price, now)
             if reason:
                 pos["_price_src"] = "fast"
@@ -570,7 +595,8 @@ class V7Engine:
                                            amount_token=pos.get("canli_miktar")
                                            or pos["amount_token"],
                                            ref_fiyat=eff_price,
-                                           slippage_bps=sat_bps)
+                                           slippage_bps=sat_bps,
+                                           acilis_ts=pos["opened_ts"])
             if devam:
                 break
             if i + 1 < deneme:
