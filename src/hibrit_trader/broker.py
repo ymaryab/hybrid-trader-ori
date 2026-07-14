@@ -99,6 +99,45 @@ def _zincir_token_bakiye(http: httpx.Client, owner: str, mint: str) -> float | N
         return None
 
 
+def _zincir_imza_durumu(http: httpx.Client, sig: str) -> str | None:
+    """getSignatureStatuses: 'onaylandi' | 'hatali' | 'yok' | None (sorgu hatasi).
+    searchTransactionHistory=True: 'yok' cevabi ledger aramasini da kapsar."""
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "getSignatureStatuses",
+               "params": [[sig], {"searchTransactionHistory": True}]}
+    try:
+        r = http.post(_rpc_url(), json=payload, timeout=10).json()
+        durum = r["result"]["value"][0]
+    except Exception as e:
+        log.warning("zincir imza durumu okunamadi: %s", e)
+        return None
+    if durum is None:
+        return "yok"
+    return "hatali" if durum.get("err") is not None else "onaylandi"
+
+
+def _belirsiz_poll_sec() -> float:
+    try:
+        return float(os.getenv("BELIRSIZ_POLL_SEC", "30") or 30.0)
+    except ValueError:
+        return 30.0
+
+
+def _belirsiz_yok_sec() -> float:
+    """Bu sureden (ve >=3 basarili 'yok' sorgusundan) sonra tx 'zincirde yok'
+    sayilir: blockhash omru coktan dolmustur, para cikmamistir."""
+    try:
+        return float(os.getenv("BELIRSIZ_YOK_SEC", "150") or 150.0)
+    except ValueError:
+        return 150.0
+
+
+def _belirsiz_cap_sec() -> float:
+    try:
+        return float(os.getenv("BELIRSIZ_CAP_SEC", "600") or 600.0)
+    except ValueError:
+        return 600.0
+
+
 def _satis_miktari(kayit: float, zincir: float | None) -> float | None:
     """Satilacak miktar karari. None donerse satis reddedilmeli (zincirde
     bakiye yok, manuel islem suphesi). RPC okunamadiysa kayit kullanilir
@@ -445,6 +484,9 @@ class LiveExecBroker(DryrunExecBroker):
         keypair = _cuzdan_yukle("live")
         log.warning("BROKER live hazir, cuzdan %s", keypair.pubkey())
         self._belirsiz_kilit = False
+        self._belirsiz_lock = threading.Lock()
+        self._belirsiz_bekleyen: dict | None = None
+        self._belirsiz_sonuc_kaydi: tuple[str, str, dict | None] | None = None
         super().__init__(http=http)
 
     def execute(self, order: ExecOrder) -> ExecFill:
@@ -589,9 +631,21 @@ class LiveExecBroker(DryrunExecBroker):
             if str(e).startswith("islem_belirsiz"):
                 # tx zincirde olabilir; para cikmis olabilir, muhasebe yok.
                 self._belirsiz_kilit = True
-                log.critical("BROKER live BELIRSIZ ISLEM %s %s: %s; canli "
-                             "islemler durduruldu, restart gerekir",
-                             order.engine, order.yon, e)
+                sig_str = str(e).split(":", 1)[1] if ":" in str(e) else ""
+                if order.yon == "al" and sig_str:
+                    # R2-alim: arka plan uzlastirici zincire sorup karar verir;
+                    # kilit sonuc motora teslim edilene kadar kapali kalir.
+                    self._belirsiz_izle(order.engine, sig_str,
+                                        order.token_address, usd_exec,
+                                        str(keypair.pubkey()))
+                    log.critical("BROKER live BELIRSIZ ISLEM %s %s: %s; canli "
+                                 "islemler kilitlendi, zincir mutabakati "
+                                 "arka planda basladi (tx %s)",
+                                 order.engine, order.yon, e, sig_str)
+                else:
+                    log.critical("BROKER live BELIRSIZ ISLEM %s %s: %s; canli "
+                                 "islemler durduruldu, restart gerekir",
+                                 order.engine, order.yon, e)
                 return ExecFill(ok=False, neden="islem_belirsiz",
                                 gecikme_ms=gecikme_ms)
             log.error("BROKER live islem hatasi %s %s: %s",
@@ -606,6 +660,103 @@ class LiveExecBroker(DryrunExecBroker):
                     res["signature"], gecikme_ms)
         return ExecFill(ok=True, fiyat=fiyat, miktar_token=miktar_token,
                         fee_usd=0.0, tx_id=res["signature"], gecikme_ms=gecikme_ms)
+
+    # ---- R2-alim: belirsiz islem zincir mutabakati -------------------------------------
+
+    def _belirsiz_izle(self, engine: str, sig: str, token: str,
+                       usd_exec: float, pubkey: str) -> None:
+        with self._belirsiz_lock:
+            self._belirsiz_bekleyen = {
+                "engine": engine, "sig": sig, "token": token,
+                "usd_exec": usd_exec, "pubkey": pubkey,
+                "ts": round(time.time(), 3),
+            }
+            self._belirsiz_sonuc_kaydi = None
+        self._belirsiz_thread_baslat()
+
+    def _belirsiz_thread_baslat(self) -> None:
+        threading.Thread(target=self._belirsiz_uzlastir_worker,
+                         daemon=True, name="belirsiz-uzlastir").start()
+
+    def _belirsiz_sonucu_yaz(self, durum: str, detay: dict | None) -> None:
+        with self._belirsiz_lock:
+            engine = (self._belirsiz_bekleyen or {}).get("engine", "?")
+            self._belirsiz_sonuc_kaydi = (engine, durum, detay)
+            self._belirsiz_bekleyen = None
+
+    def _belirsiz_uzlastir_worker(self) -> None:
+        with self._belirsiz_lock:
+            ctx = dict(self._belirsiz_bekleyen or {})
+        if not ctx:
+            return
+        sig = ctx["sig"]
+        baslangic = time.monotonic()
+        yok_sayac = 0
+        while True:
+            time.sleep(_belirsiz_poll_sec())
+            gecen = time.monotonic() - baslangic
+            if gecen >= _belirsiz_cap_sec():
+                self._belirsiz_sonucu_yaz("cozulemedi", None)
+                log.critical("BROKER BELIRSIZ COZULEMEDI %s: %.0fs icinde "
+                             "zincirden net cevap alinamadi; kilit kapali "
+                             "kaliyor, manuel kontrol gerekir (tx %s)",
+                             ctx["engine"], gecen, sig)
+                return
+            durum = _zincir_imza_durumu(self._http, sig)
+            if durum == "onaylandi":
+                miktar = _zincir_dolum(self._http, sig, ctx["pubkey"],
+                                       ctx["token"])
+                if miktar is not None and miktar > 0:
+                    fiyat = ctx["usd_exec"] / miktar
+                    self._belirsiz_sonucu_yaz("gerceklesti", {
+                        "token_address": ctx["token"], "fiyat": fiyat,
+                        "miktar_token": miktar, "tx_id": sig,
+                        "usd_exec": ctx["usd_exec"],
+                    })
+                    log.warning("BROKER BELIRSIZ COZULDU %s: tx zincirde, "
+                                "dolum %.6g @ %.8g; pozisyon motora "
+                                "devrediliyor (tx %s)", ctx["engine"],
+                                miktar, fiyat, sig)
+                    return
+                # para cikti ama dolum okunamadi: cap'e kadar tekrar dene
+                log.warning("BROKER belirsiz: tx onayli ama dolum okunamadi, "
+                            "tekrar denenecek (tx %s)", sig)
+            elif durum == "hatali":
+                # tx zincirde ama basarisiz: swap atomik, para cikmadi (yalniz fee)
+                self._belirsiz_sonucu_yaz("yok", None)
+                log.warning("BROKER BELIRSIZ COZULDU %s: tx zincirde ama "
+                            "BASARISIZ, swap gecmedi, kayit yok (tx %s)",
+                            ctx["engine"], sig)
+                return
+            elif durum == "yok":
+                yok_sayac += 1
+                if gecen >= _belirsiz_yok_sec() and yok_sayac >= 3:
+                    self._belirsiz_sonucu_yaz("yok", None)
+                    log.warning("BROKER BELIRSIZ COZULDU %s: tx zincirde YOK "
+                                "(%d sorgu, %.0fs), para cikmadi, kayit yok "
+                                "(tx %s)", ctx["engine"], yok_sayac, gecen, sig)
+                    return
+            # durum None: sorgu hatasi, sonraki turda tekrar
+
+    def belirsiz_sonuc(self, engine: str) -> tuple[str, dict | None]:
+        """Motor tarafi mutabakat sorgusu. Donus durumlari:
+        'bekliyor' (uzlastirici calisiyor), 'gerceklesti' (detay ile; pozisyon
+        motora devredilir), 'yok' (tx zincirde yok, kayit yazilmaz),
+        'cozulemedi' (kilit kapali kalir), 'kayit_yok' (bekleyen is yok).
+        gerceklesti/yok tuketiminde kilit otomatik acilir: para durumu netlesti."""
+        with self._belirsiz_lock:
+            kayit = self._belirsiz_sonuc_kaydi
+            if kayit is not None and kayit[0] == engine:
+                self._belirsiz_sonuc_kaydi = None
+                _, durum, detay = kayit
+                if durum in ("gerceklesti", "yok"):
+                    self._belirsiz_kilit = False
+                    log.warning("BROKER live: belirsiz kilidi acildi (%s)", durum)
+                return durum, detay
+            bekleyen = self._belirsiz_bekleyen
+            if bekleyen is not None and bekleyen.get("engine") == engine:
+                return "bekliyor", None
+            return "kayit_yok", None
 
 
 # ---- Fabrika ---------------------------------------------------------------------------

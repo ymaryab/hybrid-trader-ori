@@ -153,6 +153,8 @@ class V7Engine:
         self._limit_logged = False                  # zarar limiti uyarisi tek sefer
         self._huni = HuniSayac("V7")
         self._lock_fh = None
+        self._son_exec_neden: str | None = None
+        self._belirsiz_aday: dict | None = None    # belirsiz alim: benimseme bekleyen aday
         # Yurutme katmani (BROKER_MODE: paper/dryrun/live). Paper'da davranis
         # birebir ayni; kurulamazsa fail-closed: girisler kapali, cikislar paper.
         try:
@@ -280,6 +282,7 @@ class V7Engine:
         paper/dryrun: muhasebe paper kalir, canli_fill None, devam True
         (dryrun quote hatasi yarisi ASLA etkilemez). live: fill basarisizsa
         devam False; basariliysa canli_fill baglayicidir."""
+        self._son_exec_neden = None
         try:
             fill = self._exec.execute(ExecOrder(
                 engine="V7", yon=yon, token_address=token_address,
@@ -291,6 +294,7 @@ class V7Engine:
         if self._exec.mode != "live":
             return True, None
         if fill is None or not fill.ok:
+            self._son_exec_neden = fill.neden if fill is not None else "exec_hata"
             return False, None
         return True, fill
 
@@ -347,10 +351,76 @@ class V7Engine:
                     log.exception("v7 hizli cikis hatası")
 
     def tick(self) -> None:
+        self._belirsiz_takip()
         with httpx.Client(timeout=10.0) as client:
             self._manage_exits(client)
             self._enter(client)
         self._save()
+
+    # ---- R2-alim: belirsiz alim mutabakati (broker uzlastiricisinin sonucu) -----
+    def _belirsiz_takip(self) -> None:
+        if self._belirsiz_aday is None:
+            return
+        sorgu = getattr(self._exec, "belirsiz_sonuc", None)
+        if sorgu is None:  # paper/dryrun: belirsiz aday olusamaz, temizle
+            self._belirsiz_aday = None
+            return
+        durum, detay = sorgu("V7")
+        if durum == "bekliyor":
+            return
+        aday = self._belirsiz_aday
+        self._belirsiz_aday = None
+        if durum == "gerceklesti" and detay and detay.get("fiyat", 0) > 0:
+            self._belirsiz_pozisyon_ac(aday, detay)
+        elif durum == "yok":
+            log.warning("V7 BELIRSIZ SONUC %s: tx zincirde yok, para cikmadi, "
+                        "giris kayitsiz iptal", aday["pair"])
+        else:  # cozulemedi / kayit_yok / bozuk detay
+            log.critical("V7 BELIRSIZ SONUC %s: cozulemedi (%s); kilit kapali "
+                         "kaliyor, manuel kontrol gerekir", aday["pair"], durum)
+
+    def _belirsiz_pozisyon_ac(self, aday: dict, detay: dict) -> None:
+        """Zincirde gerceklesen belirsiz alimi pozisyon olarak benimse.
+        Muhasebe paper boyutta (usd), canli gercek miktar canli_miktar'da."""
+        usd = aday["usd"]
+        entry = detay["fiyat"]
+        gas = GAS_COST_USD.get(aday["chain"], 0.1)
+        now = aday["ts"]  # yas bazli cikislar gercek giris anindan saysin
+        pos = {
+            "trade_id": new_trade_id(aday["pool_address"], now),
+            "pair": aday["pair"],
+            "chain": aday["chain"],
+            "token_address": aday["token_address"],
+            "pool_address": aday["pool_address"],
+            "entry_price": entry,
+            "karar_fiyat": aday["karar_fiyat"],
+            "amount_token": usd / entry,
+            "cost_usd": round(usd, 4),
+            "opened_ts": now,
+            "opened_at": _now_iso(),
+            "chg_m5": aday["chg_m5"],
+            "chg_h1": aday["chg_h1"],
+            "liq_entry": aday["liq_entry"],
+            "sol_chg_h1": aday["sol_chg_h1"],
+            "entry_price_source": aday["entry_price_source"],
+            "entry_fresh_fark_pct": aday["entry_fresh_fark_pct"],
+            "entry_slip_pct": aday["entry_slip_pct"],
+            "mfe_pct": 0.0,
+            "mae_pct": 0.0,
+            "last_price": entry,
+            "tx_al": detay["tx_id"],
+            "canli_miktar": detay["miktar_token"],
+            "belirsiz_mutabakat": True,
+        }
+        self.balance -= (usd + gas)
+        self.positions.append(pos)
+        self._save()
+        feed = get_feed()
+        if feed is not None:
+            feed.add_pool(pos["pool_address"])
+        log.warning("V7 BUY (mutabakat) %s $%.2f @ %.8g: belirsiz tx zincirde "
+                    "gerceklesti, pozisyon benimsendi (tx %s)",
+                    aday["pair"], usd, entry, detay["tx_id"])
 
     # ---- Rejim: SOL chg_h1 motorlar arasi paylasimli cache'ten ------------------
     def _sol_chg_h1(self, client: httpx.Client) -> float | None:
@@ -462,6 +532,27 @@ class V7Engine:
         devam, canli = self._exec_fill("al", pair.token_address,
                                        usd=usd, ref_fiyat=eff_price)
         if not devam:
+            if self._son_exec_neden == "islem_belirsiz":
+                # R2-alim: tx zincirde olabilir; aday baglami saklanir, broker
+                # uzlastiricisi karar verene kadar pozisyon YAZILMAZ.
+                self._belirsiz_aday = {
+                    "pair": pair.name, "chain": pair.chain,
+                    "token_address": pair.token_address,
+                    "pool_address": pair.pool_address,
+                    "usd": usd, "karar_fiyat": karar_fiyat,
+                    "chg_m5": round(getattr(pair, "chg_m5", 0.0), 2),
+                    "chg_h1": round(pair.chg_h1, 2),
+                    "liq_entry": round(pair.liquidity_usd, 2),
+                    "sol_chg_h1": sol_h1,
+                    "entry_price_source": taze.kaynak,
+                    "entry_fresh_fark_pct": taze.fark_pct,
+                    "entry_slip_pct": round(slip * 100, 4),
+                    "ts": time.time(),
+                }
+                log.critical("V7 GIRIS BELIRSIZ %s: zincir mutabakati "
+                             "bekleniyor, sonuca kadar canli islemler kilitli",
+                             pair.name)
+                return False
             log.error("V7 GIRIS IPTAL %s: canli alim gerceklesmedi", pair.name)
             return False
         if canli is not None and canli.fiyat > 0:

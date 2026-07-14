@@ -467,6 +467,8 @@ def _al_emri(usd=10.0):
 
 def test_live_belirsiz_islem_tekrar_denemeyi_yasaklar(data_dir, monkeypatch):
     br = _live_broker(data_dir, monkeypatch)
+    monkeypatch.setattr(broker.LiveExecBroker, "_belirsiz_thread_baslat",
+                        lambda self: None)  # testte gercek thread/RPC yok
 
     def _belirsiz(*a, **k):
         raise RuntimeError("islem_belirsiz:SIGABC")
@@ -488,6 +490,83 @@ def test_live_islem_hatasi_kilit_acmaz(data_dir, monkeypatch):
     monkeypatch.setattr("hibrit_trader.jupiter.swap_sol_to_token", _patla)
     for _ in range(3):
         assert br.execute(_al_emri()).neden == "islem_hatasi"
+
+
+# ---- R2-alim: belirsiz alim zincir mutabakati -------------------------------------------
+
+def _belirsiz_broker(data_dir, monkeypatch):
+    """Belirsiz alim yasanmis live broker: kilit kapali, mutabakat bekliyor.
+    Worker thread'i test icinde senkron cagrilir (gercek thread/RPC yok)."""
+    br = _live_broker(data_dir, monkeypatch)
+    monkeypatch.setattr(broker.LiveExecBroker, "_belirsiz_thread_baslat",
+                        lambda self: None)
+    monkeypatch.setenv("BELIRSIZ_POLL_SEC", "0")
+
+    def _belirsiz(*a, **k):
+        raise RuntimeError("islem_belirsiz:SIGX")
+
+    monkeypatch.setattr("hibrit_trader.jupiter.swap_sol_to_token", _belirsiz)
+    fill = br.execute(_al_emri())
+    assert fill.ok is False and fill.neden == "islem_belirsiz"
+    return br
+
+
+def test_belirsiz_alim_zincirde_gerceklesti_pozisyon_devri(data_dir, monkeypatch):
+    br = _belirsiz_broker(data_dir, monkeypatch)
+    assert br.belirsiz_sonuc("T") == ("bekliyor", None)
+    monkeypatch.setattr(broker, "_zincir_imza_durumu",
+                        lambda http, sig: "onaylandi")
+    monkeypatch.setattr(broker, "_zincir_dolum", lambda *a, **k: 50.0)
+    br._belirsiz_uzlastir_worker()
+    durum, detay = br.belirsiz_sonuc("T")
+    assert durum == "gerceklesti"
+    assert detay["miktar_token"] == 50.0
+    assert detay["tx_id"] == "SIGX"
+    assert detay["fiyat"] == pytest.approx(10.0 / 50.0)  # usd_exec $10 (MTM 40 x %25)
+    # kilit acildi: sonraki alim swap katmanina ulasir
+    gorulen = _swap_yakala(monkeypatch)
+    assert br.execute(_al_emri()).ok is True
+    assert gorulen["usd"] == 10.0
+
+
+def test_belirsiz_alim_zincirde_yoksa_kayit_yok_kilit_acilir(data_dir, monkeypatch):
+    br = _belirsiz_broker(data_dir, monkeypatch)
+    monkeypatch.setenv("BELIRSIZ_YOK_SEC", "0")
+    sorgular = []
+    monkeypatch.setattr(broker, "_zincir_imza_durumu",
+                        lambda http, sig: sorgular.append(sig) or "yok")
+    br._belirsiz_uzlastir_worker()
+    assert len(sorgular) >= 3  # yok karari tek sorguya birakilmaz
+    assert br.belirsiz_sonuc("T") == ("yok", None)
+    # para cikmadi: kilit acildi, sonraki alim serbest
+    gorulen = _swap_yakala(monkeypatch)
+    assert br.execute(_al_emri()).ok is True
+    assert gorulen["usd"] == 10.0
+
+
+def test_belirsiz_tx_zincirde_hatali_ise_kayit_yok(data_dir, monkeypatch):
+    # tx zincirde ama err'li: swap atomik gecmedi, para cikmadi
+    br = _belirsiz_broker(data_dir, monkeypatch)
+    monkeypatch.setattr(broker, "_zincir_imza_durumu",
+                        lambda http, sig: "hatali")
+    br._belirsiz_uzlastir_worker()
+    assert br.belirsiz_sonuc("T") == ("yok", None)
+
+
+def test_belirsiz_cozulemezse_kilit_kalir_alim_yasak(data_dir, monkeypatch):
+    br = _belirsiz_broker(data_dir, monkeypatch)
+    monkeypatch.setenv("BELIRSIZ_CAP_SEC", "0")
+    monkeypatch.setattr(broker, "_zincir_imza_durumu", lambda http, sig: None)
+    br._belirsiz_uzlastir_worker()
+    assert br.belirsiz_sonuc("T") == ("cozulemedi", None)
+    # kilit KAPALI kalir: tekrar alim yok
+    assert br.execute(_al_emri()).neden == "belirsiz_kilit"
+
+
+def test_belirsiz_sonuc_baska_motora_verilmez(data_dir, monkeypatch):
+    br = _belirsiz_broker(data_dir, monkeypatch)
+    assert br.belirsiz_sonuc("V7") == ("kayit_yok", None)
+    assert br.belirsiz_sonuc("T") == ("bekliyor", None)
 
 
 # ---- live jupiter kota kapisi (14 Tem 429 firtinasi paketi) -----------------------------

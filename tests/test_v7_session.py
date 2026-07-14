@@ -746,3 +746,68 @@ def test_kor_fiyat_alarmi_ve_toparlanma(v7_data_dir, monkeypatch, caplog):
     _tick_price(eng, pos, pos["entry_price"], now + 10, monkeypatch)
     assert "kor_fiyat" not in pos and "_kor_alarm_ts" not in pos
     assert pos["_taze_fiyat_ts"] == now + 10
+
+
+# ---- R2-alim: belirsiz alim mutabakati (broker sonucu motora devri) -----------------
+
+class _BelirsizStubExec(_StubExec):
+    """Ilk alim islem_belirsiz doner; belirsiz_sonuc scripti sirayla tuketilir."""
+
+    def __init__(self, sonuclar):
+        super().__init__("live", [ExecFill(ok=False, neden="islem_belirsiz")])
+        self.sonuclar = list(sonuclar)
+
+    def belirsiz_sonuc(self, engine):
+        assert engine == "V7"
+        return self.sonuclar.pop(0)
+
+
+def test_belirsiz_alim_zincirde_gerceklesti_pozisyon_acilir(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    detay = {"token_address": "ZT1", "fiyat": 0.25, "miktar_token": 40.0,
+             "tx_id": "SIGX", "usd_exec": 10.0}
+    eng._exec = _BelirsizStubExec([("bekliyor", None), ("gerceklesti", detay)])
+    assert eng._open_position(_pair(), 100.0, sol_h1=0.77) is False
+    # sonuc gelmeden pozisyon YAZILMAZ, bakiye dokunulmaz; aday saklanir
+    assert eng.positions == [] and eng.balance == v7.START_BALANCE
+    assert eng._belirsiz_aday is not None
+    karar = eng._belirsiz_aday["karar_fiyat"]
+    eng._belirsiz_takip()  # bekliyor: aday korunur
+    assert eng._belirsiz_aday is not None and eng.positions == []
+    eng._belirsiz_takip()  # gerceklesti: pozisyon benimsenir
+    assert eng._belirsiz_aday is None
+    pos = eng.positions[0]
+    assert pos["entry_price"] == 0.25          # zincir gercegi baglayici
+    assert pos["karar_fiyat"] == karar         # karar fiyati korunur (B1)
+    assert pos["canli_miktar"] == 40.0 and pos["tx_al"] == "SIGX"
+    assert pos["amount_token"] == pytest.approx(100.0 / 0.25)  # muhasebe paper boyut
+    assert pos["belirsiz_mutabakat"] is True
+    gas = v7.GAS_COST_USD.get("solana", 0.1)
+    assert eng.balance == pytest.approx(v7.START_BALANCE - 100.0 - gas)
+
+
+def test_belirsiz_alim_zincirde_yoksa_kayit_yazilmaz(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    eng._exec = _BelirsizStubExec([("yok", None)])
+    assert eng._open_position(_pair(), 100.0, sol_h1=0.77) is False
+    eng._belirsiz_takip()
+    assert eng._belirsiz_aday is None
+    assert eng.positions == [] and eng.balance == v7.START_BALANCE
+    assert not (v7_data_dir / v7.TRADES_FILE).exists()  # hicbir kayit yok
+
+
+def test_belirsiz_cozulemezse_aday_dusulur_pozisyon_yok(v7_data_dir, monkeypatch):
+    # kilit broker tarafinda kapali kalir (tekrar alim yok); motor pozisyon yazmaz
+    eng = V7Engine(_settings())
+    eng._exec = _BelirsizStubExec([("cozulemedi", None)])
+    assert eng._open_position(_pair(), 100.0, sol_h1=0.77) is False
+    eng._belirsiz_takip()
+    assert eng._belirsiz_aday is None
+    assert eng.positions == [] and eng.balance == v7.START_BALANCE
+
+
+def test_belirsiz_takip_paper_modda_calismaz(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())
+    eng._belirsiz_aday = {"pair": "X"}  # savunma: paper exec'te sonuc sorgusu yok
+    eng._belirsiz_takip()
+    assert eng._belirsiz_aday is None
