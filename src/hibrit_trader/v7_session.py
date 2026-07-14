@@ -91,6 +91,10 @@ SOL_H1_MIN = float(os.getenv("V7_SOL_H1_MIN", "0.35"))  # 13 Tem cift ayar: 0.5 
 # (n17 -$85); 10-20 ve 40-50 gecerli kalir. LO=HI yapilirsa kacinma kapanir.
 H1_SKIP_LO = float(os.getenv("V7_H1_SKIP_LO", "20"))
 H1_SKIP_HI = float(os.getenv("V7_H1_SKIP_HI", "40"))
+# A2 (14 Tem, A4 bulgusu): bant ici m5 > 0 adaylarin atlanmasi +15..+98 kosulari
+# kaciriyordu; m5 <= 0 atlamalari cogunlukla dogru korumaydi. Kosullu skip:
+# bant ici aday yalniz m5 <= 0 ise atlanir. "0" ile eski kosulsuz davranis.
+H1_SKIP_M5_KOSUL = os.getenv("V7_H1_SKIP_M5_KOSUL", "1").strip() != "0"
 BANT_SKIP_DEDUP_SEC = 30 * 60
 DAILY_LOSS_LIMIT_USD = float(os.getenv("MOM_DAILY_LOSS_LIMIT_USD", "0"))  # 0 = kapali (M1 ile ayni env)
 COOLDOWN_LOSS_SEC = float(os.getenv("MOM_COOLDOWN_STOP_MIN", "60")) * 60
@@ -116,9 +120,17 @@ STATE_FILE = "v7_state.json"
 TRADES_FILE = "v7_trades.jsonl"
 
 
-def h1_bant_atla(chg_h1: float) -> bool:
-    """h1 kacinma bandinda mi? LO=HI (veya LO>HI) ise kacinma kapali."""
-    return H1_SKIP_LO < H1_SKIP_HI and H1_SKIP_LO <= chg_h1 <= H1_SKIP_HI
+def h1_bant_atla(chg_h1: float, chg_m5: float | None = None) -> bool:
+    """h1 kacinma bandinda mi? LO=HI (veya LO>HI) ise kacinma kapali.
+
+    A2: bant ici aday m5 > 0 ise atlanmaz (kosu devam ediyor); m5 kosulu
+    V7_H1_SKIP_M5_KOSUL=0 ile kapatilir. m5 bilinmiyorsa (None) eski
+    kosulsuz davranis: atla. Bant disi adayda m5 hic degerlendirilmez."""
+    if not (H1_SKIP_LO < H1_SKIP_HI and H1_SKIP_LO <= chg_h1 <= H1_SKIP_HI):
+        return False
+    if H1_SKIP_M5_KOSUL and chg_m5 is not None and chg_m5 > 0:
+        return False
+    return True
 
 
 class V7Engine:
@@ -375,7 +387,7 @@ class V7Engine:
             h1 = getattr(pr, "chg_h1", 0.0)
             if not (CHG_H1_MIN <= h1 <= CHG_H1_MAX):
                 continue  # v6 bandı: dikey pump tepesi dışarıda
-            if h1_bant_atla(h1):
+            if h1_bant_atla(h1, getattr(pr, "chg_m5", None)):
                 self._bant_skip_kaydet(pr, now)
                 continue
             cands.append(pr)

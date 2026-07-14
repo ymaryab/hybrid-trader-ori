@@ -1333,7 +1333,7 @@ _FILO_MOTORLAR: list[dict] = [
     # doneminde ekranda yalniz V6 + CANLI kalir (12 Tem karari).
     {"id": "v7", "tip": "bot", "ad": "V7", "renk": "#58a6ff", "slots": 5,
      "rozet": "fren -%10", "gizli": True,
-     "desc": "-%10 felaket freni · sabır iptal, anında sat · rejim sol_h1&ge;0.35 · h1 20-40 skip"},
+     "desc": "-%10 felaket freni · sabır iptal, anında sat · rejim sol_h1&ge;0.35 · h1 20-40 skip (yalnız m5&le;0)"},
     # arka: kart+chart ana ekrandan "Arka plan deneyleri" katlanir bolumune iner;
     # motor, veri uretimi ve kiyas kayitlari aynen surer (sadece gorunum).
     {"id": "x1", "tip": "bot", "ad": "X1", "renk": "#d29922", "slots": 3,

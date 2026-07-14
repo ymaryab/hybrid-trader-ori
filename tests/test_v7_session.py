@@ -138,12 +138,58 @@ def test_h1_bant_skip_kaydi_ve_dedup(v7_data_dir, monkeypatch):
     assert r["reason"] == "h1_bant_skip"
     assert r["engine"] == "V7"
     assert r["chg_h1"] == 30.0
+    assert r["chg_m5"] == -2.0  # A2 analizi icin m5 kayitta
     assert r["sol_chg_h1"] == 0.42
     assert r["pool_address"] == "ZP1"
     # 30dk dedup: ayni havuz ikinci tickte tekrar yazilmaz
     assert _enter(eng, monkeypatch, _pair(h1=25.0)) == []
     rows = (v7_data_dir / REJECTS_FILE).read_text().splitlines()
     assert len(rows) == 1
+
+
+def test_h1_bant_m5_sinirlari(v7_data_dir, monkeypatch):
+    # A2: bant ici aday yalniz m5 <= 0 ise atlanir; m5 0.0 sinirda ATLA, 0.1 GEC
+    eng = V7Engine(_settings())
+    _enter(eng, monkeypatch, [
+        _pair(pool="PM0", token="TM0", h1=30.0, m5=0.0),
+        _pair(pool="PM1", token="TM1", h1=30.0, m5=0.1),
+    ])
+    pools = {p["pool_address"] for p in eng.positions}
+    assert pools == {"PM1"}  # m5 0.0 atlandi, 0.1 girdi
+
+
+def test_h1_bant_m5_pozitif_skip_kaydi_yazilmaz(v7_data_dir, monkeypatch):
+    from hibrit_trader.momentum_session import REJECTS_FILE
+    eng = V7Engine(_settings())
+    assert len(_enter(eng, monkeypatch, _pair(h1=30.0, m5=2.5))) == 1
+    assert not (v7_data_dir / REJECTS_FILE).exists()  # skip satiri yok
+
+
+def test_h1_bant_disi_adayda_m5_degerlendirilmez():
+    # bant disi: m5 ne olursa olsun atlama fonksiyonu False doner
+    assert v7.h1_bant_atla(45.0, -5.0) is False
+    assert v7.h1_bant_atla(19.9, 0.0) is False
+    assert v7.h1_bant_atla(40.1, -99.0) is False
+
+
+def test_h1_bant_m5_bilinmiyorsa_eski_davranis():
+    # m5 verisi yoksa (None) kosulsuz atla: koruma tarafinda kal
+    assert v7.h1_bant_atla(30.0) is True
+    assert v7.h1_bant_atla(30.0, None) is True
+
+
+def test_h1_bant_m5_kosulu_env_ile_kapatilir(monkeypatch):
+    import importlib
+    monkeypatch.setenv("V7_H1_SKIP_M5_KOSUL", "0")
+    try:
+        importlib.reload(v7)
+        assert v7.H1_SKIP_M5_KOSUL is False
+        assert v7.h1_bant_atla(30.0, 5.0) is True  # eski kosulsuz skip
+    finally:
+        monkeypatch.delenv("V7_H1_SKIP_M5_KOSUL")
+        importlib.reload(v7)
+    assert v7.H1_SKIP_M5_KOSUL is True
+    assert v7.h1_bant_atla(30.0, 5.0) is False
 
 
 def test_h1_bant_lo_esit_hi_kacinma_kapali(v7_data_dir, monkeypatch):
