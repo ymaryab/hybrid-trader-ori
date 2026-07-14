@@ -1,21 +1,16 @@
-"""V7 senaryo motoru — v6 + -%10 felaket freni, yedinci paralel sanal yarışçı.
+"""V7 senaryo motoru — 120dk sabirli momentum yarisci (canli hat).
 
 Diğer motorlara (v2/v3/v4/v5/v6/gölge) SIFIR dokunuş. Sadece şu dosyalara yazar:
   data/v7_state.json   (sanal bakiye + açık pozisyonlar)
   data/v7_trades.jsonl (her sanal kapanışta kayıt)
 
-V7 = V6'NIN BİREBİR KOPYASI + TEK fark (2026-07-04 v6 arındırma analizi):
-  FREN  : pozisyon HERHANGİ bir anda -%10'a ulaşırsa sabır iptal, anında
-          sat (stop_felaket, 60dk cooldown). Dayanak: v6'nın bozucuları
-          giriş tarafında desensiz, sızıntı sabır penceresinin sınırsız
-          derinliğinde (BABYANSEM -35.8, Pauly -21.5); -%10 eşiği gölgenin
-          en derin kurtarması olan -8.67'nin altında kalır, kurtarma
-          bölgesine basmaz. v6 retrosu: -%10 freni +$28, sıfır ters dönen tp.
+V7 = V6 tabanli; 14 Tem kullanici karari: -%10 felaket freni IPTAL, sabir ve
+tavan 120 dk'ya cikti (eski gerekce metni git gecmisinde, 04 Tem analizi).
   GİRİŞ : liq >= $100k VE 10 <= chg_h1 <= 50; 13 Tem cift ayar: h1 20-40
           bandi atlanir (V6+V7 retrosu n17 -$85), 10-20 ve 40-50 gecerli.
           Atlanan aday h1_bant_skip etiketiyle rejects'e yazilir.
-  ÇIKIŞ : tp_2 / stop_felaket (-%10) / stop_gec (30dk sabır sonrası -%2) /
-          timeout_60. sol_chg_h1 kaydı v6 ile aynı.
+  ÇIKIŞ : tp_2 (+%2 UZERI, esitlik satmaz) / stop_gec (120dk sabır sonrası
+          -%2) / timeout_120. sol_chg_h1 kaydı v6 ile aynı.
   REJİM : V-serisi final (05 Tem): eşik 0 yerine 0.5; 13 Tem cift ayar:
           esik 0.35'e indi (bos zaman bolusumu: bos vaktin %92-94'u rejim
           kapali kaynakli). Env: V7_SOL_H1_MIN.
@@ -25,11 +20,11 @@ V7 = V6'NIN BİREBİR KOPYASI + TEK fark (2026-07-04 v6 arındırma analizi):
           Kayıt: entry_price_source + entry_fresh_fark_pct.
   HIZLI GÖZ (12 Tem, canlı asimetri B2): çıkış kontrolü fast_price feed'inden
           2s kadansla (v6 deseni). Pozisyon açılınca havuz feed'e dinamik
-          eklenir, kapanınca çıkar. Fren canlı parada 30s bekleyemez.
+          eklenir, kapanınca çıkar.
           Ölçüm: trade kaydında price_source (fast/poll) + tetik_gecikme_sec.
   KADEMELİ SATIŞ TOLERANSI (12 Tem, canlı asimetri B1): canlı satışta
-          slippage nedene göre: normal 150 / stop_gec 300 / stop_felaket
-          1000 bps; zarar durdurmada kesinlik dolgu kalitesinden önceliklidir.
+          slippage nedene göre: normal 150 / stop_gec 300 bps;
+          zarar durdurmada kesinlik dolgu kalitesinden önceliklidir.
           Stop yolunda başarısız satış kadans beklemeden 3x3s tekrar denenir.
           Alım 50 bps'te kalır (başarısız alım güvenli taraftır).
 
@@ -75,17 +70,16 @@ from hibrit_trader.scanner import scan_all_cached as scan_all
 
 log = logging.getLogger(__name__)
 
-# ---- V7 eşikleri (v6 ile aynı zemin + felaket freni) --------------------------
+# ---- V7 eşikleri (v6 zemini, 120dk sabır, fren yok) ---------------------------
 CHG_H1_MIN = float(os.getenv("V7_CHG_H1_MIN", "10"))
 CHG_H1_MAX = float(os.getenv("V7_CHG_H1_MAX", "50"))   # v6 ile aynı bant
 LIQ_MIN_USD = float(os.getenv("V7_LIQ_MIN_USD", "100000"))
 MAX_SLOTS = 5
 START_BALANCE = float(os.getenv("V7_START_BALANCE", "1000"))
-TP_PCT = 2.0            # giriş +%2 görülünce kâr al (gölge ile aynı)
-GRACE_SEC = 30 * 60     # ilk 30dk aşağıda stop yok (sabır)
-LATE_STOP_PCT = -2.0    # 30dk sonrası: girişin -%2 altı SAT
-DISASTER_PCT = float(os.getenv("V7_DISASTER_PCT", "-10"))  # TEK fark: her an mutlak taban
-CEILING_SEC = 60 * 60   # 60dk tavan
+TP_PCT = 2.0            # giris +%2'nin UZERINE cikinca kar al (14 Tem: esitlik satmaz)
+GRACE_SEC = 120 * 60    # ilk 120dk asagida stop yok (14 Tem: 30dk -> 120dk)
+LATE_STOP_PCT = -2.0    # 120dk sonrası: girişin -%2 altı SAT
+CEILING_SEC = 120 * 60  # 120dk tavan (14 Tem: 60dk -> 120dk)
 SOL_H1_MIN = float(os.getenv("V7_SOL_H1_MIN", "0.35"))  # 13 Tem cift ayar: 0.5 -> 0.35 (bos zaman bolusumu olcumu)
 # h1 bant kacinma (13 Tem cift ayar): 20-40 bandi V6+V7 retrosunda negatif
 # (n17 -$85); 10-20 ve 40-50 gecerli kalir. LO=HI yapilirsa kacinma kapanir.
@@ -110,8 +104,7 @@ COOLDOWN_EXIT_SEC = float(os.getenv("MOM_COOLDOWN_EXIT_MIN", "15")) * 60
 EXIT_INTERVAL_SEC = float(os.getenv("M_EXIT_INTERVAL_SEC", "2"))
 # Kademeli satis toleransi (12 Tem, canli asimetri B1). Not: .env'deki
 # MAX_SLIPPAGE_BPS eski live.py yolunu besler, bu tabloya BAGLI DEGILDIR.
-EXIT_SLIPPAGE_BPS = {"tp_2": 150, "timeout_60": 150,
-                     "stop_gec": 300, "stop_felaket": 1000}
+EXIT_SLIPPAGE_BPS = {"tp_2": 150, "timeout_120": 150, "stop_gec": 300}
 STOP_RETRY_ADET = 3     # stop yolunda basarisiz satis: kadans beklemeden tekrar
 STOP_RETRY_SEC = 3.0
 SAT_COOLDOWN_SEC = 20.0  # ertelenen satis sonrasi soguma; yoksa 1s kadans Jupiter'i 429'a bogar
@@ -390,13 +383,13 @@ class V7Engine:
         if not self._acquire_lock():
             return
         log.warning(
-            "V7 senaryo başladı (v6 + fren) — sanal $%.2f · slot %d · "
+            "V7 senaryo başladı (120dk sabır, fren yok) — sanal $%.2f · slot %d · "
             "giriş liq>=$%.0f + h1 %.0f..%.0f (skip %.0f..%.0f) · rejim>=%.2f · "
-            "çıkış tp+%.0f%% / fren %%%.0f / "
+            "çıkış tp+%.0f%% üzeri / "
             "%dm sabır sonrası stop%%%.0f / tavan %dm",
             self.balance, MAX_SLOTS, LIQ_MIN_USD, CHG_H1_MIN, CHG_H1_MAX,
             H1_SKIP_LO, H1_SKIP_HI, SOL_H1_MIN,
-            TP_PCT, DISASTER_PCT, GRACE_SEC // 60, LATE_STOP_PCT, CEILING_SEC // 60,
+            TP_PCT, GRACE_SEC // 60, LATE_STOP_PCT, CEILING_SEC // 60,
         )
         self._save()
         feed = get_feed()
@@ -669,7 +662,7 @@ class V7Engine:
                     pair.name, usd, eff_price, pair.chg_h1, pair.liquidity_usd)
         return True
 
-    # ---- Çıkış: tp_2 / stop_felaket (-%10) / stop_gec / timeout_60 ---------------
+    # ---- Çıkış: tp_2 (+%2 üzeri) / stop_gec (120dk sonrası -%2) / timeout_120 ----
     def _eval_position(self, pos: dict, price: float, now: float,
                        liquidity_usd: float | None = None) -> str | None:
         """Fiyatı işle (last_price/mfe/mae) ve çıkış nedeni döndür (yoksa None)."""
@@ -684,14 +677,12 @@ class V7Engine:
         if pnl_pct < pos["mae_pct"]:
             pos["mae_pct"] = round(pnl_pct, 4)
         age = now - pos["opened_ts"]
-        if pnl_pct >= TP_PCT:
+        if pnl_pct > TP_PCT:
             return "tp_2"
-        if pnl_pct <= DISASTER_PCT:
-            return "stop_felaket"  # TEK fark: her an geçerli mutlak taban
         if age >= GRACE_SEC and pnl_pct <= LATE_STOP_PCT:
             return "stop_gec"
         if age >= CEILING_SEC:
-            return "timeout_60"
+            return "timeout_120"
         return None
 
     def _fiyat_tazelendi(self, pos: dict, now: float) -> None:
@@ -764,7 +755,7 @@ class V7Engine:
         eff_price = price * (1 - slip)
         karar_cikis = eff_price  # canli fill ezmeden onceki karar cikisi
         sat_bps = EXIT_SLIPPAGE_BPS.get(reason, 150)
-        deneme = STOP_RETRY_ADET if reason in ("stop_felaket", "stop_gec") else 1
+        deneme = STOP_RETRY_ADET if reason == "stop_gec" else 1
         devam, canli = False, None
         for i in range(deneme):
             devam, canli = self._exec_fill("sat", pos["token_address"],
@@ -845,7 +836,7 @@ class V7Engine:
         self.balance += proceeds
         self.realized_pnl += pnl
         self._day_realized_add(pnl, now)
-        cd = COOLDOWN_LOSS_SEC if reason in ("stop_gec", "stop_felaket") else COOLDOWN_EXIT_SEC
+        cd = COOLDOWN_LOSS_SEC if reason == "stop_gec" else COOLDOWN_EXIT_SEC
         if pos.get("token_address"):
             self._cooldown_until[pos["token_address"]] = now + cd
         try:

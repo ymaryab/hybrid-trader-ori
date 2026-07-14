@@ -35,7 +35,6 @@ from hibrit_trader.paper import _now_iso
 from hibrit_trader.safety import check_token
 from hibrit_trader.v7_session import (
     CEILING_SEC,
-    DISASTER_PCT,
     GRACE_SEC,
     LATE_STOP_PCT,
     TP_PCT,
@@ -140,14 +139,12 @@ class GolgeDefter:
             pos["mae_pct"] = round(min(pos["mae_pct"], pnl_pct), 4)
             age = now - pos["opened_ts"]
             sonuc = None
-            if pnl_pct >= TP_PCT:
+            if pnl_pct > TP_PCT:
                 sonuc = "tp_2"
-            elif pnl_pct <= DISASTER_PCT:
-                sonuc = "stop_felaket"
             elif age >= GRACE_SEC and pnl_pct <= LATE_STOP_PCT:
                 sonuc = "stop_gec"
             elif age >= CEILING_SEC:
-                sonuc = "timeout_60"
+                sonuc = "timeout_120"
             if sonuc is None:
                 continue
             self.acik.remove(pos)

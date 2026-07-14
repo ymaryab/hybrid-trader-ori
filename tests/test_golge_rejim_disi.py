@@ -103,15 +103,14 @@ def test_tick_tp_2():
     assert d.acik == []
 
 
-def test_tick_grace_icinde_stop_yok_fren_var():
+def test_tick_grace_icinde_stop_yok():
     d = GolgeDefter()
     now = time.time()
     _tek_poz(d, now)
     # 10. dk -%3: sabir penceresi, kapanis yok
     assert d.tick({"POOL1": 0.97}, now + 600) == []
-    # ama -%10 freni her an gecerli
-    rows = d.tick({"POOL1": 0.89}, now + 620)
-    assert rows[0]["sonuc"] == "stop_felaket"
+    # 14 Tem: fren iptal; grace icinde -%11 bile kapanmaz
+    assert d.tick({"POOL1": 0.89}, now + 620) == []
 
 
 def test_tick_stop_gec_ve_tavan():
@@ -123,7 +122,7 @@ def test_tick_stop_gec_ve_tavan():
     d2 = GolgeDefter()
     _tek_poz(d2, now)
     rows2 = d2.tick({"POOL1": 1.005}, now + gr.CEILING_SEC + 1)
-    assert rows2[0]["sonuc"] == "timeout_60"
+    assert rows2[0]["sonuc"] == "timeout_120"
     assert rows2[0]["pnl_pct"] == pytest.approx(0.5)
 
 
@@ -133,7 +132,7 @@ def test_tick_fiyatsiz_pozisyon_son_fiyatla_degerlenir():
     _tek_poz(d, now)
     d.tick({"POOL1": 1.015}, now + 60)     # tavan izi guncellenir, kapanmaz
     rows = d.tick({}, now + gr.CEILING_SEC + 1)  # fiyat gelmedi: son fiyat
-    assert rows[0]["sonuc"] == "timeout_60"
+    assert rows[0]["sonuc"] == "timeout_120"
     assert rows[0]["tavan_pct"] == pytest.approx(1.5)
 
 
@@ -164,7 +163,7 @@ def test_ozet_esik_bazli_pnl(gr_data_dir):
     kayitlar = [
         {"esik_kovalar": [0.2, 0.35], "pnl_pct": 2.0, "bilet_usd": 100.0, "sonuc": "tp_2"},
         {"esik_kovalar": [0.2], "pnl_pct": -2.0, "bilet_usd": 100.0, "sonuc": "stop_gec"},
-        {"esik_kovalar": [0.2, 0.35, 0.4], "pnl_pct": 1.0, "bilet_usd": None, "sonuc": "timeout_60"},
+        {"esik_kovalar": [0.2, 0.35, 0.4], "pnl_pct": 1.0, "bilet_usd": None, "sonuc": "timeout_120"},
     ]
     p = gr_data_dir / gr.OUTPUT_FILE
     p.write_text("".join(json.dumps(k) + "\n" for k in kayitlar))

@@ -68,11 +68,10 @@ LIQ_MIN_USD = float(os.getenv("V7C_MIN_LIQ_USD", "3000000"))  # evren + giris es
 UNIVERSE_REFRESH_SEC = 24 * 3600
 MAX_SLOTS = 5
 START_BALANCE = float(os.getenv("V7C_START_BALANCE", "1000"))
-TP_PCT = 2.0
-GRACE_SEC = 30 * 60
+TP_PCT = 2.0            # +%2 UZERI satar (14 Tem: v7 ile birebir, esitlik satmaz)
+GRACE_SEC = 120 * 60    # 14 Tem: v7 ile birebir 120dk
 LATE_STOP_PCT = -2.0
-DISASTER_PCT = -10.0
-CEILING_SEC = 60 * 60
+CEILING_SEC = 120 * 60  # 14 Tem: v7 ile birebir 120dk
 SOL_H1_MIN = 0.5
 DAILY_LOSS_LIMIT_USD = float(os.getenv("MOM_DAILY_LOSS_LIMIT_USD", "0"))
 COOLDOWN_LOSS_SEC = float(os.getenv("MOM_COOLDOWN_STOP_MIN", "60")) * 60
@@ -339,9 +338,9 @@ class V7CEngine:
         log.warning(
             "V7C senaryo basladi (v7 kurallari, major evren) - sanal $%.2f · slot %d · "
             "evren+giris liq>=$%.0f · h1 %.0f..%.0f · rejim sol_h1>=%.1f · "
-            "cikis tp+%.0f%% / fren %%%.0f / %dm sabir sonrasi stop%%%.0f / tavan %dm · PAPER sabit",
+            "cikis tp+%.0f%% uzeri / %dm sabir sonrasi stop%%%.0f / tavan %dm · PAPER sabit",
             self.balance, MAX_SLOTS, LIQ_MIN_USD, CHG_H1_MIN, CHG_H1_MAX, SOL_H1_MIN,
-            TP_PCT, DISASTER_PCT, GRACE_SEC // 60, LATE_STOP_PCT, CEILING_SEC // 60,
+            TP_PCT, GRACE_SEC // 60, LATE_STOP_PCT, CEILING_SEC // 60,
         )
         self._save()
         time.sleep(SCAN_INTERVAL_SEC * 11 / 16)
@@ -475,7 +474,7 @@ class V7CEngine:
                     pair.name, usd, eff_price, pair.chg_h1, pair.liquidity_usd)
         return True
 
-    # ---- Cikis: v7 ile birebir (tp_2 / stop_felaket / stop_gec / timeout_60) ------
+    # ---- Cikis: v7 ile birebir (tp_2 +%2 uzeri / stop_gec / timeout_120) ----------
     def _manage_exits(self, client: httpx.Client) -> None:
         now = time.time()
         for pos in list(self.positions):
@@ -495,14 +494,12 @@ class V7CEngine:
             age = now - pos["opened_ts"]
 
             reason = None
-            if pnl_pct >= TP_PCT:
+            if pnl_pct > TP_PCT:
                 reason = "tp_2"
-            elif pnl_pct <= DISASTER_PCT:
-                reason = "stop_felaket"
             elif age >= GRACE_SEC and pnl_pct <= LATE_STOP_PCT:
                 reason = "stop_gec"
             elif age >= CEILING_SEC:
-                reason = "timeout_60"
+                reason = "timeout_120"
             if reason:
                 self._close_position(pos, price, reason, now)
 
@@ -548,7 +545,7 @@ class V7CEngine:
         self.balance += proceeds
         self.realized_pnl += pnl
         self._day_realized_add(pnl, now)
-        cd = COOLDOWN_LOSS_SEC if reason in ("stop_gec", "stop_felaket") else COOLDOWN_EXIT_SEC
+        cd = COOLDOWN_LOSS_SEC if reason == "stop_gec" else COOLDOWN_EXIT_SEC
         if pos.get("token_address"):
             self._cooldown_until[pos["token_address"]] = now + cd
         try:

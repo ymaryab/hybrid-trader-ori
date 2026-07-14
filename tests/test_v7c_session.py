@@ -87,10 +87,9 @@ def test_exec_paper_kalir_brokermode_live_iken(v7c_data_dir, monkeypatch):
 
 def test_v7_sabitleri_birebir(v7c_data_dir):
     assert v7c.TP_PCT == v7.TP_PCT == 2.0
-    assert v7c.GRACE_SEC == v7.GRACE_SEC == 30 * 60
+    assert v7c.GRACE_SEC == v7.GRACE_SEC == 120 * 60
     assert v7c.LATE_STOP_PCT == v7.LATE_STOP_PCT == -2.0
-    assert v7c.DISASTER_PCT == v7.DISASTER_PCT == -10.0
-    assert v7c.CEILING_SEC == v7.CEILING_SEC == 60 * 60
+    assert v7c.CEILING_SEC == v7.CEILING_SEC == 120 * 60
     # 13 Tem cift ayar: v7 esigi 0.35'e indi, v7c 0.5'te kaldi (kendi esigi)
     assert v7c.SOL_H1_MIN == 0.5
     assert v7.SOL_H1_MIN == 0.35
@@ -144,13 +143,13 @@ def test_entry_cooldown_tutar(v7c_data_dir, monkeypatch):
     assert _enter(eng, monkeypatch, _pair()) == []
 
 
-# ---- Cikislar: v7 ile birebir (tp_2 / stop_felaket / stop_gec / timeout_60) -----------
+# ---- Cikislar: v7 ile birebir (tp_2 +%2 uzeri / stop_gec / timeout_120) ---------------
 
 def test_tp_2(v7c_data_dir, monkeypatch):
     eng = V7CEngine(_settings())
     pos = _open(eng)
     t0 = pos["opened_ts"]
-    _tick_price(eng, pos, pos["entry_price"] * 1.02, t0 + 60, monkeypatch)
+    _tick_price(eng, pos, pos["entry_price"] * 1.021, t0 + 60, monkeypatch)
     t = _last(v7c_data_dir)
     assert t["exit_reason"] == "tp_2"
     assert eng._cooldown_until[pos["token_address"]] == pytest.approx(
@@ -158,29 +157,29 @@ def test_tp_2(v7c_data_dir, monkeypatch):
     )
 
 
-def test_sabir_fren_ustunde_tutar(v7c_data_dir, monkeypatch):
+def test_sabir_derin_dususte_tutar(v7c_data_dir, monkeypatch):
     eng = V7CEngine(_settings())
     pos = _open(eng)
-    # -%9.9: fren tetiklenmez, sabir tutar
-    _tick_price(eng, pos, pos["entry_price"] * 0.901,
+    # 14 Tem: fren iptal; grace icinde -%50 bile satmaz
+    _tick_price(eng, pos, pos["entry_price"] * 0.50,
                 pos["opened_ts"] + v7c.GRACE_SEC - 1, monkeypatch)
     assert eng.positions == [pos]
 
 
-def test_fren_eksi_10(v7c_data_dir, monkeypatch):
+def test_derin_dusus_grace_sonrasi_stop_gec(v7c_data_dir, monkeypatch):
     eng = V7CEngine(_settings())
     pos = _open(eng)
     t0 = pos["opened_ts"]
-    _tick_price(eng, pos, pos["entry_price"] * 0.89, t0 + 60, monkeypatch)
+    _tick_price(eng, pos, pos["entry_price"] * 0.89, t0 + v7c.GRACE_SEC + 1, monkeypatch)
     assert eng.positions == []
     t = _last(v7c_data_dir)
-    assert t["exit_reason"] == "stop_felaket"
+    assert t["exit_reason"] == "stop_gec"
     assert eng._cooldown_until[pos["token_address"]] == pytest.approx(
-        t0 + 60 + v7c.COOLDOWN_LOSS_SEC
+        t0 + v7c.GRACE_SEC + 1 + v7c.COOLDOWN_LOSS_SEC
     )
 
 
-def test_gec_stop_30dk_sonra(v7c_data_dir, monkeypatch):
+def test_gec_stop_120dk_sonra(v7c_data_dir, monkeypatch):
     eng = V7CEngine(_settings())
     pos = _open(eng)
     _tick_price(eng, pos, pos["entry_price"] * 0.97,
@@ -188,12 +187,12 @@ def test_gec_stop_30dk_sonra(v7c_data_dir, monkeypatch):
     assert _last(v7c_data_dir)["exit_reason"] == "stop_gec"
 
 
-def test_tavan_60dk(v7c_data_dir, monkeypatch):
+def test_tavan_120dk(v7c_data_dir, monkeypatch):
     eng = V7CEngine(_settings())
     pos = _open(eng)
     _tick_price(eng, pos, pos["entry_price"] * 1.005,
                 pos["opened_ts"] + v7c.CEILING_SEC + 1, monkeypatch)
-    assert _last(v7c_data_dir)["exit_reason"] == "timeout_60"
+    assert _last(v7c_data_dir)["exit_reason"] == "timeout_120"
 
 
 # ---- Izolasyon: sadece v7c_* dosyalari -------------------------------------------------

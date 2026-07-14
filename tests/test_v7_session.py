@@ -1,4 +1,4 @@
-"""V7 senaryo motoru testleri: v6 birebir + TEK fark -%10 felaket freni."""
+"""V7 senaryo motoru testleri: 120dk sabir, fren yok (14 Tem kullanici karari)."""
 
 from __future__ import annotations
 
@@ -246,7 +246,7 @@ def test_tp_2(v7_data_dir, monkeypatch):
     eng = V7Engine(_settings())
     pos = _open(eng)
     t0 = pos["opened_ts"]
-    _tick_price(eng, pos, pos["entry_price"] * 1.02, t0 + 60, monkeypatch)
+    _tick_price(eng, pos, pos["entry_price"] * 1.021, t0 + 60, monkeypatch)
     t = _last(v7_data_dir)
     assert t["exit_reason"] == "tp_2"
     assert eng._cooldown_until[pos["token_address"]] == pytest.approx(
@@ -254,30 +254,43 @@ def test_tp_2(v7_data_dir, monkeypatch):
     )
 
 
-def test_patience_holds_above_brake(v7_data_dir, monkeypatch):
+def test_tp_esitlik_satmaz(v7_data_dir, monkeypatch):
+    # 14 Tem kurali: pnl TAM esikte satmaz, ancak UZERINE cikinca satar.
+    # Float kesinligi icin dyadik degerler: 33/32 = tam 1.03125 -> pnl tam 3.125
     eng = V7Engine(_settings())
     pos = _open(eng)
-    # -%9.9: fren tetiklenmez, sabir tutar (kurtarma bolgesi yasiyor)
-    _tick_price(eng, pos, pos["entry_price"] * 0.901, pos["opened_ts"] + v7.GRACE_SEC - 1, monkeypatch)
+    pos["entry_price"] = 32.0
+    pos["last_price"] = 32.0
+    monkeypatch.setattr(v7, "TP_PCT", 3.125)
+    now = pos["opened_ts"] + 60
+    assert eng._eval_position(pos, 33.0, now) is None
+    assert eng._eval_position(pos, 33.5, now) == "tp_2"
+
+
+def test_patience_holds_deep_drawdown(v7_data_dir, monkeypatch):
+    # 14 Tem: fren iptal; grace icinde -%50 bile satmaz
+    eng = V7Engine(_settings())
+    pos = _open(eng)
+    _tick_price(eng, pos, pos["entry_price"] * 0.50, pos["opened_ts"] + v7.GRACE_SEC - 1, monkeypatch)
     assert eng.positions == [pos]
 
 
-def test_brake_fires_at_minus_10(v7_data_dir, monkeypatch):
+def test_deep_drawdown_stops_after_grace(v7_data_dir, monkeypatch):
+    # 14 Tem: fren yok; derin dusus ancak 120dk sabir bitince stop_gec ile kapanir
     eng = V7Engine(_settings())
     pos = _open(eng)
     t0 = pos["opened_ts"]
-    # TEK fark: ilk 30dk icinde -%11 -> sabir iptal, aninda stop_felaket
-    _tick_price(eng, pos, pos["entry_price"] * 0.89, t0 + 60, monkeypatch)
+    _tick_price(eng, pos, pos["entry_price"] * 0.89, t0 + v7.GRACE_SEC + 1, monkeypatch)
     assert eng.positions == []
     t = _last(v7_data_dir)
-    assert t["exit_reason"] == "stop_felaket"
+    assert t["exit_reason"] == "stop_gec"
     # kayip cikisi: 60dk cooldown
     assert eng._cooldown_until[pos["token_address"]] == pytest.approx(
-        t0 + 60 + v7.COOLDOWN_LOSS_SEC
+        t0 + v7.GRACE_SEC + 1 + v7.COOLDOWN_LOSS_SEC
     )
 
 
-def test_late_stop_after_30min(v7_data_dir, monkeypatch):
+def test_late_stop_after_120min(v7_data_dir, monkeypatch):
     eng = V7Engine(_settings())
     pos = _open(eng)
     t0 = pos["opened_ts"]
@@ -289,11 +302,11 @@ def test_late_stop_after_30min(v7_data_dir, monkeypatch):
     )
 
 
-def test_timeout_60(v7_data_dir, monkeypatch):
+def test_timeout_120(v7_data_dir, monkeypatch):
     eng = V7Engine(_settings())
     pos = _open(eng)
     _tick_price(eng, pos, pos["entry_price"] * 1.005, pos["opened_ts"] + v7.CEILING_SEC + 1, monkeypatch)
-    assert _last(v7_data_dir)["exit_reason"] == "timeout_60"
+    assert _last(v7_data_dir)["exit_reason"] == "timeout_120"
 
 
 # ---- sol_h1 kaydi + tam set + izolasyon (v6 ile ayni) --------------------------------
@@ -313,7 +326,7 @@ def test_sol_h1_recorded_in_trade(v7_data_dir, monkeypatch):
 def test_writes_only_v7_files(v7_data_dir, monkeypatch):
     eng = V7Engine(_settings())
     pos = _open(eng)
-    _tick_price(eng, pos, pos["entry_price"] * 1.02, pos["opened_ts"] + 60, monkeypatch)
+    _tick_price(eng, pos, pos["entry_price"] * 1.021, pos["opened_ts"] + 60, monkeypatch)
     files = sorted(p.name for p in v7_data_dir.iterdir())
     assert all(f.startswith("v7_") for f in files), files
     state = json.loads((v7_data_dir / v7.STATE_FILE).read_text())
@@ -368,7 +381,7 @@ def test_daily_loss_gun_devri_bloku_kaldirir(v7_data_dir, monkeypatch):
 def test_daily_loss_kapanista_birikir(v7_data_dir, monkeypatch):
     eng = V7Engine(_settings())
     pos = _open(eng)
-    _tick_price(eng, pos, pos["entry_price"] * 0.89, pos["opened_ts"] + 60, monkeypatch)
+    _tick_price(eng, pos, pos["entry_price"] * 0.89, pos["opened_ts"] + v7.GRACE_SEC + 1, monkeypatch)
     t = _last(v7_data_dir)
     assert t["pnl_usd"] < 0
     assert eng._day_realized == pytest.approx(t["pnl_usd"], abs=1e-3)
@@ -377,7 +390,7 @@ def test_daily_loss_kapanista_birikir(v7_data_dir, monkeypatch):
 def test_daily_loss_restartta_trades_dosyasindan_yuklenir(v7_data_dir, monkeypatch):
     eng = V7Engine(_settings())
     pos = _open(eng)
-    _tick_price(eng, pos, pos["entry_price"] * 0.89, pos["opened_ts"] + 60, monkeypatch)
+    _tick_price(eng, pos, pos["entry_price"] * 0.89, pos["opened_ts"] + v7.GRACE_SEC + 1, monkeypatch)
     kayip = _last(v7_data_dir)["pnl_usd"]
     eng2 = V7Engine(_settings())
     assert eng2._day_realized == pytest.approx(kayip)
@@ -547,7 +560,7 @@ def test_satis_bps_tp_150_alim_50_kalir(v7_data_dir, monkeypatch):
     eng = V7Engine(_settings())
     eng._exec = _StubExec("dryrun")
     pos = _open(eng)
-    _tick_price(eng, pos, pos["entry_price"] * 1.02, pos["opened_ts"] + 60, monkeypatch)
+    _tick_price(eng, pos, pos["entry_price"] * 1.021, pos["opened_ts"] + 60, monkeypatch)
     assert eng._exec.orders[0].yon == "al" and eng._exec.orders[0].slippage_bps == 50
     o_sat = eng._exec.orders[-1]
     assert o_sat.yon == "sat" and o_sat.slippage_bps == 150
@@ -555,16 +568,6 @@ def test_satis_bps_tp_150_alim_50_kalir(v7_data_dir, monkeypatch):
     assert t["exit_reason"] == "tp_2"
     # poll yolunda olcum kolonlari: kaynak poll, gecikme yok
     assert t["price_source"] == "poll" and t["tetik_gecikme_sec"] is None
-
-
-def test_satis_bps_stop_felaket_1000_dryrun_tek_deneme(v7_data_dir, monkeypatch):
-    eng = V7Engine(_settings())
-    eng._exec = _StubExec("dryrun")
-    pos = _open(eng)
-    _tick_price(eng, pos, pos["entry_price"] * 0.88, pos["opened_ts"] + 60, monkeypatch)
-    assert _last(v7_data_dir)["exit_reason"] == "stop_felaket"
-    assert eng._exec.orders[-1].slippage_bps == 1000
-    assert len(eng._exec.orders) == 2  # al + tek satis: tekrar sadece live'da
 
 
 def test_satis_bps_stop_gec_300(v7_data_dir, monkeypatch):
@@ -575,6 +578,7 @@ def test_satis_bps_stop_gec_300(v7_data_dir, monkeypatch):
                 pos["opened_ts"] + v7.GRACE_SEC + 1, monkeypatch)
     assert _last(v7_data_dir)["exit_reason"] == "stop_gec"
     assert eng._exec.orders[-1].slippage_bps == 300
+    assert len(eng._exec.orders) == 2  # al + tek satis: tekrar sadece live'da
 
 
 def test_satis_bps_timeout_150(v7_data_dir, monkeypatch):
@@ -583,7 +587,7 @@ def test_satis_bps_timeout_150(v7_data_dir, monkeypatch):
     pos = _open(eng)
     _tick_price(eng, pos, pos["entry_price"] * 1.005,
                 pos["opened_ts"] + v7.CEILING_SEC + 1, monkeypatch)
-    assert _last(v7_data_dir)["exit_reason"] == "timeout_60"
+    assert _last(v7_data_dir)["exit_reason"] == "timeout_120"
     assert eng._exec.orders[-1].slippage_bps == 150
 
 
@@ -596,13 +600,13 @@ def test_stop_yolunda_satis_tekrari_basarili(v7_data_dir, monkeypatch):
     pos = _open(eng)
     uykular: list[float] = []
     monkeypatch.setattr(v7.time, "sleep", lambda s: uykular.append(s))
-    _tick_price(eng, pos, 0.88, pos["opened_ts"] + 60, monkeypatch)
+    _tick_price(eng, pos, 0.88, pos["opened_ts"] + v7.GRACE_SEC + 1, monkeypatch)
     assert eng.positions == []
     assert [o.yon for o in eng._exec.orders] == ["al", "sat", "sat", "sat"]
-    assert all(o.slippage_bps == 1000 for o in eng._exec.orders[1:])
+    assert all(o.slippage_bps == 300 for o in eng._exec.orders[1:])
     assert uykular == [v7.STOP_RETRY_SEC, v7.STOP_RETRY_SEC]
     t = _last(v7_data_dir)
-    assert t["exit_reason"] == "stop_felaket" and t["signature"] == "S2"
+    assert t["exit_reason"] == "stop_gec" and t["signature"] == "S2"
 
 
 def test_stop_yolunda_tum_tekrarlar_basarisiz_pozisyon_acik(v7_data_dir, monkeypatch):
@@ -612,7 +616,7 @@ def test_stop_yolunda_tum_tekrarlar_basarisiz_pozisyon_acik(v7_data_dir, monkeyp
     pos = _open(eng)
     uykular: list[float] = []
     monkeypatch.setattr(v7.time, "sleep", lambda s: uykular.append(s))
-    _tick_price(eng, pos, 0.88, pos["opened_ts"] + 60, monkeypatch)
+    _tick_price(eng, pos, 0.88, pos["opened_ts"] + v7.GRACE_SEC + 1, monkeypatch)
     assert len(eng.positions) == 1  # SATIS ERTELENDI, sonraki kadansta tekrar
     assert len(eng._exec.orders) == 4  # al + 3 satis denemesi
     assert uykular == [v7.STOP_RETRY_SEC, v7.STOP_RETRY_SEC]
@@ -626,7 +630,7 @@ def test_tp_yolunda_live_satis_tek_deneme(v7_data_dir, monkeypatch):
     pos = _open(eng)
     uykular: list[float] = []
     monkeypatch.setattr(v7.time, "sleep", lambda s: uykular.append(s))
-    _tick_price(eng, pos, pos["entry_price"] * 1.02, pos["opened_ts"] + 60, monkeypatch)
+    _tick_price(eng, pos, pos["entry_price"] * 1.021, pos["opened_ts"] + 60, monkeypatch)
     assert len(eng.positions) == 1  # basarisiz tp satisi ertelenir, tekrar YOK
     assert len(eng._exec.orders) == 2  # al + tek satis denemesi
     assert uykular == []
@@ -661,14 +665,14 @@ def test_open_position_havuzu_feede_ekler(v7_data_dir, monkeypatch):
 def test_fast_exit_tick_feed_fiyatiyla_kapatir(v7_data_dir, monkeypatch):
     eng = V7Engine(_settings())
     pos = _open(eng)
-    now = pos["opened_ts"] + 60
+    now = pos["opened_ts"] + v7.GRACE_SEC + 60
     feed = _FakeFeed({pos["pool_address"]: (pos["entry_price"] * 0.88, now - 1.0)})
     monkeypatch.setattr(v7, "get_feed", lambda: feed)
     monkeypatch.setattr(v7.time, "time", lambda: now)
     eng.fast_exit_tick()
     assert eng.positions == []
     t = _last(v7_data_dir)
-    assert t["exit_reason"] == "stop_felaket"
+    assert t["exit_reason"] == "stop_gec"
     assert t["price_source"] == "fast"
     assert t["tetik_gecikme_sec"] == pytest.approx(1.0)
     assert feed.cikan == [pos["pool_address"]]  # kapanan havuz feed'ten cikti
@@ -696,7 +700,7 @@ def test_manage_exits_feed_oncelikli_poll_cagrilmaz(v7_data_dir, monkeypatch):
     eng = V7Engine(_settings())
     pos = _open(eng)
     now = pos["opened_ts"] + 60
-    feed = _FakeFeed({pos["pool_address"]: (pos["entry_price"] * 1.02, now - 0.5)})
+    feed = _FakeFeed({pos["pool_address"]: (pos["entry_price"] * 1.021, now - 0.5)})
     monkeypatch.setattr(v7, "get_feed", lambda: feed)
 
     def _poll_yasak(client, chain, pool):
