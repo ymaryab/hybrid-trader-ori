@@ -105,6 +105,7 @@ EXIT_SLIPPAGE_BPS = {"tp_2": 150, "timeout_60": 150,
                      "stop_gec": 300, "stop_felaket": 1000}
 STOP_RETRY_ADET = 3     # stop yolunda basarisiz satis: kadans beklemeden tekrar
 STOP_RETRY_SEC = 3.0
+SAT_COOLDOWN_SEC = 20.0  # ertelenen satis sonrasi soguma; yoksa 1s kadans Jupiter'i 429'a bogar
 
 STATE_FILE = "v7_state.json"
 TRADES_FILE = "v7_trades.jsonl"
@@ -556,6 +557,8 @@ class V7Engine:
                 self._close_position(pos, price, reason, now)
 
     def _close_position(self, pos: dict, price: float, reason: str, now: float) -> None:
+        if time.time() < pos.get("_sat_bekle_ts", 0.0):
+            return
         cost = pos["cost_usd"]
         slip = _mom_slippage(cost, pos["liq_entry"])
         eff_price = price * (1 - slip)
@@ -576,8 +579,10 @@ class V7Engine:
                             i + 1, deneme, STOP_RETRY_SEC)
                 time.sleep(STOP_RETRY_SEC)
         if not devam:
+            pos["_sat_bekle_ts"] = time.time() + SAT_COOLDOWN_SEC
             log.error("V7 SATIS ERTELENDI %s: canli satis gerceklesmedi, "
-                      "sonraki kadansta tekrar denenecek", pos["pair"])
+                      "%.0fs soguma sonrasi tekrar denenecek",
+                      pos["pair"], SAT_COOLDOWN_SEC)
             return
         if canli is not None and canli.fiyat > 0:  # sadece live baglayici
             eff_price = canli.fiyat
