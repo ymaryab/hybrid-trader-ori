@@ -490,6 +490,40 @@ def test_live_islem_hatasi_kilit_acmaz(data_dir, monkeypatch):
         assert br.execute(_al_emri()).neden == "islem_hatasi"
 
 
+# ---- live jupiter kota kapisi (14 Tem 429 firtinasi paketi) -----------------------------
+
+def test_live_alim_jupiter_kota_reddi(data_dir, monkeypatch):
+    from hibrit_trader import kota
+
+    br = _live_broker(data_dir, monkeypatch)
+    gorulen = _swap_yakala(monkeypatch)
+    kota.ceza_429("jupiter")  # kova bos: alim tabani gecilemez
+    fill = br.execute(_al_emri())
+    assert fill.ok is False and fill.neden == "kota_reddi"
+    assert gorulen == {}  # swap katmanina hic ulasilmadi
+
+
+def test_live_satis_bos_kovada_bile_gecer(data_dir, monkeypatch):
+    from hibrit_trader import kota
+
+    br = _live_broker(data_dir, monkeypatch)
+    monkeypatch.setattr(broker, "_cuzdan_yukle",
+                        lambda mode: SimpleNamespace(pubkey=lambda: "PUB"))
+    monkeypatch.setattr(br, "_decimals", lambda mint: 9)
+    monkeypatch.setattr(broker, "_zincir_token_bakiye", lambda *a, **k: None)
+
+    def sahte_sat(http, rpc, kp, mint, amount_raw, bps):
+        return {"signature": "SIGSAT", "in_amount": amount_raw,
+                "out_amount": 123_750_000, "proceeds_usd": 9.9,
+                "sol_price_usd": 80.0}
+
+    monkeypatch.setattr("hibrit_trader.jupiter.swap_token_to_sol", sahte_sat)
+    kota.ceza_429("jupiter")
+    sat = br.execute(ExecOrder(engine="T", yon="sat", token_address=TOK,
+                               amount_token=50.0, ref_fiyat=0.2))
+    assert sat.ok is True and sat.tx_id == "SIGSAT"
+
+
 # ---- live alim bileti: sabit oran, bilet = MTM x LIVE_TICKET_PCT (12 Tem nihai) ---------
 
 def _swap_yakala(monkeypatch):

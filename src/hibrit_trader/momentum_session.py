@@ -146,10 +146,38 @@ def _rejim_gecis_bildir(val: float | None, now: float) -> None:
         log.debug("rejim bildirimi gonderilemedi", exc_info=True)
 
 
-def sol_chg_h1(client: httpx.Client) -> float | None:
-    """SOL/USDC chg_h1, motorlar arasi TEK cache. Hata durumunda raise etmez."""
-    global _sol_h1_paylasimli
+def _sol_h1_gecko(client: httpx.Client) -> float | None:
     from hibrit_trader.config import API
+
+    url = f"{API['geckoterminal']}/networks/solana/pools/{SOL_USDC_POOL}"
+    resp = client.get(url, headers={"accept": "application/json"}, timeout=10)
+    resp.raise_for_status()
+    chg = (resp.json()["data"]["attributes"].get("price_change_percentage") or {}).get("h1")
+    return round(float(chg), 3) if chg is not None else None
+
+
+def _sol_h1_dexscreener(client: httpx.Client) -> float | None:
+    """Yedek kaynak: ayni SOL/USDC havuzu DexScreener'dan. GT 429 firtinasi
+    sol_h1'i kesip rejimi fail-closed kapatmasin diye (14 Tem karari)."""
+    from hibrit_trader.config import API
+
+    url = f"{API['dexscreener']}/latest/dex/pairs/solana/{SOL_USDC_POOL}"
+    resp = client.get(url, headers={"accept": "application/json"}, timeout=10)
+    resp.raise_for_status()
+    data = resp.json()
+    pair = data.get("pair") or ((data.get("pairs") or [None])[0])
+    if not pair:
+        return None
+    chg = (pair.get("priceChange") or {}).get("h1")
+    return round(float(chg), 3) if chg is not None else None
+
+
+def sol_chg_h1(client: httpx.Client) -> float | None:
+    """SOL/USDC chg_h1, motorlar arasi TEK cache. Hata durumunda raise etmez.
+    Kaynak sirasi: GeckoTerminal, olmazsa DexScreener. Ikisi de yoksa stale
+    penceresi, o da gecmisse None (fail-closed semantigi degismedi)."""
+    global _sol_h1_paylasimli
+    from hibrit_trader import kota
 
     taze = False
     with _sol_h1_lock:
@@ -158,20 +186,24 @@ def sol_chg_h1(client: httpx.Client) -> float | None:
         if now - ts < SOL_H1_CACHE_SEC:
             val = cached
         else:
-            try:
-                url = f"{API['geckoterminal']}/networks/solana/pools/{SOL_USDC_POOL}"
-                resp = client.get(url, headers={"accept": "application/json"}, timeout=10)
-                resp.raise_for_status()
-                chg = (resp.json()["data"]["attributes"].get("price_change_percentage") or {}).get("h1")
-                val = round(float(chg), 3) if chg is not None else None
+            val = None
+            if kota.izin("geckoterminal", "rejim"):
+                try:
+                    val = _sol_h1_gecko(client)
+                except Exception:
+                    log.debug("sol_chg_h1 GT fetch hatasi", exc_info=True)
+            if val is None and kota.izin("dexscreener", "rejim"):
+                try:
+                    val = _sol_h1_dexscreener(client)
+                    if val is not None:
+                        log.warning("sol_h1 yedek kaynaktan alindi (DexScreener): %.3f", val)
+                except Exception:
+                    log.debug("sol_chg_h1 DexScreener fetch hatasi", exc_info=True)
+            if val is not None:
                 _sol_h1_paylasimli = (time.time(), val)
                 taze = True
-            except Exception:
-                log.debug("sol_chg_h1 paylasimli fetch hatasi", exc_info=True)
-                if cached is not None and now - ts <= SOL_H1_STALE_MAX_SEC:
-                    val = cached
-                else:
-                    val = None
+            elif cached is not None and now - ts <= SOL_H1_STALE_MAX_SEC:
+                val = cached
     if taze:
         # bildirim kilit DISINDA: Telegram POST'u diger motorlarin okumasini bloklamasin
         _rejim_gecis_bildir(val, time.time())
@@ -763,7 +795,7 @@ class MomentumEngine:
             key=lambda w: w["due_ts"],
         )[:RECHECK_MAX_PER_TICK]
         for w in due:
-            price = fetch_pool_price(client, w["chain"], w["pool_address"])
+            price = fetch_pool_price(client, w["chain"], w["pool_address"], sinif="tarama")
             chg = (
                 round((price / w["price_at_reject"] - 1) * 100, 3)
                 if price and w["price_at_reject"] > 0 else None
@@ -825,7 +857,7 @@ class MomentumEngine:
         for tid in list(self._shadow_watch.keys()):
             w = self._shadow_watch[tid]
             elapsed = now - w["exit_ts"]
-            price = fetch_pool_price(client, w["chain"], w["pool_address"])
+            price = fetch_pool_price(client, w["chain"], w["pool_address"], sinif="tarama")
             if price is not None and price > 0:
                 if price > w["wmax"]:
                     w["wmax"] = price

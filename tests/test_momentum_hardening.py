@@ -264,6 +264,67 @@ def test_shared_sol_h1_fresh_cache_no_fetch(monkeypatch):
     assert ms.sol_chg_h1(_FailingClient()) == 0.42  # fetch hiç denenmez
 
 
+class _DsResp:
+    def __init__(self, body):
+        self._body = body
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._body
+
+
+class _GtFailDsOkClient:
+    """GT istegi patlar (429 firtinasi), DexScreener h1 verir."""
+
+    def __init__(self, h1="0.87"):
+        self.h1 = h1
+        self.ds_calls = 0
+
+    def get(self, url, *a, **k):
+        if "geckoterminal" in url:
+            raise RuntimeError("429")
+        self.ds_calls += 1
+        return _DsResp({"pair": {"priceChange": {"h1": self.h1}}})
+
+
+def test_sol_h1_gt_dusunce_dexscreener_yedegi(monkeypatch):
+    monkeypatch.setattr(ms, "_sol_h1_paylasimli", (0.0, None))
+    assert ms.sol_chg_h1(_GtFailDsOkClient()) == 0.87
+    # yedek deger paylasimli cache'e taze yazilir
+    val, ts = ms.sol_h1_son_olcum()
+    assert val == 0.87 and ts > 0
+
+
+def test_sol_h1_kota_reddi_gt_atlanir_ds_kullanilir(monkeypatch):
+    from hibrit_trader import kota
+
+    monkeypatch.setattr(
+        kota, "izin",
+        lambda host, sinif, maliyet=1.0: host != "geckoterminal",
+    )
+
+    class _GtYasak(_GtFailDsOkClient):
+        def get(self, url, *a, **k):
+            assert "geckoterminal" not in url, "kota reddine ragmen GT istegi"
+            return super().get(url, *a, **k)
+
+    monkeypatch.setattr(ms, "_sol_h1_paylasimli", (0.0, None))
+    assert ms.sol_chg_h1(_GtYasak()) == 0.87
+
+
+def test_sol_h1_ds_pairs_listesi_de_okunur(monkeypatch):
+    class _DsListe:
+        def get(self, url, *a, **k):
+            if "geckoterminal" in url:
+                raise RuntimeError("429")
+            return _DsResp({"pairs": [{"priceChange": {"h1": "-1.25"}}]})
+
+    monkeypatch.setattr(ms, "_sol_h1_paylasimli", (0.0, None))
+    assert ms.sol_chg_h1(_DsListe()) == -1.25
+
+
 def test_sol_h1_son_olcum_fetch_tetiklemez(monkeypatch):
     # panel rozet yasi: cache'teki (deger, fetch_ts) cifti aynen doner,
     # bos cache'te (None, 0.0); hicbir kosulda GET atilmaz

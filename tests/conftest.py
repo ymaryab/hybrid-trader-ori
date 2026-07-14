@@ -40,6 +40,11 @@ def isolated_env(tmp_path, monkeypatch):
     # Telegram bildirimi testte gercek mesaj atmasin (killswitch.notify erken doner)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "")
+    # Kota kovalari ve tarama backoff izi testler arasi sizmasin
+    from hibrit_trader import kota
+    kota._reset()
+    monkeypatch.setattr("hibrit_trader.scanner._backoff_sec", 0.0)
+    monkeypatch.setattr("hibrit_trader.scanner._backoff_bitis", 0.0)
 
 
 @pytest.fixture(autouse=True)

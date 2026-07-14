@@ -292,7 +292,7 @@ def _recheck_tick(client: httpx.Client, now: float | None = None) -> None:
         )[:RECHECK_MAX_PER_TICK]
     for w in due:
         try:
-            price = fetch_pool_price(client, w["chain"], w["pool_address"])
+            price = fetch_pool_price(client, w["chain"], w["pool_address"], sinif="tarama")
         except Exception:
             price = None
         chg = (

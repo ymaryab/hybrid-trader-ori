@@ -38,12 +38,23 @@ def _cache_set(cache: dict[str, tuple[float, float]], key: str, value: float) ->
     cache[key] = (value, time.monotonic())
 
 
-def fetch_pool_price(client: httpx.Client, chain: str, pool_address: str) -> Optional[float]:
-    """GeckoTerminal tek havuz — güncel base_token_price_usd."""
+def fetch_pool_price(
+    client: httpx.Client, chain: str, pool_address: str, sinif: str = "feed"
+) -> Optional[float]:
+    """GeckoTerminal tek havuz — güncel base_token_price_usd.
+
+    sinif: kota oncelik sinifi. Pozisyon fiyatlamasi "feed", recheck/kesif
+    cagrilari "tarama" gecirmelidir; kota reddi None doner (cagiranlar zaten
+    None'i tolere ediyor)."""
     key = f"{chain}:{pool_address}"
     cached = _cache_get(_pool_cache, key)
     if cached is not None:
         return cached
+    from hibrit_trader import kota
+
+    if not kota.izin("geckoterminal", sinif):
+        log.debug("Havuz fiyati kota reddi (%s) %s", sinif, key)
+        return None
     url = f"{API['geckoterminal']}/networks/{chain}/pools/{pool_address}"
     try:
         resp = client.get(url, headers={"accept": "application/json"}, timeout=12)

@@ -106,9 +106,14 @@ class FastPriceFeed:
         return self._pools + extra
 
     def _poll_once(self, client: httpx.Client) -> None:
+        from hibrit_trader import kota
+
         watched = self._watched_pools()
         # pairs endpoint istek basina 30 havuz kabul eder; fazlasi chunk'lanir
         for i in range(0, len(watched), 30):
+            if not kota.izin("dexscreener", "feed"):
+                log.debug("fast_price kota reddi, tick atlandi")
+                return
             pools = ",".join(watched[i:i + 30])
             r = client.get(f"{API['dexscreener']}/latest/dex/pairs/solana/{pools}")
             r.raise_for_status()

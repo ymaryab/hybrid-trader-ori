@@ -161,7 +161,7 @@ def test_recheck_tick_suresi_gelince_fiyatlar(fresh_env, monkeypatch):
     monkeypatch.setattr(ef, "get_feed", lambda: _feed("FP1", 1.05))
     ef.taze_teyit(_pair(), "V6")
     assert "FP1" in ef._watch
-    monkeypatch.setattr(ef, "fetch_pool_price", lambda c, ch, p: 1.575)
+    monkeypatch.setattr(ef, "fetch_pool_price", lambda c, ch, p, **k: 1.575)
     ef._recheck_tick(SimpleNamespace(), now=time.time() + 31 * 60)
     rows = _rejects(fresh_env)
     assert rows[-1]["type"] == "recheck_30m"
@@ -373,7 +373,7 @@ def test_rejim_reject_tick_basina_en_cok_5(fresh_env):
 
 def test_rejim_reject_recheck_satiri(fresh_env, monkeypatch):
     ef.rejim_reject_kaydet([_pair(price=1.0)], "V6", 0.1)
-    monkeypatch.setattr(ef, "fetch_pool_price", lambda c, ch, p: 1.25)
+    monkeypatch.setattr(ef, "fetch_pool_price", lambda c, ch, p, **k: 1.25)
     ef._recheck_tick(SimpleNamespace(), now=time.time() + 31 * 60)
     rows = _rejects(fresh_env)
     assert rows[-1]["type"] == "recheck_30m"

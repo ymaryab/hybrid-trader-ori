@@ -46,6 +46,30 @@ def test_fetch_pool_price_parses_gecko(monkeypatch):
     assert price == 0.00421
 
 
+def test_fetch_pool_price_kota_reddi_istek_atmaz(monkeypatch):
+    from hibrit_trader import kota, live_sim
+
+    live_sim._pool_cache.clear()
+    monkeypatch.setattr(kota, "izin", lambda host, sinif, maliyet=1.0: False)
+    client = MagicMock()
+    assert fetch_pool_price(client, "solana", "Pool1") is None
+    client.get.assert_not_called()
+
+
+def test_fetch_pool_price_cache_kota_sormaz(monkeypatch):
+    # cache hit'te kota tuketilmez (izin patlarsa bile deger doner)
+    from hibrit_trader import kota, live_sim
+
+    live_sim._pool_cache.clear()
+    live_sim._cache_set(live_sim._pool_cache, "solana:Pool1", 0.5)
+
+    def _patla(*a, **k):
+        raise AssertionError("cache hit'te kota sorulmamali")
+
+    monkeypatch.setattr(kota, "izin", _patla)
+    assert fetch_pool_price(MagicMock(), "solana", "Pool1") == 0.5
+
+
 def test_jupiter_exit_quote(monkeypatch):
     client = MagicMock()
 

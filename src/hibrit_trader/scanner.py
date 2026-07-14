@@ -25,9 +25,15 @@ from hibrit_trader.config import API, DEFAULT_SCAN_CHAINS, restrict_chains, sola
 
 log = logging.getLogger(__name__)
 
-BACKOFF_429_SEC = float(os.getenv("SCAN_429_BACKOFF_SEC", "2.5"))
+BACKOFF_429_BASLANGIC_SEC = float(os.getenv("SCAN_429_BACKOFF_SEC", "5"))
+BACKOFF_429_TAVAN_SEC = float(os.getenv("SCAN_429_BACKOFF_MAX_SEC", "60"))
 SCAN_CACHE_SEC = float(os.getenv("SCAN_CACHE_SEC", "20"))
 SCAN_STALE_MAX_SEC = float(os.getenv("SCAN_STALE_MAX_SEC", "90"))
+
+# 429 ustel backoff durumu (14 Tem firtinasi: aninda retry kotayi ikiye katliyordu)
+_backoff_lock = threading.Lock()
+_backoff_sec = 0.0
+_backoff_bitis = 0.0
 
 
 @dataclass
@@ -108,16 +114,42 @@ def parse_pool(chain: str, item: dict) -> Optional[Pair]:
 
 
 def fetch_trending(client: httpx.Client, chain: str) -> list[Pair]:
-    """Tek ağın trend havuzlarını çeker. SOLANA_ONLY açıkken EVM ağı erken döner."""
+    """Tek ağın trend havuzlarını çeker. SOLANA_ONLY açıkken EVM ağı erken döner.
+
+    429'da aninda retry YOK: ustel backoff (baslangic 5s, tavan 60s) + kova
+    cezasi. Backoff penceresinde ve kota reddinde bos doner; scan_all_cached
+    son iyi sonucla telafi eder. sol_h1 ve satis hatti bu sayede ac kalmaz."""
+    global _backoff_sec, _backoff_bitis
     if solana_only_enabled() and chain != "solana":
+        return []
+    from hibrit_trader import kota
+
+    now = time.monotonic()
+    with _backoff_lock:
+        if now < _backoff_bitis:
+            log.debug("%s trending backoff penceresinde (%.0fs kaldi)",
+                      chain, _backoff_bitis - now)
+            return []
+    if not kota.izin("geckoterminal", "tarama"):
+        log.debug("%s trending kota reddi, tarama atlandi", chain)
         return []
     url = f"{API['geckoterminal']}/networks/{chain}/trending_pools"
     resp = client.get(url, headers={"accept": "application/json"}, timeout=15)
     if resp.status_code == 429:
-        log.warning("%s trending 429, %.1fs backoff sonrasi tek tekrar", chain, BACKOFF_429_SEC)
-        time.sleep(BACKOFF_429_SEC)
-        resp = client.get(url, headers={"accept": "application/json"}, timeout=15)
+        kota.ceza_429("geckoterminal")
+        with _backoff_lock:
+            _backoff_sec = min(max(_backoff_sec * 2, BACKOFF_429_BASLANGIC_SEC),
+                               BACKOFF_429_TAVAN_SEC)
+            _backoff_bitis = time.monotonic() + _backoff_sec
+            kota.tarama_backoff_kaydet(_backoff_bitis)
+        log.warning("%s trending 429: tarama %.0fs seyreltildi (ustel backoff)",
+                    chain, _backoff_sec)
+        return []
     resp.raise_for_status()
+    with _backoff_lock:
+        _backoff_sec = 0.0
+        _backoff_bitis = 0.0
+    kota.tarama_basarisi_kaydet()
     items = resp.json().get("data", [])
     pairs = [parse_pool(chain, item) for item in items]
     return [p for p in pairs if p is not None]
@@ -169,27 +201,32 @@ def scan_all(chains: tuple[str, ...] | None = None) -> list[Pair]:
                 gecko.extend(fetch_trending(client, chain))
             except httpx.HTTPError as e:
                 log.warning("%s taraması başarısız: %s", chain, e)
+        from hibrit_trader import kota
+
         ds: list[Pair] = []
-        try:
-            from hibrit_trader.dexscreener_scan import fetch_dexscreener_trending
+        if kota.izin("dexscreener", "tarama"):
+            try:
+                from hibrit_trader.dexscreener_scan import fetch_dexscreener_trending
 
-            ds = fetch_dexscreener_trending(client, chains=tuple(chains))
-        except Exception as e:
-            log.warning("Dexscreener tarama atlandı: %s", e)
+                ds = fetch_dexscreener_trending(client, chains=tuple(chains))
+            except Exception as e:
+                log.warning("Dexscreener tarama atlandı: %s", e)
         early: list[Pair] = []
-        try:
-            from hibrit_trader.early_launch import fetch_early_launches
+        if kota.izin("dexscreener", "tarama"):
+            try:
+                from hibrit_trader.early_launch import fetch_early_launches
 
-            early = fetch_early_launches(client, chains=tuple(chains))
-        except Exception as e:
-            log.warning("Erken launch tarama atlandı: %s", e)
+                early = fetch_early_launches(client, chains=tuple(chains))
+            except Exception as e:
+                log.warning("Erken launch tarama atlandı: %s", e)
         pump: list[Pair] = []
-        try:
-            from hibrit_trader.pump_fun_feed import fetch_pump_fun_pairs
+        if kota.izin("dexscreener", "tarama"):
+            try:
+                from hibrit_trader.pump_fun_feed import fetch_pump_fun_pairs
 
-            pump = fetch_pump_fun_pairs(client, chains=tuple(chains))
-        except Exception as e:
-            log.warning("Pump.fun feed atlandı: %s", e)
+                pump = fetch_pump_fun_pairs(client, chains=tuple(chains))
+            except Exception as e:
+                log.warning("Pump.fun feed atlandı: %s", e)
     return merge_pairs(gecko, ds, early, pump)
 
 

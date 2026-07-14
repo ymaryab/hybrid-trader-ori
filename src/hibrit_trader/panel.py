@@ -664,6 +664,8 @@ def api_filo(limit: int = Query(30)) -> dict:
     sol_h1_val, sol_h1_ts = sol_h1_son_olcum()
     if sol_h1_ts > 0 and sol_h1_val is not None:
         out["rejim"] = {"sol_h1": sol_h1_val, "yas_sec": round(now - sol_h1_ts, 1)}
+    from hibrit_trader import kota
+    out["tarama"] = kota.tarama_sagligi()
     canli = _canli_blok()
     if canli is not None:
         canli["pozisyonlar"] = _canli_pozlar(out["v7"]["positions"])
@@ -1502,6 +1504,7 @@ _MOMENTUM_HTML = """<!doctype html>
  <div>
   <span id="feedBadge" class="badge">feed: -</span>
   <span id="rejimBadge" class="badge">rejim sol_h1: -</span>
+  <span id="taramaBadge" class="badge">tarama: -</span>
   <!--MODROZET-->
  </div>
 </div>
@@ -2168,6 +2171,13 @@ function basRejim(d){
   e.textContent=`rejim sol_h1 ${f(rj,2)}`;
   e.className="badge"+(rj>0?" ok":"");
 }
+function basTarama(d){
+  const e=document.getElementById("taramaBadge");
+  const t=d.tarama;
+  if(!t){e.textContent="tarama: -";e.className="badge";return;}
+  e.textContent=`tarama: ${t}`;
+  e.className="badge"+(t==="normal"?" ok":(t==="kor"?" err":" bayat"));
+}
 async function filoTick(){
   let d; try{const r=await fetch("/api/filo?limit=30"); d=await r.json();}catch(e){return;}
   filoSonMs=Date.now();
@@ -2183,7 +2193,7 @@ async function filoTick(){
     }
   }
   if(d.canli)basCanli(d.canli);
-  basCmp(d.cmp); basIslemler(d); basRejim(d); basKill(d.kill);
+  basCmp(d.cmp); basIslemler(d); basRejim(d); basTarama(d); basKill(d.kill);
   updEtiket();
 }
 

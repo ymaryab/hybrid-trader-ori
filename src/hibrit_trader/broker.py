@@ -464,6 +464,15 @@ class LiveExecBroker(DryrunExecBroker):
         dec = self._decimals(order.token_address)
         if dec is None:
             return ExecFill(ok=False, neden="decimals_yok")
+        from hibrit_trader import kota
+
+        # Swap = 2 Jupiter istegi (quote + build). Satis kosulsuz gecer
+        # (kova eksiye dusebilir); alim ancak kova alim tabaninin ustundeyse.
+        sinif = "satis" if order.yon == "sat" else "alim"
+        if not kota.izin("jupiter", sinif, maliyet=2.0):
+            log.error("BROKER live: jupiter kota reddi (%s), islem reddedildi",
+                      sinif)
+            return ExecFill(ok=False, neden="kota_reddi")
         t0 = time.monotonic()
         try:
             from solana.rpc.api import Client as RpcClient
@@ -667,6 +676,11 @@ def jupiter_referans_fiyat(token_address: str, usd: float = 100.0) -> float | No
         log.info("HAKEM atlandi: canli satis stresi, Jupiter kotasi "
                  "satis hattina ayrildi")
         return None
+    from hibrit_trader import kota
+
+    if not kota.izin("jupiter", "tarama"):
+        log.debug("HAKEM atlandi: jupiter kota reddi (tarama)")
+        return None
     try:
         q, _neden = _get_golge_broker()._quote(token_address, "al", usd,
                                                slippage_bps=100)
@@ -686,6 +700,11 @@ def golge_olcum(engine: str, yon: str, token_address: str, paper_fiyat: float, *
         if satis_stresi_aktif():
             log.info("GOLGE atlandi (%s %s): canli satis stresi, Jupiter "
                      "kotasi satis hattina ayrildi", engine, yon)
+            return
+        from hibrit_trader import kota
+
+        if not kota.izin("jupiter", "tarama"):
+            log.debug("GOLGE atlandi (%s %s): jupiter kota reddi", engine, yon)
             return
         threading.Thread(
             target=_golge_worker,

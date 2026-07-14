@@ -85,7 +85,7 @@ def test_stale_siniri_gecmis_sonuc_kullanilmaz(monkeypatch):
     assert sc.scan_all_cached(("solana",)) == []
 
 
-# ---- 429 backoff + tek retry --------------------------------------------------------
+# ---- 429 ustel backoff: aninda retry yok, pencere boyu istek yok --------------------
 
 class _Resp:
     def __init__(self, status):
@@ -109,21 +109,46 @@ class _Client:
         return _Resp(self.statuses.pop(0))
 
 
-def test_429_backoff_sonrasi_tek_retry(monkeypatch):
-    uykular = []
-    monkeypatch.setattr(sc.time, "sleep", lambda s: uykular.append(s))
-    cl = _Client([429, 200])
+def test_429_aninda_retry_yok(monkeypatch):
+    monkeypatch.setattr(sc.time, "sleep", lambda s: pytest.fail("sleep olmamali"))
+    cl = _Client([429])
     assert sc.fetch_trending(cl, "solana") == []
-    assert cl.calls == 2
-    assert uykular == [sc.BACKOFF_429_SEC]
+    assert cl.calls == 1  # tek istek, retry yok
+    assert sc._backoff_sec == sc.BACKOFF_429_BASLANGIC_SEC
 
 
-def test_429_iki_kez_ust_uste_hata(monkeypatch):
-    monkeypatch.setattr(sc.time, "sleep", lambda s: None)
-    cl = _Client([429, 429])
-    with pytest.raises(httpx.HTTPError):
+def test_429_backoff_penceresinde_istek_atilmaz():
+    cl = _Client([429, 200])
+    sc.fetch_trending(cl, "solana")
+    assert sc.fetch_trending(cl, "solana") == []
+    assert cl.calls == 1  # pencere icinde HTTP yok
+
+
+def test_429_backoff_ustel_buyur_tavana_dayanir(monkeypatch):
+    # kota kapisini izole et: ceza_429 kovayi bosaltinca izin reddi backoff
+    # buyumesini golgeleyecegi icin burada saf backoff mantigi sinanir
+    from hibrit_trader import kota
+
+    monkeypatch.setattr(kota, "izin", lambda host, sinif, maliyet=1.0: True)
+    cl = _Client([429] * 8)
+    gorulen = []
+    for _ in range(8):
+        monkeypatch.setattr(sc, "_backoff_bitis", 0.0)  # pencereyi zorla ac
         sc.fetch_trending(cl, "solana")
-    assert cl.calls == 2  # tek retry, sonsuz dongu yok
+        gorulen.append(sc._backoff_sec)
+    assert gorulen == [5.0, 10.0, 20.0, 40.0, 60.0, 60.0, 60.0, 60.0]
+
+
+def test_basarili_tarama_backoffu_sifirlar(monkeypatch):
+    from hibrit_trader import kota
+
+    monkeypatch.setattr(kota, "izin", lambda host, sinif, maliyet=1.0: True)
+    cl = _Client([429, 200])
+    sc.fetch_trending(cl, "solana")
+    monkeypatch.setattr(sc, "_backoff_bitis", 0.0)
+    sc.fetch_trending(cl, "solana")
+    assert cl.calls == 2
+    assert sc._backoff_sec == 0.0
 
 
 def test_429_yoksa_tek_istek(monkeypatch):
@@ -131,6 +156,15 @@ def test_429_yoksa_tek_istek(monkeypatch):
     cl = _Client([200])
     sc.fetch_trending(cl, "solana")
     assert cl.calls == 1
+
+
+def test_kota_reddi_istek_atmaz(monkeypatch):
+    from hibrit_trader import kota
+
+    monkeypatch.setattr(kota, "izin", lambda host, sinif, maliyet=1.0: False)
+    cl = _Client([200])
+    assert sc.fetch_trending(cl, "solana") == []
+    assert cl.calls == 0
 
 
 # ---- motor baglari: aktif filo paylasimli taramada ----------------------------------
