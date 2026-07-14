@@ -811,3 +811,86 @@ def test_belirsiz_takip_paper_modda_calismaz(v7_data_dir, monkeypatch):
     eng._belirsiz_aday = {"pair": "X"}  # savunma: paper exec'te sonuc sorgusu yok
     eng._belirsiz_takip()
     assert eng._belirsiz_aday is None
+
+
+# ---- Gunluk kesici orana bagli: PCT x gun baslangic MTM (14 Tem) --------------------
+
+def _pct_eng(monkeypatch, mtm=84.0, usd=0.0, pct=25.0):
+    eng = V7Engine(_settings())
+    eng._exec = _StubExec("live")
+    monkeypatch.setattr(v7, "DAILY_LOSS_LIMIT_PCT", pct)
+    monkeypatch.setattr(v7, "DAILY_LOSS_LIMIT_USD", usd)
+    monkeypatch.setattr("hibrit_trader.canli_gosterge.son",
+                        (lambda: {"mtm": mtm}) if mtm is not None else (lambda: None))
+    return eng
+
+
+def test_gun_limiti_mtm_yuzdesi_sinirda(v7_data_dir, monkeypatch):
+    eng = _pct_eng(monkeypatch, mtm=84.0)
+    eng._day_realized = -20.9
+    assert eng._entries_blocked() is None          # 21.0 esigin ustunde
+    assert eng._day_limit_usd == pytest.approx(21.0)  # MTM 84 x %25, sabitlendi
+    eng._day_realized = -21.0
+    assert eng._entries_blocked() == "daily_loss_limit"  # sinir dahil
+
+
+def test_gun_limiti_usd_pct_birlikte_kucuk_olan(v7_data_dir, monkeypatch):
+    eng = _pct_eng(monkeypatch, mtm=84.0, usd=20.0)
+    assert eng._gun_limiti() == (pytest.approx(20.0), True)  # min(21, 20)
+    eng2 = _pct_eng(monkeypatch, mtm=84.0, usd=30.0)
+    eng2._day_limit_usd = None  # eng'in ayni gune persist ettigi esigi kullanma
+    assert eng2._gun_limiti() == (pytest.approx(21.0), True)  # min(21, 30)
+
+
+def test_gun_limiti_gun_ici_sabit(v7_data_dir, monkeypatch):
+    eng = _pct_eng(monkeypatch, mtm=84.0)
+    assert eng._gun_limiti()[0] == pytest.approx(21.0)
+    monkeypatch.setattr("hibrit_trader.canli_gosterge.son", lambda: {"mtm": 200.0})
+    assert eng._gun_limiti()[0] == pytest.approx(21.0)  # MTM degisti, esik sabit
+
+
+def test_gun_devri_limit_yeni_mtm_ile_hesaplanir(v7_data_dir, monkeypatch):
+    eng = _pct_eng(monkeypatch, mtm=84.0)
+    eng._day_realized = -48.69
+    assert eng._entries_blocked() == "daily_loss_limit"  # bugunku kilit degismez
+    # gun devri: sayac ve esik sifirlanir, esik o anki MTM'den
+    eng._day_key = "2020-01-01"
+    monkeypatch.setattr("hibrit_trader.canli_gosterge.son", lambda: {"mtm": 200.0})
+    assert eng._entries_blocked() is None
+    assert eng._day_realized == 0.0
+    assert eng._day_limit_usd == pytest.approx(50.0)
+
+
+def test_gun_limiti_mtm_yoksa_fail_closed(v7_data_dir, monkeypatch):
+    eng = _pct_eng(monkeypatch, mtm=None)
+    assert eng._entries_blocked() == "daily_limit_belirsiz"
+    assert eng._day_limit_usd is None              # sabitlenmedi
+    monkeypatch.setattr("hibrit_trader.canli_gosterge.son", lambda: {"mtm": 84.0})
+    assert eng._entries_blocked() is None          # MTM geldi, belirsizlik kalkti
+    assert eng._day_limit_usd == pytest.approx(21.0)
+
+
+def test_gun_limiti_mtm_yoksa_usd_yedegi_gecici(v7_data_dir, monkeypatch):
+    eng = _pct_eng(monkeypatch, mtm=None, usd=20.0)
+    eng._day_realized = -25.0
+    assert eng._entries_blocked() == "daily_loss_limit"  # gecici USD yedegi
+    assert eng._day_limit_usd is None              # gecici esik sabitlenmez
+    # MTM gelince esik sabitlenir; USD yedegi kucuk oldugundan min 20 kalir
+    monkeypatch.setattr("hibrit_trader.canli_gosterge.son", lambda: {"mtm": 200.0})
+    assert eng._entries_blocked() == "daily_loss_limit"
+    assert eng._day_limit_usd == pytest.approx(20.0)  # min(50, 20)
+
+
+def test_gun_limiti_restartta_ayni_gun_sabit(v7_data_dir, monkeypatch):
+    eng = _pct_eng(monkeypatch, mtm=84.0)
+    assert eng._gun_limiti()[0] == pytest.approx(21.0)  # sabitlendi + _save
+    eng2 = V7Engine(_settings())                   # ayni gun restart
+    assert eng2._day_limit_usd == pytest.approx(21.0)
+
+
+def test_gun_limiti_paper_modda_pct_etkisiz(v7_data_dir, monkeypatch):
+    eng = V7Engine(_settings())                    # paper exec
+    monkeypatch.setattr(v7, "DAILY_LOSS_LIMIT_PCT", 25.0)
+    monkeypatch.setattr(v7, "DAILY_LOSS_LIMIT_USD", 0.0)
+    eng._day_realized = -999.0
+    assert eng._entries_blocked() is None          # PCT yalniz live modda

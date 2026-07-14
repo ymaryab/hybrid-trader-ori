@@ -82,3 +82,10 @@ KARAR ETKISI:
 - [ ] tekrar-binis kurali karari
 - [ ] bos zaman bolusumu guncelle (ayni script, taze OHLCV)
 - [ ] fast_price fren kadansi tartismasi (istenirse ayri onayla is)
+- [ ] gunluk kesici gecikmesi (14 Tem): limit -20 iken sayac -48.69'da durdu.
+      Mekanizma gecikmesi analiz edilsin: limit yalniz YENI girisi kesiyor,
+      acik pozisyonlarin kapanis zararlari limit asildiktan sonra da sayaca
+      ekleniyor; es-zamanli dolu slotlar tek turda toplu zarar yazabiliyor.
+      Soru: kesici acik pozisyonlara uzansin mi, yoksa slot/es-zamanlilik mi
+      sinirlansin? (Yeni PCT kesici de ayni giris-kesme mekanigi, asma payi
+      orada da gecerli.)

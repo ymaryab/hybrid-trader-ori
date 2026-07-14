@@ -97,6 +97,11 @@ H1_SKIP_HI = float(os.getenv("V7_H1_SKIP_HI", "40"))
 H1_SKIP_M5_KOSUL = os.getenv("V7_H1_SKIP_M5_KOSUL", "1").strip() != "0"
 BANT_SKIP_DEDUP_SEC = 30 * 60
 DAILY_LOSS_LIMIT_USD = float(os.getenv("MOM_DAILY_LOSS_LIMIT_USD", "0"))  # 0 = kapali (M1 ile ayni env)
+# 14 Tem karari: kesici sabit USD yerine orana bagli. Gun baslangic canli
+# MTM'sinin yuzdesi; gun devrinde o anki MTM'den hesaplanir, gun ici sabit.
+# USD env de verilirse kucuk olan gecerli (cifte emniyet). Yalniz live modda
+# etkin (paper motorlarda canli MTM anlamsiz). 0 = kapali.
+DAILY_LOSS_LIMIT_PCT = float(os.getenv("MOM_DAILY_LOSS_LIMIT_PCT", "25"))
 COOLDOWN_LOSS_SEC = float(os.getenv("MOM_COOLDOWN_STOP_MIN", "60")) * 60
 COOLDOWN_EXIT_SEC = float(os.getenv("MOM_COOLDOWN_EXIT_MIN", "15")) * 60
 
@@ -151,6 +156,9 @@ class V7Engine:
         self._day_key: str = ""                     # UTC gun anahtari (YYYY-MM-DD)
         self._day_realized: float = 0.0             # gun ici realized PnL (limit icin)
         self._limit_logged = False                  # zarar limiti uyarisi tek sefer
+        self._day_limit_usd: float | None = None    # gunun sabit kesici esigi (USD)
+        self._limit_belirsiz_logged = False         # MTM yok uyarisi tek sefer
+        self._yuklenen_gun_limiti: tuple | None = None
         self._huni = HuniSayac("V7")
         self._lock_fh = None
         self._son_exec_neden: str | None = None
@@ -166,6 +174,11 @@ class V7Engine:
             log.critical("V7: yurutme katmani kurulamadi (%s); girisler KAPALI", e)
         self._load()
         self._restore_day_realized()
+        # gun ici restart: kesici esigi ayni gun icin sabit kalir (state'ten)
+        if (self._yuklenen_gun_limiti
+                and self._yuklenen_gun_limiti[0] == self._day_key
+                and self._yuklenen_gun_limiti[1]):
+            self._day_limit_usd = float(self._yuklenen_gun_limiti[1])
 
     # ---- Dosya işleri (v2 hardening desenleri: atomik save, anında persist) ----
     def _path(self, name: str) -> Path:
@@ -185,6 +198,8 @@ class V7Engine:
                 pos for pos in (data.get("positions") or [])
                 if isinstance(pos, dict) and "entry_price" in pos and "pool_address" in pos
             ]
+            self._yuklenen_gun_limiti = (data.get("day_limit_key"),
+                                         data.get("day_limit_usd"))
         except Exception:
             backup = p.with_name(f"{p.name}.corrupt-{int(time.time())}")
             try:
@@ -202,6 +217,9 @@ class V7Engine:
             "realized_pnl": round(self.realized_pnl, 4),
             "created_ts": round(self.created_ts, 3),
             "positions": self.positions,
+            "day_limit_key": self._day_key or None,
+            "day_limit_usd": (round(self._day_limit_usd, 4)
+                              if self._day_limit_usd is not None else None),
             "updated_at": _now_iso(),
         }, ensure_ascii=False, indent=2)
         tmp = p.with_name(p.name + ".tmp")
@@ -222,6 +240,7 @@ class V7Engine:
             self._day_key = key
             self._day_realized = 0.0
             self._limit_logged = False
+            self._day_limit_usd = None  # yeni gunun esigi o anki MTM'den
         self._day_realized += pnl
 
     def _restore_day_realized(self) -> None:
@@ -258,21 +277,72 @@ class V7Engine:
         if self._kill_logged:
             self._kill_logged = False
             log.warning("V7: kill-switch kalkti, girisler serbest")
-        if DAILY_LOSS_LIMIT_USD > 0:
+        if DAILY_LOSS_LIMIT_USD > 0 or self._pct_limit_aktif():
             key = time.strftime("%Y-%m-%d", time.gmtime())
             if key != self._day_key:  # gun devri: dunku zarar bugunu bloklamasin
                 self._day_key = key
                 self._day_realized = 0.0
                 self._limit_logged = False
-            if self._day_realized <= -DAILY_LOSS_LIMIT_USD:
+                self._day_limit_usd = None  # yeni gunun esigi o anki MTM'den
+            limit, kesin = self._gun_limiti()
+            if limit is None and not kesin:
+                # PCT acik ama MTM okunamadi, USD yedek de yok: fail-closed
+                if not self._limit_belirsiz_logged:
+                    self._limit_belirsiz_logged = True
+                    log.critical("V7: gun limiti hesaplanamadi (canli MTM yok), "
+                                 "yeni giris kapali (fail-closed)")
+                return "daily_limit_belirsiz"
+            if self._limit_belirsiz_logged:
+                self._limit_belirsiz_logged = False
+                log.warning("V7: gun limiti hesaplandi, belirsizlik kalkti")
+            if limit is not None and self._day_realized <= -limit:
                 if not self._limit_logged:
                     self._limit_logged = True
                     log.critical(
                         "V7: gunluk zarar limiti asildi ($%.2f <= -$%.2f), "
-                        "bugun (UTC) yeni giris yok", self._day_realized, DAILY_LOSS_LIMIT_USD,
+                        "bugun (UTC) yeni giris yok", self._day_realized, limit,
                     )
                 return "daily_loss_limit"
         return None
+
+    # ---- Gunluk kesici esigi: gun baslangic MTM'sinin yuzdesi (14 Tem) ----------
+    def _pct_limit_aktif(self) -> bool:
+        return DAILY_LOSS_LIMIT_PCT > 0 and getattr(self._exec, "mode", "paper") == "live"
+
+    def _canli_mtm(self) -> float | None:
+        try:
+            from hibrit_trader import canli_gosterge
+
+            snap = canli_gosterge.son()
+            if snap and float(snap.get("mtm") or 0.0) > 0:
+                return float(snap["mtm"])
+        except Exception:
+            log.debug("V7 canli MTM okunamadi", exc_info=True)
+        return None
+
+    def _gun_limiti(self) -> tuple[float | None, bool]:
+        """Gunun kesici esigi (pozitif USD). Donus (limit, kesin):
+        kesin=True esik sabitlendi/biliniyor; kesin=False gecici durum
+        (MTM henuz yok; limit varsa USD yedegi, yoksa fail-closed karari
+        cagirana ait). Esik gun icinde SABIT: bir kez hesaplaninca degismez."""
+        if self._day_limit_usd is not None:
+            return self._day_limit_usd, True
+        usd = DAILY_LOSS_LIMIT_USD if DAILY_LOSS_LIMIT_USD > 0 else None
+        if not self._pct_limit_aktif():
+            self._day_limit_usd = usd  # eski USD-only davranis, sabit zaten
+            return usd, True
+        mtm = self._canli_mtm()
+        if mtm is None:
+            return usd, False  # sabitleme yok: MTM gelince hesaplanacak
+        limit = mtm * DAILY_LOSS_LIMIT_PCT / 100.0
+        if usd is not None:
+            limit = min(limit, usd)
+        self._day_limit_usd = limit
+        self._save()  # gun ici restart ayni esikle devam etsin
+        log.warning("V7 gun limiti sabitlendi: MTM $%.2f x %%%g = $%.2f%s",
+                    mtm, DAILY_LOSS_LIMIT_PCT, limit,
+                    (" (USD yedegi $%.2f ile kucugu)" % usd) if usd is not None else "")
+        return limit, True
 
     def _exec_fill(self, yon: str, token_address: str, *, usd: float = 0.0,
                    amount_token: float = 0.0, ref_fiyat: float = 0.0,
