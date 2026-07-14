@@ -496,8 +496,9 @@ def _swap_yakala(monkeypatch):
     """swap_sol_to_token'a giden usd'yi yakalar, sahte basarili fill doner."""
     gorulen = {}
 
-    def _swap(http, rpc, keypair, token, usd, slippage):
+    def _swap(http, rpc, keypair, token, usd, slippage, min_out_raw=None):
         gorulen["usd"] = usd
+        gorulen["min_out_raw"] = min_out_raw
         return {"signature": "SIG", "in_amount": 100, "out_amount": 5_000_000_000,
                 "input_mint": "SOL", "output_mint": token,
                 "cost_usd": usd, "sol_price_usd": 80.0}
@@ -559,6 +560,70 @@ def test_live_serbest_gaz_rezervi_sinirinda_gecer(data_dir, monkeypatch):
     gorulen = _swap_yakala(monkeypatch)
     assert br.execute(_al_emri()).ok is True
     assert gorulen["usd"] == 25.0
+
+
+# ---- giris prim kapisi (14 Tem fill primi otopsisi) -------------------------------------
+
+def test_prim_kapisi_min_out_hesabi(data_dir, monkeypatch):
+    # esik %2 (varsayilan): min_out = bilet / (karar fiyati x 1.02), raw birim
+    br = _live_broker(data_dir, monkeypatch)  # bilet MTM $40 x %25 = $10
+    gorulen = _swap_yakala(monkeypatch)
+    assert br.execute(_al_emri()).ok is True
+    assert gorulen["min_out_raw"] == int(10.0 / (0.2 * 1.02) * 10 ** 9)
+
+
+def test_prim_kapisi_env_sifir_devre_disi(data_dir, monkeypatch):
+    monkeypatch.setenv("V7_MAX_GIRIS_PRIM_PCT", "0")
+    br = _live_broker(data_dir, monkeypatch)
+    gorulen = _swap_yakala(monkeypatch)
+    assert br.execute(_al_emri()).ok is True
+    assert gorulen["min_out_raw"] is None
+
+
+def test_prim_kapisi_ref_fiyat_yoksa_devre_disi(data_dir, monkeypatch):
+    br = _live_broker(data_dir, monkeypatch)
+    gorulen = _swap_yakala(monkeypatch)
+    emir = ExecOrder(engine="T", yon="al", token_address=TOK,
+                     usd=10.0, ref_fiyat=0.0)
+    assert br.execute(emir).ok is True
+    assert gorulen["min_out_raw"] is None
+
+
+def test_live_giris_prim_asimi_reddeder_kilit_acmaz(data_dir, monkeypatch, caplog):
+    from hibrit_trader.jupiter import GirisPrimAsimi
+
+    br = _live_broker(data_dir, monkeypatch)
+
+    def _prim(*a, **k):
+        raise GirisPrimAsimi(5_000_000_000, 49_019_607_843)
+
+    monkeypatch.setattr("hibrit_trader.jupiter.swap_sol_to_token", _prim)
+    with caplog.at_level("WARNING"):
+        fill = br.execute(_al_emri())
+    assert fill.ok is False and fill.neden == "giris_prim_asimi"
+    assert any("giris prim kapisi" in r.message for r in caplog.records)
+    # belirsiz kilit ACILMADI: sonraki emir swap katmanina ulasir
+    gorulen = _swap_yakala(monkeypatch)
+    assert br.execute(_al_emri()).ok is True
+    assert gorulen["usd"] == 10.0
+
+
+def test_jupiter_prim_asiminda_imza_atilmaz(data_dir, monkeypatch):
+    from solders.keypair import Keypair
+
+    from hibrit_trader import jupiter
+
+    monkeypatch.setattr(jupiter, "fetch_sol_price_usd", lambda http, **k: 80.0)
+
+    def _patlat(*a, **k):
+        raise AssertionError("prim asiminda tx kurma/imza katmanina ulasilmamali")
+
+    monkeypatch.setattr(jupiter, "build_swap_tx", _patlat)
+    monkeypatch.setattr(jupiter, "sign_and_send", _patlat)
+    http = FakeClient(quote=_quote_al())  # out 500 token (raw 5e11)
+    with pytest.raises(jupiter.GirisPrimAsimi):
+        jupiter.swap_sol_to_token(http, None, Keypair(), TOK, 10.0, 50,
+                                  min_out_raw=600_000_000_000)
 
 
 def test_cuzdan_durum_hesabi(data_dir, monkeypatch):
@@ -647,7 +712,7 @@ def test_live_execute_sol_swap_al_ve_sat(data_dir, monkeypatch):
     monkeypatch.setattr(broker, "_zincir_token_bakiye", lambda *a, **k: None)
     cagri = []
 
-    def sahte_al(http, rpc, kp, mint, usd, bps):
+    def sahte_al(http, rpc, kp, mint, usd, bps, min_out_raw=None):
         cagri.append(("sol_to_token", usd, bps))
         return {"signature": "SIGAL", "in_amount": 1_250_000_000,
                 "out_amount": 500 * 10 ** 9, "cost_usd": 100.0,
@@ -690,7 +755,7 @@ def test_live_bilet_sadece_alimi_boyutlar(data_dir, monkeypatch):
     monkeypatch.setattr(broker, "_zincir_token_bakiye", lambda *a, **k: None)
     cagri = []
 
-    def sahte_al(http, rpc, kp, mint, usd, bps):
+    def sahte_al(http, rpc, kp, mint, usd, bps, min_out_raw=None):
         cagri.append(("sol_to_token", usd, bps))
         return {"signature": "SIGAL", "in_amount": 312_500_000,
                 "out_amount": 125 * 10 ** 9, "cost_usd": 25.0,
@@ -811,7 +876,7 @@ def test_live_alim_kaydi_zincir_dolumu(data_dir, monkeypatch):
     monkeypatch.setattr(broker, "_zincir_dolum", lambda *a, **k: 464.5)
     monkeypatch.setattr(
         "hibrit_trader.jupiter.swap_sol_to_token",
-        lambda *a: {"signature": "SIGAL", "in_amount": 1_250_000_000,
+        lambda *a, **k: {"signature": "SIGAL", "in_amount": 1_250_000_000,
                     "out_amount": 500 * 10 ** 9, "cost_usd": 100.0,
                     "sol_price_usd": 80.0})
     al = br.execute(ExecOrder(engine="V7", yon="al", token_address=TOK,
@@ -826,7 +891,7 @@ def test_live_alim_fazla_dolum_da_zincirden(data_dir, monkeypatch):
     monkeypatch.setattr(broker, "_zincir_dolum", lambda *a, **k: 505.0)
     monkeypatch.setattr(
         "hibrit_trader.jupiter.swap_sol_to_token",
-        lambda *a: {"signature": "SIGAL", "in_amount": 1_250_000_000,
+        lambda *a, **k: {"signature": "SIGAL", "in_amount": 1_250_000_000,
                     "out_amount": 500 * 10 ** 9, "cost_usd": 100.0,
                     "sol_price_usd": 80.0})
     al = br.execute(ExecOrder(engine="V7", yon="al", token_address=TOK,
@@ -839,7 +904,7 @@ def test_live_alim_dolum_okunamazsa_quote_kalir(data_dir, monkeypatch):
     monkeypatch.setattr(broker, "_zincir_dolum", lambda *a, **k: None)
     monkeypatch.setattr(
         "hibrit_trader.jupiter.swap_sol_to_token",
-        lambda *a: {"signature": "SIGAL", "in_amount": 1_250_000_000,
+        lambda *a, **k: {"signature": "SIGAL", "in_amount": 1_250_000_000,
                     "out_amount": 500 * 10 ** 9, "cost_usd": 100.0,
                     "sol_price_usd": 80.0})
     al = br.execute(ExecOrder(engine="V7", yon="al", token_address=TOK,

@@ -403,6 +403,14 @@ def _live_ticket_pct() -> float:
         return 25.0
 
 
+def _max_giris_prim_pct() -> float:
+    """Giris prim kapisi esigi (%). <=0 kapiyi devre disi birakir."""
+    try:
+        return float(os.getenv("V7_MAX_GIRIS_PRIM_PCT", "2") or 2.0)
+    except ValueError:
+        return 2.0
+
+
 def _cuzdan_durum(http: httpx.Client, rpc, pubkey) -> tuple[float, float, float] | None:
     """Alim aninda taze cuzdan durumu: (mtm_usd, serbest_sol, sol_fiyat_usd).
     MTM = serbest SOL (RPC) x anlik fiyat + acik canli poz degeri (v7_state
@@ -461,7 +469,8 @@ class LiveExecBroker(DryrunExecBroker):
             from solana.rpc.api import Client as RpcClient
 
             # Kasa SOL cinsinden: alim SOL->token, satis token->SOL (11 Tem karari)
-            from hibrit_trader.jupiter import swap_sol_to_token, swap_token_to_sol
+            from hibrit_trader.jupiter import (GirisPrimAsimi, swap_sol_to_token,
+                                               swap_token_to_sol)
             rpc = RpcClient(_rpc_url())
             if order.yon == "al":
                 # Canli bilet SABIT ORAN (12 Tem nihai karari): motorun paper
@@ -493,9 +502,29 @@ class LiveExecBroker(DryrunExecBroker):
                 log.warning("BROKER LIVE %s bilet: MTM $%.2f x %%%g = $%.2f "
                             "(paper $%.2f kullanilmadi)", order.engine, mtm,
                             pct, usd_exec, order.usd)
-                res = swap_sol_to_token(self._http, rpc, keypair,
-                                        order.token_address, usd_exec,
-                                        order.slippage_bps)
+                prim_esik = _max_giris_prim_pct()
+                min_out_raw = None
+                if prim_esik > 0 and order.ref_fiyat > 0:
+                    min_out_raw = int(usd_exec
+                                      / (order.ref_fiyat * (1 + prim_esik / 100.0))
+                                      * 10 ** dec)
+                try:
+                    res = swap_sol_to_token(self._http, rpc, keypair,
+                                            order.token_address, usd_exec,
+                                            order.slippage_bps,
+                                            min_out_raw=min_out_raw)
+                except GirisPrimAsimi as e:
+                    gecikme_ms = round((time.monotonic() - t0) * 1000, 1)
+                    ima = (usd_exec / (e.out_raw / 10 ** dec)
+                           if e.out_raw > 0 else 0.0)
+                    prim = ((ima / order.ref_fiyat - 1) * 100
+                            if order.ref_fiyat > 0 else 0.0)
+                    log.warning("BROKER LIVE giris prim kapisi %s: ima fiyat "
+                                "%.8g, karar %.8g, prim %+.2f%% > esik %%%.2f; "
+                                "imza atilmadi, giris iptal", order.engine,
+                                ima, order.ref_fiyat, prim, prim_esik)
+                    return ExecFill(ok=False, neden="giris_prim_asimi",
+                                    gecikme_ms=gecikme_ms)
                 miktar_quote = res["out_amount"] / 10 ** dec
                 # 14 Tem olayi: quote miktari kaydedilince gercek dolumla
                 # sapma satisi kalici 6024'e (eksik) veya kirintiya (fazla)

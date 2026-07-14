@@ -146,6 +146,15 @@ def sign_and_send(
     return str(sig)
 
 
+class GirisPrimAsimi(RuntimeError):
+    """Quote ima fiyati karar fiyatinin izin verilen priminin ustunde; imza atilmadi."""
+
+    def __init__(self, out_raw: int, min_out_raw: int):
+        self.out_raw = out_raw
+        self.min_out_raw = min_out_raw
+        super().__init__(f"giris_prim_asimi: quote out {out_raw} < min {min_out_raw}")
+
+
 def swap_sol_to_token(
     http: httpx.Client,
     rpc: Client,
@@ -153,11 +162,14 @@ def swap_sol_to_token(
     token_mint: str,
     usd: float,
     slippage_bps: int,
+    min_out_raw: int | None = None,
 ) -> dict:
     """SOL → token alımı (Jupiter wrapAndUnwrapSol)."""
     sol_price = fetch_sol_price_usd(http)
     amount_raw = usd_to_lamports(usd, sol_price)
     quote = get_quote(http, SOL_MINT, token_mint, amount_raw, slippage_bps)
+    if min_out_raw is not None and int(quote["outAmount"]) < min_out_raw:
+        raise GirisPrimAsimi(int(quote["outAmount"]), min_out_raw)
     tx_b64 = build_swap_tx(http, quote, str(keypair.pubkey()))
     sig = sign_and_send(rpc, tx_b64, keypair)
     in_lamports = int(quote["inAmount"])
