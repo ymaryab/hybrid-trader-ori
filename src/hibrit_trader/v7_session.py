@@ -446,6 +446,7 @@ class V7Engine:
             return False
         slip = _mom_slippage(usd, pair.liquidity_usd)
         eff_price = taze.fiyat * (1 + slip)
+        karar_fiyat = eff_price  # canli fill ezmeden onceki karar fiyati (prim analizi)
         devam, canli = self._exec_fill("al", pair.token_address,
                                        usd=usd, ref_fiyat=eff_price)
         if not devam:
@@ -464,6 +465,7 @@ class V7Engine:
             "token_address": pair.token_address,
             "pool_address": pair.pool_address,
             "entry_price": eff_price,
+            "karar_fiyat": karar_fiyat,
             "amount_token": amount_token,
             "cost_usd": round(usd, 4),
             "opened_ts": now,
@@ -587,6 +589,7 @@ class V7Engine:
         cost = pos["cost_usd"]
         slip = _mom_slippage(cost, pos["liq_entry"])
         eff_price = price * (1 - slip)
+        karar_cikis = eff_price  # canli fill ezmeden onceki karar cikisi
         sat_bps = EXIT_SLIPPAGE_BPS.get(reason, 150)
         deneme = STOP_RETRY_ADET if reason in ("stop_felaket", "stop_gec") else 1
         devam, canli = False, None
@@ -631,6 +634,10 @@ class V7Engine:
             "pool_address": pos["pool_address"],
             "entry_price": pos["entry_price"],
             "exit_price": eff_price,
+            "karar_fiyat": pos.get("karar_fiyat"),
+            "karar_cikis": karar_cikis,
+            "karar_pnl_pct": (round((karar_cikis / pos["karar_fiyat"] - 1) * 100, 3)
+                              if pos.get("karar_fiyat") else None),
             "chg_m5": pos["chg_m5"],
             "chg_h1": pos["chg_h1"],
             "liq_entry": pos["liq_entry"],

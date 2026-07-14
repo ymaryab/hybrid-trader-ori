@@ -409,6 +409,49 @@ def test_exec_live_fill_fiyat_imza_baglayici_muhasebe_paper_boyut(v7_data_dir, m
     assert o_sat.yon == "sat" and o_sat.amount_token == 95.0  # gercek miktar satilir
 
 
+def test_karar_fiyatlari_kayitta_fill_ezmez(v7_data_dir, monkeypatch):
+    # B1: canli fill entry/exit fiyatini ezer (baglayici) ama karar fiyatlari
+    # ayri kolonlarda kalir; prim analizi fill vs karar kiyasini buradan yapar
+    eng = V7Engine(_settings())
+    al = ExecFill(ok=True, fiyat=1.05, miktar_token=95.0, tx_id="SIGAL")
+    sat = ExecFill(ok=True, fiyat=1.20, miktar_token=95.0, tx_id="SIGSAT")
+    eng._exec = _StubExec("live", [al, sat])
+    pos = _open(eng)
+    karar = pos["karar_fiyat"]
+    assert 0.99 < karar < 1.01  # taze fiyat + slip, fill (1.05) DEGIL
+    assert pos["entry_price"] == 1.05
+    _tick_price(eng, pos, 1.30, pos["opened_ts"] + 60, monkeypatch)
+    t = _last(v7_data_dir)
+    assert t["karar_fiyat"] == karar
+    assert 1.29 < t["karar_cikis"] < 1.31  # paper slipli karar, fill (1.20) DEGIL
+    assert t["exit_price"] == 1.20
+    assert t["karar_pnl_pct"] == pytest.approx(
+        (t["karar_cikis"] / karar - 1) * 100, abs=0.01)
+
+
+def test_karar_fiyat_paper_modda_entry_ile_ayni(v7_data_dir, monkeypatch):
+    # paper: fill ezmesi yok, karar kolonlari mevcut kayitla birebir
+    eng = V7Engine(_settings())
+    pos = _open(eng)
+    assert pos["karar_fiyat"] == pos["entry_price"]
+    _tick_price(eng, pos, 1.30, pos["opened_ts"] + 60, monkeypatch)
+    t = _last(v7_data_dir)
+    assert t["karar_cikis"] == t["exit_price"]
+    assert t["karar_pnl_pct"] == t["pnl_pct"]
+
+
+def test_karar_fiyat_eski_pozisyonda_yoksa_none(v7_data_dir, monkeypatch):
+    # deploy sirasinda acik kalan eski pozisyonlar karar_fiyat tasimaz: kapanis patlamaz
+    eng = V7Engine(_settings())
+    pos = _open(eng)
+    pos.pop("karar_fiyat")
+    _tick_price(eng, pos, 1.30, pos["opened_ts"] + 60, monkeypatch)
+    t = _last(v7_data_dir)
+    assert t["karar_fiyat"] is None
+    assert t["karar_pnl_pct"] is None
+    assert t["karar_cikis"] > 0
+
+
 def test_exec_live_biletli_fill_satis_gercek_miktari_kullanir(v7_data_dir, monkeypatch):
     # canli bilet MTM x oran senaryosu: broker $25'lik alir (23.8 token @ 1.05),
     # paper muhasebe $100 boyutta surer, satis cuzdandaki 23.8'i satar.
