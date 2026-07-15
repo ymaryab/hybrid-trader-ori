@@ -155,6 +155,13 @@ def _start_engine() -> None:
             from hibrit_trader.v7c_session import V7CEngine
             v7c = V7CEngine(settings)
             threading.Thread(target=v7c.run_forever, daemon=True).start()
+        if os.getenv("V7D_ENABLED", "1") != "0":
+            # V7D senaryo: SECICI profili (15 Tem bot arastirmasi cikti);
+            # h1 10-20 dar bant + m5>0 zorunlu + sol_h1>=0.5 siki + tp+2.5;
+            # SABIT PAPER, v7d_* dosyalarina yazar
+            from hibrit_trader.v7d_session import V7DEngine
+            v7d = V7DEngine(settings)
+            threading.Thread(target=v7d.run_forever, daemon=True).start()
         if os.getenv("EKG_ENABLED", "1") != "0":
             # Koşucu EKG: pasif gözlemci, işlem yok, kosucu_ekg* dosyalarına yazar
             from hibrit_trader.kosucu_ekg import KosucuEkg
@@ -654,10 +661,10 @@ def api_filo(limit: int = Query(30)) -> dict:
     data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
     now = time.time()
     out: dict = {"ts": round(now, 3)}
-    for prefix in ("v6", "v7", "x1", "v7c"):
+    for prefix in ("v6", "v7", "x1", "v7c", "v7d"):
         out[prefix] = _motor_ozet(data_dir, prefix, now, limit)
     out["cmp"] = {p: out[p]["summary"]["realized_pnl"]
-                  for p in ("v6", "v7", "x1", "v7c")}
+                  for p in ("v6", "v7", "x1", "v7c", "v7d")}
     out["kill"] = is_active()
     # rejim rozeti: paylasimli sol_h1 cache'inden deger + olcum yasi (fetch tetiklemez)
     from hibrit_trader.momentum_session import sol_h1_son_olcum
@@ -713,6 +720,11 @@ def api_v7_equity(minutes: int = Query(0, ge=0)) -> dict:
 @app.get("/api/v7c/equity")
 def api_v7c_equity(minutes: int = Query(0, ge=0)) -> dict:
     return _equity_series("v7c", minutes)
+
+
+@app.get("/api/v7d/equity")
+def api_v7d_equity(minutes: int = Query(0, ge=0)) -> dict:
+    return _equity_series("v7d", minutes)
 
 
 @app.get("/api/canli/equity")
@@ -1342,6 +1354,9 @@ _FILO_MOTORLAR: list[dict] = [
     {"id": "v7c", "tip": "bot", "ad": "V7C", "renk": "#bc8cff", "slots": 5,
      "rozet": "majör 2-10", "gizli": True,
      "desc": "v7 iskeleti majör/likit evrende: liq&ge;$3M · h1 2..10 · tp+2 · fren -%10 · rejim sol_h1&ge;0.5 · PAPER sabit"},
+    {"id": "v7d", "tip": "bot", "ad": "V7D", "renk": "#ff9f43", "slots": 5,
+     "rozet": "SEÇİCİ",
+     "desc": "SEÇİCİ: liq&ge;$150k · h1 10..20 (dar) · m5&gt;0 zorunlu · tp+2.5 · felaket -%15 · 15dk sabır stop-2 · 20dk tavan · rejim sol_h1&ge;0.5 · PAPER sabit"},
 ]
 
 
