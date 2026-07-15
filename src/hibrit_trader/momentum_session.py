@@ -110,19 +110,17 @@ _sol_h1_lock = threading.Lock()
 _sol_h1_paylasimli: tuple[float, float | None] = (0.0, None)
 
 # ---- Rejim gecis bildirimi: esik kesilince Telegram (paylasimli cache'ten) ------
-# Ilk gozlem baz alinir (restart bildirim uretmez); durum degisince BIR kez,
-# iki bildirim arasi en az 10dk. Bildirim engellenirse durum GUNCELLENMEZ,
-# esik ustu kalirsa sonraki taze ornekte gonderilir (gecikir, kaybolmaz).
+# Ilk gozlem baz alinir (restart bildirim uretmez); durum degisince BIR kez.
+# 15 Tem: 10dk throttle KALDIRILDI (throttle bloklarsa durum guncellenmiyordu,
+# rapidde flapping kapandi/ACILDI'nin biri sessizce yutuluyordu).
 # 13 Tem cift ayar: v7 kapisiyla hizali (V7_SOL_H1_MIN varsayilani 0.35).
 REJIM_BILDIRIM_ESIK = float(os.getenv("REJIM_BILDIRIM_ESIK", "0.35"))
-REJIM_BILDIRIM_MIN_ARALIK_SEC = 600.0
 _rejim_bildirim_lock = threading.Lock()
 _rejim_bildirim_durum: bool | None = None
-_rejim_bildirim_son_ts = 0.0
 
 
 def _rejim_gecis_bildir(val: float | None, now: float) -> None:
-    global _rejim_bildirim_durum, _rejim_bildirim_son_ts
+    global _rejim_bildirim_durum
     if val is None:
         return
     acik = val >= REJIM_BILDIRIM_ESIK
@@ -132,10 +130,7 @@ def _rejim_gecis_bildir(val: float | None, now: float) -> None:
             return
         if acik == _rejim_bildirim_durum:
             return
-        if now - _rejim_bildirim_son_ts < REJIM_BILDIRIM_MIN_ARALIK_SEC:
-            return
         _rejim_bildirim_durum = acik
-        _rejim_bildirim_son_ts = now
     msg = (f"Rejim ACILDI: sol_h1 {val:.2f}" if acik
            else f"Rejim kapandi: sol_h1 {val:.2f}")
     log.warning("REJIM BILDIRIM: %s", msg)
@@ -143,7 +138,7 @@ def _rejim_gecis_bildir(val: float | None, now: float) -> None:
         from hibrit_trader.killswitch import notify
         notify(msg)
     except Exception:
-        log.debug("rejim bildirimi gonderilemedi", exc_info=True)
+        log.warning("rejim bildirimi gonderilemedi", exc_info=True)
 
 
 def _sol_h1_gecko(client: httpx.Client) -> float | None:

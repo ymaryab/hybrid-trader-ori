@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
 
+_log = logging.getLogger(__name__)
 KILL_FILE = Path("data/KILL")
 
 
@@ -46,10 +48,12 @@ def notify(message: str, bot_token: str = "", chat_id: str = "") -> None:
     if not token or not chat:
         return
     try:
-        httpx.post(
+        r = httpx.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
             json={"chat_id": chat, "text": message},
             timeout=10,
         )
-    except httpx.HTTPError:
-        pass
+        if r.status_code != 200:
+            _log.warning("telegram notify HTTP %d: %s", r.status_code, r.text[:200])
+    except httpx.HTTPError as e:
+        _log.warning("telegram notify hatasi: %s", e)

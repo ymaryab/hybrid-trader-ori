@@ -375,16 +375,21 @@ def test_rejim_bildirim_ayni_durumda_tekrar_yok(monkeypatch):
     assert len(g) == 1
 
 
-def test_rejim_bildirim_10dk_spam_korumasi_geciktirir_kaybetmez(monkeypatch):
+def test_rejim_bildirim_throttle_yok_flapping_yakalanir(monkeypatch):
+    # 15 Tem: 10dk throttle kaldirildi (throttle bloklarken durum guncellenmiyor,
+    # rapid flapping kapandi/ACILDI'nin biri sessizce yutuluyordu). Simdi her
+    # gecis aninda gider.
     g = _bildirimler(monkeypatch)
     now = ms.time.time()
     ms._rejim_gecis_bildir(0.2, now)          # baz: kapali
-    ms._rejim_gecis_bildir(0.8, now + 1)      # ACILDI gonderilir
-    ms._rejim_gecis_bildir(0.1, now + 300)    # 10dk dolmadi: engellenir
-    assert len(g) == 1
-    # durum guncellenmedi: esik alti surerse sonraki ornekte gonderilir
-    ms._rejim_gecis_bildir(0.1, now + 700)
-    assert g == ["Rejim ACILDI: sol_h1 0.80", "Rejim kapandi: sol_h1 0.10"]
+    ms._rejim_gecis_bildir(0.8, now + 1)      # ACILDI
+    ms._rejim_gecis_bildir(0.1, now + 60)     # 1dk sonra kapandi: hemen gider
+    ms._rejim_gecis_bildir(0.9, now + 120)    # 1dk sonra tekrar ACILDI: hemen gider
+    assert g == [
+        "Rejim ACILDI: sol_h1 0.80",
+        "Rejim kapandi: sol_h1 0.10",
+        "Rejim ACILDI: sol_h1 0.90",
+    ]
 
 
 def test_rejim_bildirim_none_durumu_degistirmez(monkeypatch):
