@@ -402,6 +402,30 @@ def test_rejim_bildirim_none_durumu_degistirmez(monkeypatch):
     assert len(g) == 1
 
 
+def test_rejim_bildirim_restart_diske_persist(monkeypatch):
+    # 15 Tem (2): restart aninda meydana gelen transition sessiz kalmiyor,
+    # cunku _rejim_bildirim_durum diske persist ediliyor.
+    g = _bildirimler(monkeypatch)
+    now = ms.time.time()
+    # Ilk kurulum: baseline yaz, sessiz
+    ms._rejim_gecis_bildir(0.8, now)  # acik baseline
+    assert g == []
+    # Restart simulasyonu: global sifirlan
+    monkeypatch.setattr(ms, "_rejim_bildirim_durum", None)
+    # Restart sonrasi ilk sample rejim kapali: diskten "acik" yuklenir, gecis ACILDI->kapandi
+    ms._rejim_gecis_bildir(0.1, now + 100)
+    assert g == ["Rejim kapandi: sol_h1 0.10"]
+    # Restart tekrari: global sifirlan
+    monkeypatch.setattr(ms, "_rejim_bildirim_durum", None)
+    # Simdi kapali durum diskte; kapali sample yine geldi -> transition YOK
+    ms._rejim_gecis_bildir(0.2, now + 200)
+    assert len(g) == 1
+    # Restart + tekrar acildi
+    monkeypatch.setattr(ms, "_rejim_bildirim_durum", None)
+    ms._rejim_gecis_bildir(0.9, now + 300)
+    assert g[-1] == "Rejim ACILDI: sol_h1 0.90"
+
+
 class _SolOkClient:
     def __init__(self, h1):
         self.h1 = h1

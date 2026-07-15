@@ -36,6 +36,11 @@ def isolated_env(tmp_path, monkeypatch):
     )
     # Rejim gecis bildirimi durumu testler arasi sizmasin
     monkeypatch.setattr("hibrit_trader.momentum_session._rejim_bildirim_durum", None)
+    # Rejim durum dosyasi testler arasi sizmasin (tmp'ye yonlendir)
+    monkeypatch.setattr(
+        "hibrit_trader.momentum_session._REJIM_DURUM_DOSYA",
+        str(tmp_path / "rejim_bildirim.json"),
+    )
     # Telegram bildirimi testte gercek mesaj atmasin (killswitch.notify erken doner)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "")

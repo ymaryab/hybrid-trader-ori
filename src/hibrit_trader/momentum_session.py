@@ -113,10 +113,33 @@ _sol_h1_paylasimli: tuple[float, float | None] = (0.0, None)
 # Ilk gozlem baz alinir (restart bildirim uretmez); durum degisince BIR kez.
 # 15 Tem: 10dk throttle KALDIRILDI (throttle bloklarsa durum guncellenmiyordu,
 # rapidde flapping kapandi/ACILDI'nin biri sessizce yutuluyordu).
+# 15 Tem (2): durum DISKE persist edilir (data/rejim_bildirim.json). Her restart
+# _rejim_bildirim_durum globalini sifirliyordu, restart aninda meydana gelen
+# transition'lar sessiz baseline'a takiliyordu (bugun 4 restart / kayip
+# transition kaniti). Simdi diskten yuklenir, restart transition'lari yakalar.
 # 13 Tem cift ayar: v7 kapisiyla hizali (V7_SOL_H1_MIN varsayilani 0.35).
 REJIM_BILDIRIM_ESIK = float(os.getenv("REJIM_BILDIRIM_ESIK", "0.35"))
 _rejim_bildirim_lock = threading.Lock()
 _rejim_bildirim_durum: bool | None = None
+_REJIM_DURUM_DOSYA = os.getenv("REJIM_DURUM_DOSYA", "data/rejim_bildirim.json")
+
+
+def _rejim_durum_yukle() -> bool | None:
+    try:
+        with open(_REJIM_DURUM_DOSYA) as f:
+            v = json.load(f).get("durum")
+            return bool(v) if v is not None else None
+    except Exception:
+        return None
+
+
+def _rejim_durum_kaydet(durum: bool) -> None:
+    try:
+        os.makedirs(os.path.dirname(_REJIM_DURUM_DOSYA) or ".", exist_ok=True)
+        with open(_REJIM_DURUM_DOSYA, "w") as f:
+            json.dump({"durum": durum, "guncelleme": time.time()}, f)
+    except Exception:
+        log.debug("rejim durum diske yazilamadi", exc_info=True)
 
 
 def _rejim_gecis_bildir(val: float | None, now: float) -> None:
@@ -126,11 +149,17 @@ def _rejim_gecis_bildir(val: float | None, now: float) -> None:
     acik = val >= REJIM_BILDIRIM_ESIK
     with _rejim_bildirim_lock:
         if _rejim_bildirim_durum is None:
-            _rejim_bildirim_durum = acik
-            return
+            # Restart: diskten yukle. Yoksa (ilk kurulum) baseline yaz sessiz.
+            yuklenen = _rejim_durum_yukle()
+            if yuklenen is None:
+                _rejim_bildirim_durum = acik
+                _rejim_durum_kaydet(acik)
+                return
+            _rejim_bildirim_durum = yuklenen  # onceki durum
         if acik == _rejim_bildirim_durum:
             return
         _rejim_bildirim_durum = acik
+        _rejim_durum_kaydet(acik)
     msg = (f"Rejim ACILDI: sol_h1 {val:.2f}" if acik
            else f"Rejim kapandi: sol_h1 {val:.2f}")
     log.warning("REJIM BILDIRIM: %s", msg)
