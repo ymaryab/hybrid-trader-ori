@@ -86,10 +86,14 @@ def test_exec_paper_kalir_brokermode_live_iken(v7c_data_dir, monkeypatch):
 # ---- v7 kurallari korunur; farklar: evren esigi + h1 bandi 2..10 -----------------------
 
 def test_v7_sabitleri_birebir(v7c_data_dir):
+    # 15 Tem: v7 canli hat 15dk pencere + felaket freni geri; v7c paper eski
+    # kurallari (120dk pencere, felaket yok) korur. Ortak sabitler kilitli.
     assert v7c.TP_PCT == v7.TP_PCT == 2.0
-    assert v7c.GRACE_SEC == v7.GRACE_SEC == 120 * 60
     assert v7c.LATE_STOP_PCT == v7.LATE_STOP_PCT == -2.0
-    assert v7c.CEILING_SEC == v7.CEILING_SEC == 120 * 60
+    assert v7c.GRACE_SEC == 120 * 60 and v7.GRACE_SEC == 15 * 60
+    assert v7c.CEILING_SEC == 120 * 60 and v7.CEILING_SEC == 15 * 60
+    assert not hasattr(v7c, "DISASTER_PCT")
+    assert v7.DISASTER_PCT == -10.0
     # 13 Tem cift ayar: v7 esigi 0.35'e indi, v7c 0.5'te kaldi (kendi esigi)
     assert v7c.SOL_H1_MIN == 0.5
     assert v7.SOL_H1_MIN == 0.35

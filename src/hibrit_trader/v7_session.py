@@ -1,16 +1,17 @@
-"""V7 senaryo motoru — 120dk sabirli momentum yarisci (canli hat).
+"""V7 senaryo motoru — 15dk kisa pencere + felaket freni (canli hat).
 
 Diğer motorlara (v2/v3/v4/v5/v6/gölge) SIFIR dokunuş. Sadece şu dosyalara yazar:
   data/v7_state.json   (sanal bakiye + açık pozisyonlar)
   data/v7_trades.jsonl (her sanal kapanışta kayıt)
 
-V7 = V6 tabanli; 14 Tem kullanici karari: -%10 felaket freni IPTAL, sabir ve
-tavan 120 dk'ya cikti (eski gerekce metni git gecmisinde, 04 Tem analizi).
+V7 = V6 tabanli; 15 Tem kullanici karari: sabir ve tavan 120 dk -> 15 dk,
+-%10 felaket freni geri geldi (v7c/golge senkron degil, canli hat once).
   GİRİŞ : liq >= $100k VE 10 <= chg_h1 <= 50; 13 Tem cift ayar: h1 20-40
           bandi atlanir (V6+V7 retrosu n17 -$85), 10-20 ve 40-50 gecerli.
           Atlanan aday h1_bant_skip etiketiyle rejects'e yazilir.
-  ÇIKIŞ : tp_2 (+%2 UZERI, esitlik satmaz) / stop_gec (120dk sabır sonrası
-          -%2) / timeout_120. sol_chg_h1 kaydı v6 ile aynı.
+  ÇIKIŞ : tp_2 (+%2 UZERI, esitlik satmaz) / stop_felaket (-%10 her an) /
+          stop_gec (15dk sabır sonrası -%2) / timeout_15 (15dk kosulsuz).
+          sol_chg_h1 kaydı v6 ile aynı.
   REJİM : V-serisi final (05 Tem): eşik 0 yerine 0.5; 13 Tem cift ayar:
           esik 0.35'e indi (bos zaman bolusumu: bos vaktin %92-94'u rejim
           kapali kaynakli). Env: V7_SOL_H1_MIN.
@@ -71,16 +72,17 @@ from hibrit_trader.scanner import scan_all_cached as scan_all
 
 log = logging.getLogger(__name__)
 
-# ---- V7 eşikleri (v6 zemini, 120dk sabır, fren yok) ---------------------------
+# ---- V7 eşikleri (v6 zemini, 15dk kisa pencere + felaket freni) ---------------
 CHG_H1_MIN = float(os.getenv("V7_CHG_H1_MIN", "10"))
 CHG_H1_MAX = float(os.getenv("V7_CHG_H1_MAX", "50"))   # v6 ile aynı bant
 LIQ_MIN_USD = float(os.getenv("V7_LIQ_MIN_USD", "100000"))
 MAX_SLOTS = 5
 START_BALANCE = float(os.getenv("V7_START_BALANCE", "1000"))
-TP_PCT = 2.0            # giris +%2'nin UZERINE cikinca kar al (14 Tem: esitlik satmaz)
-GRACE_SEC = 120 * 60    # ilk 120dk asagida stop yok (14 Tem: 30dk -> 120dk)
-LATE_STOP_PCT = -2.0    # 120dk sonrası: girişin -%2 altı SAT
-CEILING_SEC = 120 * 60  # 120dk tavan (14 Tem: 60dk -> 120dk)
+TP_PCT = 2.0            # giris +%2'nin UZERINE cikinca kar al (esitlik satmaz)
+GRACE_SEC = 15 * 60     # ilk 15dk asagida stop yok (15 Tem: 120dk -> 15dk)
+LATE_STOP_PCT = -2.0    # 15dk sonrası: girişin -%2 altı SAT
+CEILING_SEC = 15 * 60   # 15dk tavan (15 Tem: 120dk -> 15dk)
+DISASTER_PCT = -10.0    # HER AN -%10'a dokunursa derhal sat (15 Tem: fren geri)
 SOL_H1_MIN = float(os.getenv("V7_SOL_H1_MIN", "0.35"))  # 13 Tem cift ayar: 0.5 -> 0.35 (bos zaman bolusumu olcumu)
 # h1 bant kacinma (13 Tem cift ayar): 20-40 bandi V6+V7 retrosunda negatif
 # (n17 -$85); 10-20 ve 40-50 gecerli kalir. LO=HI yapilirsa kacinma kapanir.
@@ -105,7 +107,7 @@ COOLDOWN_EXIT_SEC = float(os.getenv("MOM_COOLDOWN_EXIT_MIN", "15")) * 60
 EXIT_INTERVAL_SEC = float(os.getenv("M_EXIT_INTERVAL_SEC", "2"))
 # Kademeli satis toleransi (12 Tem, canli asimetri B1). Not: .env'deki
 # MAX_SLIPPAGE_BPS eski live.py yolunu besler, bu tabloya BAGLI DEGILDIR.
-EXIT_SLIPPAGE_BPS = {"tp_2": 150, "timeout_120": 150, "stop_gec": 300}
+EXIT_SLIPPAGE_BPS = {"tp_2": 150, "timeout_15": 150, "stop_gec": 300, "stop_felaket": 300}
 STOP_RETRY_ADET = 3     # stop yolunda basarisiz satis: kadans beklemeden tekrar
 STOP_RETRY_SEC = 3.0
 SAT_COOLDOWN_SEC = 20.0  # ertelenen satis sonrasi soguma; yoksa 1s kadans Jupiter'i 429'a bogar
@@ -384,13 +386,13 @@ class V7Engine:
         if not self._acquire_lock():
             return
         log.warning(
-            "V7 senaryo başladı (120dk sabır, fren yok) — sanal $%.2f · slot %d · "
+            "V7 senaryo başladı (15dk pencere + felaket freni) — sanal $%.2f · slot %d · "
             "giriş liq>=$%.0f + h1 %.0f..%.0f (skip %.0f..%.0f) · rejim>=%.2f · "
-            "çıkış tp+%.0f%% üzeri / "
+            "çıkış tp+%.0f%% üzeri / felaket %%%.0f / "
             "%dm sabır sonrası stop%%%.0f / tavan %dm",
             self.balance, MAX_SLOTS, LIQ_MIN_USD, CHG_H1_MIN, CHG_H1_MAX,
             H1_SKIP_LO, H1_SKIP_HI, SOL_H1_MIN,
-            TP_PCT, GRACE_SEC // 60, LATE_STOP_PCT, CEILING_SEC // 60,
+            TP_PCT, DISASTER_PCT, GRACE_SEC // 60, LATE_STOP_PCT, CEILING_SEC // 60,
         )
         self._save()
         feed = get_feed()
@@ -667,7 +669,8 @@ class V7Engine:
                % (pair.name, usd, eff_price, pair.chg_h1, pair.liquidity_usd))
         return True
 
-    # ---- Çıkış: tp_2 (+%2 üzeri) / stop_gec (120dk sonrası -%2) / timeout_120 ----
+    # ---- Cikis: tp_2 (+%2 uzeri) / stop_felaket (-%10 her an) /
+    #             stop_gec (15dk sonrasi -%2) / timeout_15 (15dk) ----
     def _eval_position(self, pos: dict, price: float, now: float,
                        liquidity_usd: float | None = None) -> str | None:
         """Fiyatı işle (last_price/mfe/mae) ve çıkış nedeni döndür (yoksa None)."""
@@ -684,10 +687,12 @@ class V7Engine:
         age = now - pos["opened_ts"]
         if pnl_pct > TP_PCT:
             return "tp_2"
+        if pnl_pct <= DISASTER_PCT:
+            return "stop_felaket"
         if age >= GRACE_SEC and pnl_pct <= LATE_STOP_PCT:
             return "stop_gec"
         if age >= CEILING_SEC:
-            return "timeout_120"
+            return "timeout_15"
         return None
 
     def _fiyat_tazelendi(self, pos: dict, now: float) -> None:
@@ -760,7 +765,7 @@ class V7Engine:
         eff_price = price * (1 - slip)
         karar_cikis = eff_price  # canli fill ezmeden onceki karar cikisi
         sat_bps = EXIT_SLIPPAGE_BPS.get(reason, 150)
-        deneme = STOP_RETRY_ADET if reason == "stop_gec" else 1
+        deneme = STOP_RETRY_ADET if reason in ("stop_gec", "stop_felaket") else 1
         devam, canli = False, None
         for i in range(deneme):
             devam, canli = self._exec_fill("sat", pos["token_address"],
@@ -841,7 +846,7 @@ class V7Engine:
         self.balance += proceeds
         self.realized_pnl += pnl
         self._day_realized_add(pnl, now)
-        cd = COOLDOWN_LOSS_SEC if reason == "stop_gec" else COOLDOWN_EXIT_SEC
+        cd = COOLDOWN_LOSS_SEC if reason in ("stop_gec", "stop_felaket") else COOLDOWN_EXIT_SEC
         if pos.get("token_address"):
             self._cooldown_until[pos["token_address"]] = now + cd
         try:
