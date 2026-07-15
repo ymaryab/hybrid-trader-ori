@@ -93,7 +93,7 @@ def test_v7_sabitleri_birebir(v7c_data_dir):
     assert v7c.GRACE_SEC == 120 * 60 and v7.GRACE_SEC == 15 * 60
     assert v7c.CEILING_SEC == 120 * 60 and v7.CEILING_SEC == 15 * 60
     assert not hasattr(v7c, "DISASTER_PCT")
-    assert v7.DISASTER_PCT == -10.0
+    assert v7.DISASTER_PCT == -15.0
     # 13 Tem cift ayar: v7 esigi 0.35'e indi, v7c 0.5'te kaldi (kendi esigi)
     assert v7c.SOL_H1_MIN == 0.5
     assert v7.SOL_H1_MIN == 0.35

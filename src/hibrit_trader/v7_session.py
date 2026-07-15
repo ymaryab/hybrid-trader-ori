@@ -9,7 +9,7 @@ V7 = V6 tabanli; 15 Tem kullanici karari: sabir ve tavan 120 dk -> 15 dk,
   GİRİŞ : liq >= $100k VE 10 <= chg_h1 <= 50; 13 Tem cift ayar: h1 20-40
           bandi atlanir (V6+V7 retrosu n17 -$85), 10-20 ve 40-50 gecerli.
           Atlanan aday h1_bant_skip etiketiyle rejects'e yazilir.
-  ÇIKIŞ : tp_2 (+%2 UZERI, esitlik satmaz) / stop_felaket (-%10 her an) /
+  ÇIKIŞ : tp_2 (+%2 UZERI, esitlik satmaz) / stop_felaket (-%15 her an) /
           stop_gec (15dk sabır sonrası -%2) / timeout_15 (15dk kosulsuz).
           sol_chg_h1 kaydı v6 ile aynı.
   REJİM : V-serisi final (05 Tem): eşik 0 yerine 0.5; 13 Tem cift ayar:
@@ -82,7 +82,7 @@ TP_PCT = 2.0            # giris +%2'nin UZERINE cikinca kar al (esitlik satmaz)
 GRACE_SEC = 15 * 60     # ilk 15dk asagida stop yok (15 Tem: 120dk -> 15dk)
 LATE_STOP_PCT = -2.0    # 15dk sonrası: girişin -%2 altı SAT
 CEILING_SEC = 15 * 60   # 15dk tavan (15 Tem: 120dk -> 15dk)
-DISASTER_PCT = -10.0    # HER AN -%10'a dokunursa derhal sat (15 Tem: fren geri)
+DISASTER_PCT = -15.0    # HER AN -%15'a dokunursa derhal sat (15 Tem retro sweep: -10 lokal min, -15 daha iyi)
 SOL_H1_MIN = float(os.getenv("V7_SOL_H1_MIN", "0.35"))  # 13 Tem cift ayar: 0.5 -> 0.35 (bos zaman bolusumu olcumu)
 # h1 bant kacinma (13 Tem cift ayar): 20-40 bandi V6+V7 retrosunda negatif
 # (n17 -$85); 10-20 ve 40-50 gecerli kalir. LO=HI yapilirsa kacinma kapanir.
@@ -669,7 +669,7 @@ class V7Engine:
                % (pair.name, usd, eff_price, pair.chg_h1, pair.liquidity_usd))
         return True
 
-    # ---- Cikis: tp_2 (+%2 uzeri) / stop_felaket (-%10 her an) /
+    # ---- Cikis: tp_2 (+%2 uzeri) / stop_felaket (-%15 her an) /
     #             stop_gec (15dk sonrasi -%2) / timeout_15 (15dk) ----
     def _eval_position(self, pos: dict, price: float, now: float,
                        liquidity_usd: float | None = None) -> str | None:

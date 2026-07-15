@@ -276,11 +276,11 @@ def test_patience_holds_small_drawdown(v7_data_dir, monkeypatch):
 
 
 def test_felaket_freni_grace_icinde_bile_satar(v7_data_dir, monkeypatch):
-    # 15 Tem: felaket freni geri; -%10 HER AN, grace icinde bile
+    # 15 Tem: felaket freni -%15 HER AN, grace icinde bile
     eng = V7Engine(_settings())
     pos = _open(eng)
     t0 = pos["opened_ts"]
-    _tick_price(eng, pos, pos["entry_price"] * 0.85, t0 + 60, monkeypatch)
+    _tick_price(eng, pos, pos["entry_price"] * 0.80, t0 + 60, monkeypatch)
     assert eng.positions == []
     t = _last(v7_data_dir)
     assert t["exit_reason"] == "stop_felaket"
