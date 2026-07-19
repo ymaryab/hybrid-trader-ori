@@ -150,8 +150,8 @@ def _start_engine() -> None:
             m2 = M2Engine(settings)
             threading.Thread(target=m2.run_forever, daemon=True).start()
         if os.getenv("V7C_ENABLED", "1") != "0":
-            # V7C senaryo: v7 kurallari birebir, tek fark major evren (liq>=$3M);
-            # SABIT PAPER (BROKER_MODE'dan bagimsiz), v7c_* dosyalarina yazar
+            # V7C: 16 Tem V7HIZLI klonu (TP+%2 tek cikis, stop/theta yok);
+            # broker-gomulu (CANLI_MOTOR swap edilebilir), v7c_* dosyalarina yazar
             from hibrit_trader.v7c_session import V7CEngine
             v7c = V7CEngine(settings)
             threading.Thread(target=v7c.run_forever, daemon=True).start()
@@ -162,6 +162,62 @@ def _start_engine() -> None:
             from hibrit_trader.v7d_session import V7DEngine
             v7d = V7DEngine(settings)
             threading.Thread(target=v7d.run_forever, daemon=True).start()
+        if os.getenv("V7HIZLI_ENABLED", "1") != "0":
+            # V7HIZLI senaryo (15 Tem kullanici karari): TP=+%2 tek cikis,
+            # stop yok, zaman asimi yok; rejim>=0.35 + h1 10-50 + liq>=$100k;
+            # SABIT PAPER, v7hizli_* dosyalarina yazar
+            from hibrit_trader.v7hizli_session import V7HizliEngine
+            v7hizli = V7HizliEngine(settings)
+            threading.Thread(target=v7hizli.run_forever, daemon=True).start()
+        if os.getenv("SV1_ENABLED", "1") != "0":
+            # SV1: eski Spotroader/hibrit-trader repodan klon; v7hizli iskeleti
+            # uzerinde ilk versiyon. sv1_* dosyalarina yazar. Broker-gomulu.
+            from hibrit_trader.sv1_session import SV1Engine
+            sv1 = SV1Engine(settings)
+            threading.Thread(target=sv1.run_forever, daemon=True).start()
+        if os.getenv("V7CD_ENABLED", "1") != "0":
+            # V7CD: V7C + trail-arm TP (18 Tem). TP+%2 hit yarisi sat + kalani
+            # runner trail (peak*(1-%3)). Broker-gomulu, v7cd_* dosyalari.
+            from hibrit_trader.v7cd_session import V7CDEngine
+            v7cd = V7CDEngine(settings)
+            threading.Thread(target=v7cd.run_forever, daemon=True).start()
+        if os.getenv("R1_ENABLED", "1") != "0":
+            # R1 Runner Catcher (18 Tem): h1>50 + m5>0, TP+%50 kismi + trail %15,
+            # felaket-15 + grace 15 stop-5 + timeout 120. Broker-gomulu.
+            from hibrit_trader.r1_session import R1Engine
+            r1 = R1Engine(settings)
+            threading.Thread(target=r1.run_forever, daemon=True).start()
+        if os.getenv("CANLI_ENABLED", "0") != "0":
+            # CANLI 10. motor (19 Tem): 9 paper motoru bolunmeden birakir,
+            # KAYNAK_MOTOR kural setiyle kendi taramasindan karar verir, canli
+            # emri broker.init_motor_exec("canli") -> live yolundan keser.
+            # CANLI_KAYNAK_MOTOR=r1 (default). canli_* dosyalarina yazar.
+            from hibrit_trader.canli_session import CanliEngine
+            canli_eng = CanliEngine(settings)
+            threading.Thread(target=canli_eng.run_forever, daemon=True).start()
+        if os.getenv("V7Y_ENABLED", "1") != "0":
+            # V7Y "Snipers" (18 Tem): h1 40-50 dar bant, TP+%5 kismi + trail %10,
+            # felaket-10 + grace 10 stop-3 + timeout 30. Retro %92 winrate bandı.
+            from hibrit_trader.v7y_session import V7YEngine
+            v7y = V7YEngine(settings)
+            threading.Thread(target=v7y.run_forever, daemon=True).start()
+        if os.getenv("V7T_ENABLED", "1") != "0":
+            # V7T "Antikacis" (18 Tem): h1 20-30, TP+%1.5, felaket-8, timeout 20.
+            # Bu bant retro'da -$56, hipotez: hedefi dusurunce kazanir.
+            from hibrit_trader.v7t_session import V7TEngine
+            v7t = V7TEngine(settings)
+            threading.Thread(target=v7t.run_forever, daemon=True).start()
+        if os.getenv("V7M_ENABLED", "1") != "0":
+            # V7M "Major" (18 Tem): h1 10-30, liq>=300k, TP+%2, timeout 90dk.
+            # Yuksek likidite guvenli tokenler icin konservatif motor.
+            from hibrit_trader.v7m_session import V7MEngine
+            v7m = V7MEngine(settings)
+            threading.Thread(target=v7m.run_forever, daemon=True).start()
+        if os.getenv("SENKRON_ENABLED", "1") != "0":
+            # 18 Tem: aktif canli motor state'i ile cuzdan token bakiyelerini
+            # periyodik kiyasla. Fark varsa telegram UYARI (5dk dedup).
+            from hibrit_trader.senkron_bekcisi import run_forever as senkron_run
+            threading.Thread(target=senkron_run, daemon=True).start()
         if os.getenv("EKG_ENABLED", "1") != "0":
             # Koşucu EKG: pasif gözlemci, işlem yok, kosucu_ekg* dosyalarına yazar
             from hibrit_trader.kosucu_ekg import KosucuEkg
@@ -485,11 +541,15 @@ def _equity_series(prefix: str, minutes: int) -> dict:
     data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
     start_bal = 1000.0
     state: dict = {}
+    created_ts = 0.0
     sp = data_dir / f"{prefix}_state.json"
     if sp.exists():
         try:
             state = json.loads(sp.read_text())
             start_bal = float(state.get("start_balance") or 1000.0)
+            # 18 Tem: motor reset sonrasi eski equity noktalari gorunmesin.
+            # created_ts state reset'te guncellenir → egri sifirdan baslar.
+            created_ts = float(state.get("created_ts") or 0.0)
         except Exception:
             state = {}
     points: list[tuple[float, float]] = []
@@ -502,9 +562,9 @@ def _equity_series(prefix: str, minutes: int) -> dict:
             try:
                 t = json.loads(ln)
                 ts = float(t.get("ts") or 0.0)
-                if ts <= 0:
+                if ts <= 0 or ts < created_ts:  # reset oncesi trade'leri atla
                     continue
-                if not points:  # başlangıç çapası: ilk işlemin açılış anı, $start
+                if not points:
                     points.append((ts - float(t.get("hold_sec") or 0.0), start_bal))
                 cum += float(t.get("pnl_usd") or 0.0)
                 points.append((ts, round(cum, 2)))
@@ -517,11 +577,18 @@ def _equity_series(prefix: str, minutes: int) -> dict:
                 continue
             try:
                 d = json.loads(ln)
-                points.append((float(d["ts"]), float(d["eq"])))
+                t = float(d["ts"])
+                if t < created_ts:  # reset oncesi equity noktalarini atla
+                    continue
+                points.append((t, float(d["eq"])))
             except Exception:
                 continue
-    if "balance" in state:  # canli uc nokta: ust ozetle AYNI hesap (_live_equity)
+    # Baslangic capasi: created_ts anindan $start baz
+    if created_ts > 0:
+        points.append((created_ts, start_bal))
+    if "balance" in state:  # canli uc nokta
         points.append((time.time(), _live_equity(state)))
+    points.sort(key=lambda x: x[0])
     return {
         "start_balance": start_bal,
         "points": _seri_pencere(points, minutes),
@@ -575,9 +642,13 @@ def _motor_ozet(data_dir: Path, prefix: str, now: float, limit: int,
             if not ln.strip():
                 continue
             try:
-                trades.append(json.loads(ln))
+                row = json.loads(ln)
             except ValueError:
                 continue
+            # meta satirlari (CANLI kural_degisim vs) trade sayilmaz
+            if row.get("type") in ("kural_degisim",):
+                continue
+            trades.append(row)
     positions = list(state.get("positions", []))
     for p in positions:
         entry = float(p.get("entry_price") or 0.0)
@@ -591,6 +662,15 @@ def _motor_ozet(data_dir: Path, prefix: str, now: float, limit: int,
         r = t.get("exit_reason", "?")
         reasons[r] = reasons.get(r, 0) + 1
     wins = sum(1 for t in trades if float(t.get("pnl_usd") or 0.0) > 0)
+    # 19 Tem: son 24 saat performansi. Motor reset/swap sonrasi trade'ler dahil
+    # (created_ts oncesi paper trade'leri yeni baza karsi sisirmasin).
+    cutoff_24h = now - 86400
+    created_ts = float(state.get("created_ts") or 0.0)
+    effective_cutoff = max(cutoff_24h, created_ts)
+    trades_24h = [t for t in trades if float(t.get("ts") or 0) >= effective_cutoff]
+    pnl_24h_usd = sum(float(t.get("pnl_usd") or 0) for t in trades_24h)
+    sb = float(state.get("start_balance") or 1000.0)
+    pnl_24h_pct = (pnl_24h_usd / sb * 100) if sb > 0 else 0.0
     summary = {
         "balance": round(float(state.get("balance") or 0.0), 2),
         "start_balance": state.get("start_balance"),
@@ -598,6 +678,9 @@ def _motor_ozet(data_dir: Path, prefix: str, now: float, limit: int,
         "equity": _live_equity(state),
         "open_slots": len(positions),
         "trades_total": len(trades),
+        "trades_24h": len(trades_24h),
+        "pnl_24h_usd": round(pnl_24h_usd, 2),
+        "pnl_24h_pct": round(pnl_24h_pct, 2),
         "wins": wins,
         "win_rate_pct": round(wins / len(trades) * 100, 1) if trades else None,
         "exit_reasons": reasons,
@@ -609,8 +692,13 @@ def _motor_ozet(data_dir: Path, prefix: str, now: float, limit: int,
         summary["universe_n"] = len(evren.get("tokens") or [])
         summary["universe_at"] = evren.get("updated_at")
         summary["universe_symbols"] = [t.get("symbol") for t in (evren.get("tokens") or [])]
-    if state:
+    if state and prefix != "canli":
+        # "canli_equity.jsonl" cuzdan MTM icin canli_gosterge tarafindan kullaniliyor,
+        # 10. motorun equity'si dosyaya yazilmaz (cakisma); state'ten hesaplanir.
         _equity_append(data_dir, prefix, summary["equity"])
+    # CANLI 10. motorun kaynak_motor rozeti (state'ten): kart uzerinde gosterilebilsin
+    if prefix == "canli":
+        summary["kaynak_motor"] = state.get("kaynak_motor")
     return {
         "summary": summary,
         "positions": positions,
@@ -633,7 +721,7 @@ def _canli_blok() -> dict | None:
 
 
 def _canli_pozlar(v7_positions: list[dict]) -> list[dict]:
-    """Canli acik pozisyon tablosu: v7 state'inden canli_miktar>0 olanlar."""
+    """CANLI = V7'nin canli_miktar>0 acik pozisyonlari (gercek cuzdan)."""
     out = []
     for p in v7_positions:
         miktar = float(p.get("canli_miktar") or 0.0)
@@ -643,42 +731,119 @@ def _canli_pozlar(v7_positions: list[dict]) -> list[dict]:
         guncel = float(p.get("last_price") or giris)
         kz_usd = miktar * (guncel - giris)
         kz_pct = round((guncel / giris - 1) * 100, 2) if giris > 0 else 0.0
-        out.append({"pair": p.get("pair", "?"), "miktar": miktar,
+        out.append({"bot": "CANLI", "pair": p.get("pair", "?"), "miktar": miktar,
                     "giris": giris, "guncel": guncel,
                     "kz_usd": round(kz_usd, 2), "kz_pct": kz_pct})
     return out
 
 
+def _paper_pozlar(bot_ad: str, positions: list[dict]) -> list[dict]:
+    """Paper botlar (V6/V7D/V7HIZLI): state.positions'tan amount_token bazli."""
+    out = []
+    for p in positions:
+        miktar = float(p.get("amount_token") or 0.0)
+        giris = float(p.get("entry_price") or 0.0)
+        guncel = float(p.get("last_price") or giris)
+        cost = float(p.get("cost_usd") or 0.0)
+        kz_pct = round((guncel / giris - 1) * 100, 2) if giris > 0 else 0.0
+        kz_usd = round(cost * kz_pct / 100.0, 2)
+        out.append({"bot": bot_ad, "pair": p.get("pair", "?"), "miktar": miktar,
+                    "giris": giris, "guncel": guncel,
+                    "kz_usd": kz_usd, "kz_pct": kz_pct})
+    return out
+
+
+# /api/filo cache (18 Tem): coklu sekme yukunu azalt, thread-safe TTL cache
+import threading as _threading
+_FILO_CACHE_LOCK = _threading.Lock()
+_FILO_CACHE: dict = {"ts": 0.0, "limit": None, "data": None}
+_FILO_CACHE_TTL = float(os.getenv("FILO_CACHE_TTL_SEC", "3"))
+
+
 @app.get("/api/filo")
 def api_filo(limit: int = Query(30)) -> dict:
-    """AKTIF filo TEK tick: uc motor (v6/v7/x1) + kiyas satiri tek geciste, tek 'now' ile.
+    """AKTIF filo TEK tick: 6 motor + kiyas satiri, TEK gecis + 'now'.
 
-    Panel senkron ilkesi: /momentum sayfasindaki her gosterge (ozetler, MTM ve
-    slot rozetleri, kiyas satiri, chartlarin canli uc noktasi) bu tek cevaptan
-    basilir; ayri fetch / ayri an / ikinci hesap yok. M1/M2 arsivde (kendi
-    endpointleri duruyor, arsiv acilinca bir kez okunur).
+    Panel senkron ilkesi: /momentum'daki tum gostergeler bu tek cevaptan basilir.
+    18 Tem: 3sn TTL cache — coklu sekme ayni yaniti alir, backend yuku azalir.
+    Cache invalidation: sadece TTL. Cache miss = normal hesap (fail-safe).
     """
+    # Cache hit kontrolu (aynı limit + TTL icinde)
+    with _FILO_CACHE_LOCK:
+        c = _FILO_CACHE
+        if (c["data"] is not None and c["limit"] == limit and
+                time.time() - c["ts"] < _FILO_CACHE_TTL):
+            return c["data"]
     data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
     now = time.time()
     out: dict = {"ts": round(now, 3)}
-    for prefix in ("v6", "v7", "x1", "v7c", "v7d"):
+    for prefix in ("v7", "v7c", "v7cd", "v7d", "v7hizli", "r1", "v7y", "v7t", "v7m"):
         out[prefix] = _motor_ozet(data_dir, prefix, now, limit)
+    # CANLI 10. motoru: dosya prefix'i "canli_" ama out key "canlim" (cuzdan
+    # _canli_blok ile cakismasin, o eski key "canli"yi kullanmaya devam eder).
+    out["canlim"] = _motor_ozet(data_dir, "canli", now, limit)
     out["cmp"] = {p: out[p]["summary"]["realized_pnl"]
-                  for p in ("v6", "v7", "x1", "v7c", "v7d")}
+                  for p in ("v7", "v7c", "v7cd", "v7d", "v7hizli", "r1", "v7y", "v7t", "v7m", "canlim")}
     out["kill"] = is_active()
-    # rejim rozeti: paylasimli sol_h1 cache'inden deger + olcum yasi (fetch tetiklemez)
+    # rejim rozeti: paylasimli sol_h1 cache + BTC m15 macro (cache'li fetch)
     from hibrit_trader.momentum_session import sol_h1_son_olcum
     sol_h1_val, sol_h1_ts = sol_h1_son_olcum()
+    rejim_data = {}
     if sol_h1_ts > 0 and sol_h1_val is not None:
-        out["rejim"] = {"sol_h1": sol_h1_val, "yas_sec": round(now - sol_h1_ts, 1)}
+        rejim_data["sol_h1"] = sol_h1_val
+        rejim_data["yas_sec"] = round(now - sol_h1_ts, 1)
+    # BTC m15 (paylasimli cache, 30sn TTL - panel fetch etsin de motorlar cachelesin)
+    try:
+        from hibrit_trader.giyotin_btc_macro import fetch_btc_m15_pct
+        btc = fetch_btc_m15_pct()
+        if btc is not None:
+            rejim_data["btc_m15"] = round(btc, 2)
+            rejim_data["btc_esik"] = float(os.getenv("BTC_MIN_M15", "-1.0"))
+    except Exception:
+        pass
+    if rejim_data:
+        out["rejim"] = rejim_data
     from hibrit_trader import kota
     out["tarama"] = kota.tarama_sagligi()
+    # 18 Tem: canli alim kilidi (LIVE_ONAY dosyasi) — panelde toggle butonu bunu okur
+    _lo = data_dir / "LIVE_ONAY"
+    out["live_onay"] = bool(_lo.exists() and _lo.read_text(encoding="utf-8").strip() ==
+                            "canli-islem-onayliyorum")
     canli = _canli_blok()
     if canli is not None:
         canli["pozisyonlar"] = _canli_pozlar(out["v7"]["positions"])
         out["canli"] = canli
         # kiyas satiri canli kalemi: MTM bazli (realized degil), ayni snapshot'tan
         out["cmp"]["canli"] = {"mtm": canli["mtm"], "pnl_pct": canli["pnl_pct"]}
+    # Tum acik pozisyonlar tek listede (CANLI + paper botlar), bot etiketli
+    # CANLI = aktif canli motorun canli_miktar>0 pozlari (etikeni CANLI)
+    aktif_canli = os.getenv("CANLI_MOTOR", "v7").strip().lower()
+    aktif_state = out.get(aktif_canli, {})
+    tum_pozlar = _canli_pozlar(aktif_state.get("positions", []))
+    # Digerleri paper (aktif canli motor da paper olarak eklenirse canli_miktar>0
+    # dublikat olabilir — o pozisyonlari filtrele)
+    def _paper_bot(bot_ad, prefix):
+        pozz = out.get(prefix, {}).get("positions", []) or []
+        if prefix == aktif_canli:
+            pozz = [p for p in pozz if not float(p.get("canli_miktar") or 0.0) > 0]
+        return _paper_pozlar(bot_ad, pozz)
+    tum_pozlar += _paper_bot("V7", "v7")
+    tum_pozlar += _paper_bot("V7C", "v7c")
+    tum_pozlar += _paper_bot("V7D", "v7d")
+    tum_pozlar += _paper_bot("V7HIZLI", "v7hizli")
+    tum_pozlar += _paper_bot("V7CD", "v7cd")
+    tum_pozlar += _paper_bot("R1", "r1")
+    tum_pozlar += _paper_bot("V7Y", "v7y")
+    tum_pozlar += _paper_bot("V7T", "v7t")
+    tum_pozlar += _paper_bot("V7M", "v7m")
+    out["acik_pozlar"] = tum_pozlar
+    # Aktif canli motor: swap butonu icin JS bunu kullanir
+    out["canli_motor"] = os.getenv("CANLI_MOTOR", "v7").strip().lower()
+    # Cache'i doldur (18 Tem)
+    with _FILO_CACHE_LOCK:
+        _FILO_CACHE["ts"] = time.time()
+        _FILO_CACHE["limit"] = limit
+        _FILO_CACHE["data"] = out
     return out
 
 
@@ -725,6 +890,41 @@ def api_v7c_equity(minutes: int = Query(0, ge=0)) -> dict:
 @app.get("/api/v7d/equity")
 def api_v7d_equity(minutes: int = Query(0, ge=0)) -> dict:
     return _equity_series("v7d", minutes)
+
+
+@app.get("/api/v7hizli/equity")
+def api_v7hizli_equity(minutes: int = Query(0, ge=0)) -> dict:
+    return _equity_series("v7hizli", minutes)
+
+
+@app.get("/api/sv1/equity")
+def api_sv1_equity(minutes: int = Query(0, ge=0)) -> dict:
+    return _equity_series("sv1", minutes)
+
+
+@app.get("/api/v7cd/equity")
+def api_v7cd_equity(minutes: int = Query(0, ge=0)) -> dict:
+    return _equity_series("v7cd", minutes)
+
+
+@app.get("/api/r1/equity")
+def api_r1_equity(minutes: int = Query(0, ge=0)) -> dict:
+    return _equity_series("r1", minutes)
+
+
+@app.get("/api/v7y/equity")
+def api_v7y_equity(minutes: int = Query(0, ge=0)) -> dict:
+    return _equity_series("v7y", minutes)
+
+
+@app.get("/api/v7t/equity")
+def api_v7t_equity(minutes: int = Query(0, ge=0)) -> dict:
+    return _equity_series("v7t", minutes)
+
+
+@app.get("/api/v7m/equity")
+def api_v7m_equity(minutes: int = Query(0, ge=0)) -> dict:
+    return _equity_series("v7m", minutes)
 
 
 @app.get("/api/canli/equity")
@@ -1336,27 +1536,36 @@ def api_m2(limit: int = Query(50)) -> dict:
 # MOTORLAR olarak alir. "canli" placeholder karttir.
 
 _FILO_MOTORLAR: list[dict] = [
-    {"id": "canli", "tip": "canli", "ad": "CANLI", "renk": "#e3b341"},
-    {"id": "v6", "tip": "bot", "ad": "V6", "renk": "#3fb950", "slots": 5,
-     "rozet": "hızlı göz",
-     "desc": "güçlendirilmiş gölge: liq&ge;$100k · h1 10..50 · tp+2 · 30dk sabır, stop-2 · 60dk tavan · rejim sol_h1&ge;0.5 · hızlı göz 2s"},
-    # gizli: motor calismaya ve /api/filo'da veri uretmeye devam eder; sadece
-    # panel gorunumunden (kart+chart+islem tablosu+kiyas) cikarilir. Canli test
-    # doneminde ekranda yalniz V6 + CANLI kalir (12 Tem karari).
     {"id": "v7", "tip": "bot", "ad": "V7", "renk": "#58a6ff", "slots": 5,
-     "rozet": "fren -%10", "gizli": True,
-     "desc": "-%10 felaket freni · sabır iptal, anında sat · rejim sol_h1&ge;0.35 · h1 20-40 skip (yalnız m5&le;0)"},
-    # arka: kart+chart ana ekrandan "Arka plan deneyleri" katlanir bolumune iner;
-    # motor, veri uretimi ve kiyas kayitlari aynen surer (sadece gorunum).
-    {"id": "x1", "tip": "bot", "ad": "X1", "renk": "#d29922", "slots": 3,
-     "rozet": "koşucu avcısı", "arka": True, "gizli": True,
-     "desc": "koşucu avcısı: h1&ge;50 + m5&gt;0 + liq&ge;$20k · bilet&le;$70 · yarım tp mfe&ge;+15 · trail -18 · 6sa tavan"},
+     "rozet": "30dk sabir",
+     "desc": "V7: liq&ge;$150k · h1 10..50 · tp+2 · felaket -%15 · 30dk sabir stop-2 · 60dk tavan"},
     {"id": "v7c", "tip": "bot", "ad": "V7C", "renk": "#bc8cff", "slots": 5,
-     "rozet": "majör 2-10", "gizli": True,
-     "desc": "v7 iskeleti majör/likit evrende: liq&ge;$3M · h1 2..10 · tp+2 · fren -%10 · rejim sol_h1&ge;0.5 · PAPER sabit"},
+     "rozet": "TP+%2 klon",
+     "desc": "TP+%2 tek çıkış · STOP YOK · zaman aşımı YOK · liq&ge;$100k · h1 10..50 · rejim sol_h1&ge;0.35"},
+    {"id": "v7hizli", "tip": "bot", "ad": "V7HIZLI", "renk": "#26c281", "slots": 5,
+     "rozet": "TP+%2 tek çıkış",
+     "desc": "TP+%2 tek çıkış · STOP YOK · zaman aşımı YOK · liq&ge;$100k · h1 10..50"},
     {"id": "v7d", "tip": "bot", "ad": "V7D", "renk": "#ff9f43", "slots": 5,
-     "rozet": "SEÇİCİ",
-     "desc": "SEÇİCİ: liq&ge;$150k · h1 10..20 (dar) · m5&gt;0 zorunlu · tp+2.5 · felaket -%15 · 15dk sabır stop-2 · 20dk tavan · rejim sol_h1&ge;0.5 · PAPER sabit"},
+     "rozet": "hızlı çıkış",
+     "desc": "hızlı çıkış: liq&ge;$150k · h1 10..50 · tp+2 · felaket -%15 · 15dk sabır stop-2 · 20dk tavan"},
+    {"id": "v7cd", "tip": "bot", "ad": "V7CD", "renk": "#a371f7", "slots": 5,
+     "rozet": "TP+%2 kısmi + trail",
+     "desc": "V7C + trail-arm: TP+%2 hit yarısı sat, kalanı runner (peak*(1-%3) altı trail)"},
+    {"id": "v7y", "tip": "bot", "ad": "V7Y", "renk": "#f6b73c", "slots": 5,
+     "rozet": "snipers h1 40-50",
+     "desc": "V7Y: h1 40-50 dar bant · TP+%5 kısmı + trail %10 · felaket -%10 · 10dk grace stop-3 · 30dk tavan"},
+    {"id": "v7t", "tip": "bot", "ad": "V7T", "renk": "#79c0ff", "slots": 5,
+     "rozet": "antikaçış h1 20-30",
+     "desc": "V7T: h1 20-30 hızlı scalp · TP+%1.5 · timeout 20dk"},
+    {"id": "v7m", "tip": "bot", "ad": "V7M", "renk": "#d2a8ff", "slots": 5,
+     "rozet": "majör likidite",
+     "desc": "V7M: h1 10-30 + liq&ge;$300k · TP+%2 · felaket -%12 · 30dk grace stop-3 · 90dk tavan"},
+    {"id": "r1", "tip": "bot", "ad": "R1", "renk": "#ff6b35", "slots": 5,
+     "rozet": "runner catcher",
+     "desc": "R1: h1&gt;30 + m5&gt;0 · TP+%10 kısmı + trail %15 · felaket -%15 · 15dk grace stop-5 · 120dk tavan · tam serbest"},
+    {"id": "canlim", "tip": "bot", "ad": "CANLI", "renk": "#26c281", "slots": 5,
+     "rozet": "10. motor · kaynak R1",
+     "desc": "CANLI 10. motor (19 Tem): gerçek cüzdanla emir keser · kural seti CANLI_KAYNAK_MOTOR env'den (default R1) · birikimli defter + kural_degisim satırları"},
 ]
 
 
@@ -1373,14 +1582,16 @@ def _filo_kart_canli(durum: str) -> str:
                  if durum == "bagli" else
                  '<span class="rozet">kilitli &#128274;</span>')
         return ('<div class="kart" id="kart-canli">'
-                f'<div class="khead"><b style="color:#e3b341">CANLI</b>{rozet}</div>'
+                f'<div class="khead"><b style="color:#e3b341">CANLI</b>{rozet}'
+                '<span class="rozet" id="aktif-motor-lbl" style="background:#1f6feb;color:#fff">aktif: v7</span></div>'
                 '<div class="mtmbig" id="mtm-canli">yükleniyor…</div>'
                 '<div class="ksub" id="sub-canli">-</div>'
                 '<div class="ksub" id="sol-canli">serbest SOL: -</div>'
                 '<canvas class="spark" id="spark-canli" height="36"></canvas>'
                 '<div class="kfoot" id="foot-canli">-</div>'
-                '<button id="killBtn" disabled>...</button>'
-                f'<div class="kfoot">V7 canlı · bilet: MTM %{pct} · muhasebe paper '
+                '<button class="canli-al-btn" data-motor="v7" style="display:none" '
+                'onclick="canliAl(\'v7\',\'V7\')">🔴 V7 canlıya geri dön</button>'
+                f'<div class="kfoot">bilet: MTM %{pct} · muhasebe paper '
                 "boyutta · fill'ler tx imzalı, denetim defterine düşer · cüzdan "
                 f'{_CANLI_CUZDAN[:4]}…{_CANLI_CUZDAN[-4:]}</div></div>')
     return ('<div class="kart bos" id="kart-canli">'
@@ -1392,16 +1603,37 @@ def _filo_kart_canli(durum: str) -> str:
 
 
 def _filo_kart(m: dict, canli_durum: str = "yok") -> str:
-    if m["tip"] == "bot":
-        return (f'<div class="kart" id="kart-{m["id"]}" title="{m["desc"]}">'
-                f'<div class="khead"><b style="color:{m["renk"]}">{m["ad"]}</b>'
-                f'<span class="rozet">{m["rozet"]}</span>'
-                '<span class="rozet liderroz">lider</span></div>'
-                f'<div class="mtmbig" id="mtm-{m["id"]}">yükleniyor…</div>'
-                f'<div class="ksub" id="sub-{m["id"]}">-</div>'
-                f'<canvas class="spark" id="spark-{m["id"]}" height="36"></canvas>'
-                f'<div class="kfoot" id="foot-{m["id"]}">-</div></div>')
-    return _filo_kart_canli(canli_durum)
+    # Canliya-al butonu: broker-gomulu 5 motor icin
+    swap_btn = ""
+    if m["id"] in ("v7", "v7c", "v7cd", "v7d", "v7hizli", "r1", "v7y", "v7t", "v7m"):
+        swap_btn = (f'<button class="canli-al-btn" data-motor="{m["id"]}" '
+                    f'onclick="canliAl(\'{m["id"]}\',\'{m["ad"]}\')" '
+                    f'title="Canlıya al">🔴 al</button>')
+    # Motor wrap: kart + o motorun mini acik-poz tablosu
+    return (f'<div class="motor-wrap" id="wrap-{m["id"]}">'
+            f'<div class="kart" id="kart-{m["id"]}" title="{m["desc"]}">'
+            f'<div class="khead"><span class="sira" id="sira-{m["id"]}">-</span>'
+            f'<b style="color:{m["renk"]}">{m["ad"]}</b>'
+            f'<span class="rozet">{m["rozet"]}</span>'
+            f'<span class="rozet" id="canli-roz-{m["id"]}" '
+            f'style="display:none;background:#da3633;color:#fff">🔴 CANLI</span></div>'
+            f'<div class="mtmbig" id="mtm-{m["id"]}">yükleniyor…</div>'
+            f'<div class="ksub" id="sub-{m["id"]}">-</div>'
+            f'<div class="ksub" id="sol-{m["id"]}" style="display:none">-</div>'
+            f'<canvas class="spark" id="spark-{m["id"]}" height="36"></canvas>'
+            f'<div class="kfoot" id="foot-{m["id"]}">-</div>'
+            f'{swap_btn}'
+            f'<div class="pnl24" id="pnl24-{m["id"]}" title="Son 24 saat getiri">-</div>'
+            f'</div>'
+            f'<div class="motor-poz" id="motorpoz-{m["id"]}">'
+            f'<h4>açık pozisyonlar</h4>'
+            f'<div class="bos">-</div>'
+            f'</div>'
+            f'<div class="motor-trades" id="motortrades-{m["id"]}">'
+            f'<h4>son 24 saat işlemleri</h4>'
+            f'<div class="bos">-</div>'
+            f'</div>'
+            f'</div>')
 
 
 def _filo_chart(m: dict, canli_durum: str = "yok") -> str:
@@ -1420,11 +1652,7 @@ def _filo_chart(m: dict, canli_durum: str = "yok") -> str:
                 f'baz ${canli_gosterge.baz_usd():.2f}{ek}</span>'
                 '<span id="eqcanlilabel" class="eqlabel"></span></div>'
                 '<div class="eqwrap"><span id="eqcanlitrend" class="trendroz"></span>'
-                '<canvas id="eqcanlichart"></canvas></div>'
-                '<h2>AÇIK POZİSYONLAR · canlı</h2>'
-                '<div class="tablewrap"><table id="canliPoz"><thead><tr>'
-                '<th>token</th><th>miktar</th><th>giriş</th><th>güncel</th>'
-                '<th>K/Z $</th><th>K/Z %</th></tr></thead><tbody></tbody></table></div>')
+                '<canvas id="eqcanlichart"></canvas></div>')
     return ('<div class="chhead"><span class="dot" style="background:#e3b341"></span>'
             '<b>CANLI</b></div>'
             '<div class="ph">kazanan bağlandığında gerçek para eğrisi burada akacak</div>')
@@ -1435,7 +1663,7 @@ _MOMENTUM_HTML = """<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
  body{background:#0d1117;color:#c9d1d9;font:13px/1.55 monospace;margin:0 auto;
-   max-width:1400px;padding:18px 20px 40px}
+   max-width:1800px;padding:14px 20px 40px}
  h2{color:#58a6ff;margin:22px 0 8px;font-size:15px}
  .pos{color:#3fb950} .neg{color:#f85149}
  table{border-collapse:collapse;width:100%;margin-bottom:14px}
@@ -1451,8 +1679,22 @@ _MOMENTUM_HTML = """<!doctype html>
  .badge.ok{color:#3fb950;border-color:#238636}
  .badge.err{background:#da3633;color:#fff;border-color:#da3633}
  .badge.bayat{opacity:.55;color:#8b949e;border-color:#30363d}
- #kartGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:16px 0 6px}
- @media(max-width:1100px){#kartGrid{grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}}
+ #kartGrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0 6px}
+ @media(max-width:1400px){#kartGrid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+ @media(max-width:1050px){#kartGrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+ @media(max-width:700px){#kartGrid{grid-template-columns:1fr}}
+ .motor-wrap{display:flex;flex-direction:column;gap:8px}
+ .motor-poz,.motor-trades{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:8px}
+ .motor-poz h4,.motor-trades h4{margin:0 0 6px;font-size:11px;color:#8b949e;font-weight:normal}
+ .motor-poz table,.motor-trades table{width:100%;border-collapse:collapse;font-size:10.5px}
+ .motor-poz td,.motor-poz th,.motor-trades td,.motor-trades th{border:none;padding:2px 4px;text-align:right}
+ .motor-poz th,.motor-trades th{color:#6e7681;font-weight:normal}
+ .motor-poz td:first-child,.motor-poz th:first-child,
+ .motor-trades td:first-child,.motor-trades th:first-child{text-align:left}
+ .motor-poz .bos,.motor-trades .bos{color:#484f58;text-align:center;padding:6px 0}
+ .motor-trades a{color:#58a6ff;text-decoration:none}
+ .motor-trades a:hover{text-decoration:underline}
+ hr.bolme{border:0;border-top:1px solid #30363d;margin:20px 0 12px}
  .kart{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px 14px;
    min-height:158px;display:flex;flex-direction:column}
  .kart.bos{background:transparent;border-style:dashed;color:#8b949e}
@@ -1475,11 +1717,35 @@ _MOMENTUM_HTML = """<!doctype html>
  .ph{border:1px dashed #30363d;border-radius:10px;min-height:90px;display:flex;
    align-items:center;justify-content:center;color:#484f58;padding:14px;text-align:center;
    margin-bottom:8px}
- .eqbtns{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0 8px}
- .eqbtns button{background:#21262d;color:#8b949e;border:1px solid #30363d;border-radius:6px;
+ /* 16 Tem sadelestirme: buyuk chart bloklarini gizle, kart sparklari acik */
+ .eqbtns,.eqwrap,.chhead{display:none !important}
+ .sira{display:inline-block;min-width:20px;text-align:center;font:bold 12px monospace;
+   color:#8b949e;background:#0d1117;border:1px solid #30363d;border-radius:4px;
+   padding:1px 5px;margin-right:2px}
+ .sira.top1{color:#e3b341;border-color:#e3b341}
+ .sira.top2{color:#c9d1d9}
+ .sira.top3{color:#c9d1d9}
+ .sira.bos{color:#484f58;border-style:dashed}
+ #canliOnayBtn{font:bold 12px monospace !important;padding:4px 12px !important;
+   border-radius:6px !important;cursor:pointer;border:1px solid transparent}
+ .canli-al-btn{position:absolute;top:8px;right:8px;background:transparent;color:#f85149;
+   border:1px solid #f85149;border-radius:5px;padding:1px 6px;cursor:pointer;
+   font:11px monospace;line-height:1.4;z-index:2}
+ .pnl24{position:absolute;top:32px;right:8px;font:bold 15px monospace;
+   background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:2px 8px;
+   min-width:60px;text-align:right;z-index:1}
+ .pnl24.pos{color:#3fb950;border-color:#238636}
+ .pnl24.neg{color:#f85149;border-color:#da3633}
+ .pnl24.bos{color:#484f58;border-style:dashed;font-weight:normal}
+ .canli-al-btn:hover{background:rgba(248,81,73,.18)}
+ .canli-al-btn.aktif{background:#da3633;color:#fff;border-color:#da3633;cursor:default}
+ .canli-al-btn:disabled{opacity:.35;cursor:not-allowed}
+ .kart{position:relative}
+ .eqbtns_KAPALI{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0 8px}
+ .eqbtns_KAPALI button{background:#21262d;color:#8b949e;border:1px solid #30363d;border-radius:6px;
    padding:2px 10px;cursor:pointer;font:inherit}
- .eqbtns button.act{background:#1f6feb;color:#fff;border-color:#1f6feb}
- .eqwrap{position:relative;width:100%;height:260px;margin-bottom:10px}
+ .eqbtns_KAPALI button.act{background:#1f6feb;color:#fff;border-color:#1f6feb}
+ .eqwrap_KAPALI{position:relative;width:100%;height:260px;margin-bottom:10px}
  .eqlabel{color:#8b949e} .eqlabel b{color:#c9d1d9}
  .mtm{font-size:24px;margin:2px 0 6px;color:#8b949e}
  .slotbadge{display:inline-block;font-size:11px;vertical-align:middle;margin-left:10px;
@@ -1520,6 +1786,7 @@ _MOMENTUM_HTML = """<!doctype html>
   <span id="feedBadge" class="badge">feed: -</span>
   <span id="rejimBadge" class="badge">rejim sol_h1: -</span>
   <span id="taramaBadge" class="badge">tarama: -</span>
+  <button id="canliOnayBtn" class="badge" style="cursor:pointer;font-family:monospace" title="Canli alim kilidi (LIVE_ONAY dosyasi)">canlı: -</button>
   <!--MODROZET-->
  </div>
 </div>
@@ -1527,109 +1794,17 @@ _MOMENTUM_HTML = """<!doctype html>
 <div id="cmp3" style="color:#8b949e;margin:2px 0 14px">yükleniyor…</div>
 <div class="eqbtns" id="eqsyncbtns"></div>
 <div id="chartCol"><!--CHARTCOL--></div>
-<h2>SON İŞLEMLER · aktif filo</h2>
+<!-- 18 Tem: acik pozisyonlar her motor kartinin altina dagitildi (motor-poz),
+     ana tek tablo kaldirildi. canliPoz tablosu geri uyumluluk icin gizli. -->
+<table id="canliPoz" style="display:none"><tbody></tbody></table>
+<hr class="bolme">
+<h2>SON İŞLEMLER · aktif filo <span id="isltrFiltreChips" style="font-size:12px;font-weight:normal;margin-left:8px"></span></h2>
 <div class="tablewrap"><table id="isltr"><thead><tr><th>bot</th><th>pair</th><th>exit</th>
 <th>pnl $</th><th>pnl%</th><th>mfe/mae</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th>
 <th>giriş</th><th>çıkış</th><th>hold sn</th><th>kapanış</th><th>tx</th></tr></thead><tbody></tbody></table></div>
-<details id="arkaBox" style="margin-top:28px;border-top:1px solid #30363d;padding-top:8px">
-<summary style="cursor:pointer;color:#8b949e"><b>ARKA PLAN DENEYLERİ · çalışır durumda (x1) · tıkla aç</b></summary>
-<div id="arkaIc"><!--ARKA-->
-<h2>SON İŞLEMLER · x1</h2>
-<div class="tablewrap"><table id="isltrArka"><thead><tr><th>bot</th><th>pair</th><th>exit</th>
-<th>pnl $</th><th>pnl%</th><th>mfe/mae</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th>
-<th>giriş</th><th>çıkış</th><th>hold sn</th><th>kapanış</th><th>tx</th></tr></thead><tbody></tbody></table></div>
-</div>
-</details>
-<details id="arsivBox" style="margin-top:28px;border-top:1px solid #30363d;padding-top:8px">
-<summary style="cursor:pointer;color:#8b949e"><b>ARŞİV · durdurulan motorlar (m1 · m2 · v2 · v3 · v4 · v5 · gölge · v8 · v9 · v10) · tıkla aç</b></summary>
-<div id="arsivIc">
-<h2>M1 Senaryo (durduruldu · MAJOR evren: liq&ge;$3M · h1 1.5..15, m5 sıralı · rejim sol_h1&ge;0.3 · tp+1.2 / fren -4 / 20dk sabır stop -1.5 / 90dk tavan)</h2>
-<div id="m1mtm" class="mtm">arşiv, açınca yüklenir…</div>
-<div id="m1sum">arşiv, açınca yüklenir…</div>
-<table id="m1tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
-<th>mfe%</th><th>mae%</th><th>chg_m5</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th>
-<th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>Equity (M1)</h2>
-<div class="eqbtns" id="eqm1btns"></div>
-<div class="eqwrap"><canvas id="eqm1chart"></canvas></div>
-<h2>M2 Senaryo (durduruldu · MAJOR evren: liq&ge;$3M · h1 1.5..15, h1 sıralı · saf tp+1.2 · stop/timeout/rejim/cooldown YOK)</h2>
-<div id="m2mtm" class="mtm">arşiv, açınca yüklenir…</div>
-<div id="m2sum">arşiv, açınca yüklenir…</div>
-<table id="m2tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
-<th>mfe%</th><th>mae%</th><th>chg_m5</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th>
-<th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>Equity (M2)</h2>
-<div class="eqbtns" id="eqm2btns"></div>
-<div class="eqwrap"><canvas id="eqm2chart"></canvas></div>
-<h2>MOMENTUM v2 (durduruldu · slot 5 · liq&ge;$40k · m5&gt;0 · h1 5..50 · stop-2/BE+3/trail 5/-3 · 60dk)</h2>
-<div id="sum">arşiv, açınca yüklenir…</div>
-<table id="pos"><thead><tr><th>pair</th><th>chain</th><th>giriş</th><th>son</th>
-<th>pnl%</th><th>peak mfe%</th><th>stop modu</th><th>chg_m5</th><th>chg_h1</th>
-<th>liq $</th><th>yaş dk</th><th>maliyet $</th></tr></thead><tbody></tbody></table>
-<table id="tr"><thead><tr><th>pair</th><th>chain</th><th>exit_reason</th><th>pnl $</th>
-<th>pnl%</th><th>friction%</th><th>chg_m5</th><th>chg_h1</th><th>liq $</th>
-<th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>Equity (MOMENTUM v2)</h2>
-<div class="eqbtns" id="eqv2btns"></div>
-<div class="eqwrap"><canvas id="eqv2chart"></canvas></div>
-<h2>V3 Senaryo (durduruldu · h1 5..15 düşük önce · rejim&ge;0.5 · BE+1.5 · cooldown 45dk)</h2>
-<div id="v3sum">arşiv, açınca yüklenir…</div>
-<table id="v3tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
-<th>mfe%</th><th>mae%</th><th>chg_m5</th><th>chg_h1</th><th>sol_h1</th><th>hold sn</th>
-<th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>Equity (V3)</h2>
-<div class="eqbtns" id="eqv3btns"></div>
-<div class="eqwrap"><canvas id="eqv3chart"></canvas></div>
-<h2>V5 Senaryo (durduruldu · gölge zemini + taban -%8 · tp yarım + koşucu trail -3/be+1.5)</h2>
-<div id="v5sum">arşiv, açınca yüklenir…</div>
-<table id="v5tr"><thead><tr><th>pair</th><th>exit_reason</th><th>koşucu</th><th>pnl $</th>
-<th>pnl%</th><th>mfe%</th><th>mae%</th><th>chg_h1</th><th>liq $</th><th>hold sn</th>
-<th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>Equity (V5)</h2>
-<div class="eqbtns" id="eqv5btns"></div>
-<div class="eqwrap"><canvas id="eqv5chart"></canvas></div>
-<h2>Gölge Senaryo (durduruldu · liq&ge;$100k + h1&ge;10 · TP+2 · 30dk sabır sonrası stop-2 · 60dk tavan)</h2>
-<div id="gsum">arşiv, açınca yüklenir…</div>
-<table id="gtr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
-<th>mfe%</th><th>mae%</th><th>chg_h1</th><th>hold sn</th><th>kapanış</th></tr></thead>
-<tbody></tbody></table>
-<h2>Equity (Gölge)</h2>
-<div class="eqbtns" id="eqgbtns"></div>
-<div class="eqwrap"><canvas id="eqgchart"></canvas></div>
-<h2>V8 Senaryo (durduruldu · gölge + liq 200k · h1 20..50 · tp+3 · mutlak 20dk tavan)</h2>
-<div id="v8sum">arşiv, açınca yüklenir…</div>
-<table id="v8tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
-<th>mfe%</th><th>mae%</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th><th>hold sn</th>
-<th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>Equity (V8)</h2>
-<div class="eqbtns" id="eqv8btns"></div>
-<div class="eqwrap"><canvas id="eqv8chart"></canvas></div>
-<h2>V4 Melez Senaryo (durduruldu · v3 girişi h1 5..15 · kademeli trail -3/-6 · karda 120dk tavan)</h2>
-<div id="v4sum">arşiv, açınca yüklenir…</div>
-<table id="v4tr"><thead><tr><th>pair</th><th>exit_reason</th><th>kademe</th><th>pnl $</th>
-<th>pnl%</th><th>mfe%</th><th>mae%</th><th>chg_m5</th><th>chg_h1</th><th>sol_h1</th>
-<th>hold sn</th><th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>Equity (V4)</h2>
-<div class="eqbtns" id="eqv4btns"></div>
-<div class="eqwrap"><canvas id="eqv4chart"></canvas></div>
-<h2>V9 Senaryo (durduruldu · v7 + TEK fark: likidite tabanı $300k)</h2>
-<div id="v9sum">arşiv, açınca yüklenir…</div>
-<table id="v9tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
-<th>mfe%</th><th>mae%</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th><th>hold sn</th>
-<th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>Equity (V9)</h2>
-<div class="eqbtns" id="eqv9btns"></div>
-<div class="eqwrap"><canvas id="eqv9chart"></canvas></div>
-<h2>V10 Senaryo (durduruldu · saf tp+2: liq&ge;$300k + h1 10..50 · stop/timeout/rejim/cooldown YOK)</h2>
-<div id="v10sum">arşiv, açınca yüklenir…</div>
-<table id="v10tr"><thead><tr><th>pair</th><th>exit_reason</th><th>pnl $</th><th>pnl%</th>
-<th>mfe%</th><th>mae%</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th><th>hold sn</th>
-<th>kapanış</th></tr></thead><tbody></tbody></table>
-<h2>Equity (V10)</h2>
-<div class="eqbtns" id="eqv10btns"></div>
-<div class="eqwrap"><canvas id="eqv10chart"></canvas></div>
-</div>
-</details>
+<!-- 16 Tem: arka plan (X1) bolumu kaldirildi -->
+<div id="arkaBox" style="display:none"><div id="arkaIc"></div></div>
+<!-- 16 Tem: arsiv bolumu (m1/m2/v2/v3/v4/v5/golge/v8/v9/v10) kaldirildi -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script>
@@ -1853,9 +2028,9 @@ const EQWINS=[["5dk",5],["15dk",15],["30dk",30],["1s",60],["2s",120],["5s",300],
 const SYNCWINS=[["5dk",5],["15dk",15],["30dk",30],["1s",60],["2s",120],["5s",300],
   ["12s",720],["24s",1440],["48s",2880],["Tümü",0]];
 function sparkHazirla(pts,now){
-  // spark verisi: son 24 saat, ~72 noktaya seyreltilir (ilk/son nokta korunur);
-  // renk 24s net degisime gore: pozitif/notr yesil, negatif kirmizi
-  const SAAT=24,NOKTA=72;
+  // spark verisi: son 24 saat (18 Tem kullanici), ~144 noktaya seyreltilir;
+  // renk pencere net degisimine gore: pozitif/notr yesil, negatif kirmizi
+  const SAAT=24,NOKTA=144;
   const t0=now-SAAT*3600000;
   let p=pts.filter(q=>q.x>=t0);
   if(p.length>NOKTA){
@@ -1867,7 +2042,7 @@ function sparkHazirla(pts,now){
   return {p,renk};
 }
 function cizSpark(id,pts,start){
-  // kart mini sparkline: son 24 saat equity, referans cizgisi kesikli
+  // kart mini sparkline: son 48 saat equity + baslangic seviyesi beyaz cizgi
   const c=document.getElementById(id); if(!c)return;
   const w=c.width=c.clientWidth||160, h=c.height=36;
   const x=c.getContext("2d"); x.clearRect(0,0,w,h);
@@ -1876,8 +2051,9 @@ function cizSpark(id,pts,start){
   for(const q of p){if(q.y<lo)lo=q.y;if(q.y>hi)hi=q.y;}
   const pad=(hi-lo)*0.12||1; lo-=pad; hi+=pad;
   const Y=v=>h-2-(v-lo)/(hi-lo)*(h-4);
-  x.strokeStyle="#30363d"; x.setLineDash([3,3]); x.beginPath();
-  x.moveTo(0,Y(start)); x.lineTo(w,Y(start)); x.stroke(); x.setLineDash([]);
+  // baslangic (+-0) referans cizgisi: beyaz, ince duz
+  x.strokeStyle="#ffffff"; x.lineWidth=1; x.beginPath();
+  x.moveTo(0,Y(start)); x.lineTo(w,Y(start)); x.stroke();
   if(p.length<2)return;
   const x0=p[0].x, dx=(p[p.length-1].x-x0)||1;
   const X=v=>(v-x0)/dx*(w-6)+3;
@@ -2073,40 +2249,148 @@ function basBot(m,d){
   const dolu="●".repeat(s.open_slots)+"○".repeat(Math.max(m.slots-s.open_slots,0));
   document.getElementById("foot-"+m.id).innerHTML=
     `slot ${dolu} ${s.open_slots}/${m.slots} · win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}`;
+  // 19 Tem: sag ust 24h getiri gostergesi
+  const p24=Number(s.pnl_24h_pct||0);
+  const n24=Number(s.trades_24h||0);
+  const p24el=document.getElementById("pnl24-"+m.id);
+  if(p24el){
+    if(n24===0){p24el.textContent="0"; p24el.className="pnl24 bos";}
+    else{p24el.textContent=(p24>0?"+":"")+f(p24,1)+"%"; p24el.className="pnl24 "+(p24>=0?"pos":"neg");}
+  }
   document.getElementById("eq"+m.id+"label").innerHTML=
     `MTM <b class="${cls(dp)}">$${f(s.equity)}</b>`;
   eqCharts["eq"+m.id]&&eqCharts["eq"+m.id].setLive(s.equity);
   return s;
 }
-function basCanli(c){
-  // CANLI karti: /api/filo cevabindaki canli blogundan (canli_gosterge snapshot)
-  const el=document.getElementById("mtm-canli");
-  if(!el)return;
+function basCanli(c, aktif){
+  // CANLI: /api/filo'daki canli blogu (cuzdan snapshot) → aktif canli motorun
+  // kartinin mtm/sub/sol/foot alanlarina yazilir. basBot ilk yazar, basCanli ustune.
+  aktif=(aktif||"v7").toLowerCase();
+  const mtmEl=document.getElementById("mtm-"+aktif);
+  if(!mtmEl)return;
   const dp=c.mtm-c.baz;
-  el.innerHTML=`<b class="${cls(dp)}">$${f(c.mtm)}</b>`;
-  document.getElementById("sub-canli").innerHTML=
-    `<span class="${cls(c.pnl_pct)}">${c.pnl_pct>0?"+":""}${f(c.pnl_pct)}%</span> · ${c.islem_n} canlı işlem`;
-  const solEl=document.getElementById("sol-canli");
-  if(solEl)solEl.innerHTML=
-    `serbest <b>${f(c.sol,4)} SOL</b> (~$${f(c.sol*c.sol_fiyat)})`;
-  document.getElementById("foot-canli").innerHTML=
-    `poz ${"●".repeat(c.acik_poz)}${"○".repeat(Math.max(5-c.acik_poz,0))} ${c.acik_poz}/5`+
-    ` · baz $${f(c.baz)}`;
-  const lb=document.getElementById("eqcanlilabel");
-  if(lb)lb.innerHTML=`MTM <b class="${cls(dp)}">$${f(c.mtm)}</b>`;
-  eqCharts["eqcanli"]&&eqCharts["eqcanli"].setLive(c.mtm);
-  basCanliPoz(c.pozisyonlar||[]);
+  mtmEl.innerHTML=`<b class="${cls(dp)}">$${f(c.mtm)}</b> <span class="slotbadge" style="background:#da3633;color:#fff">CANLI</span>`;
+  document.getElementById("sub-"+aktif).innerHTML=
+    `<span class="${cls(c.pnl_pct)}">${c.pnl_pct>0?"+":""}${f(c.pnl_pct)}%</span> · baz $${f(c.baz)} · ${c.islem_n} canlı işlem`;
+  const solEl=document.getElementById("sol-"+aktif);
+  if(solEl){
+    solEl.style.display="block";
+    solEl.innerHTML=`serbest <b>${f(c.sol,4)} SOL</b> (~$${f(c.sol*c.sol_fiyat)})`;
+  }
+  document.getElementById("foot-"+aktif).innerHTML=
+    `canlı poz ${"●".repeat(c.acik_poz)}${"○".repeat(Math.max(5-c.acik_poz,0))} ${c.acik_poz}/5 · gerçek cüzdan`;
+  eqCharts["eq"+aktif]&&eqCharts["eq"+aktif].setLive(c.mtm);
+}
+function basCanliMotor(aktif){
+  // Aktif canli motorun kartinda "canli" rozet + butonunu devre disi birak.
+  // CANLI kartinda "V7 canliya geri" butonu: aktif motor V7 degilse gorunur.
+  aktif=(aktif||"v7").toLowerCase();
+  window._aktifCanliMotor=aktif;
+  for(const id of ["v7","v7c","v7cd","v7d","v7hizli","r1","v7y","v7t","v7m"]){
+    const roz=document.getElementById("canli-roz-"+id);
+    const btn=document.querySelector(`.canli-al-btn[data-motor="${id}"]`);
+    const solEl=document.getElementById("sol-"+id);
+    const canli=(id===aktif);
+    if(roz)roz.style.display=canli?"inline-block":"none";
+    if(!canli && solEl)solEl.style.display="none";  // paper'a duserse SOL satiri gizle
+    if(btn){
+      btn.disabled=canli;
+      btn.classList.toggle("aktif",canli);
+      btn.innerHTML=canli?"🟢 CANLI":"🔴 al";
+    }
+  }
+}
+async function canliAl(motorId,motorAd){
+  const onay1=confirm(`${motorAd} motorunu CANLIYA almak istiyor musun?\n\n`+
+    `- Su anki canli motor paper'a duser\n`+
+    `- ${motorAd} state resetlenir: baz = anki cuzdan MTM\n`+
+    `- Servis ~5-10sn restart olur\n\n`+
+    `Aciklama yaz: "canli" (buyukse hepsi kucuk)`);
+  if(!onay1)return;
+  const onay2=prompt(`Onay icin "canli" yaz:`);
+  if((onay2||"").trim().toLowerCase()!=="canli"){alert("iptal edildi.");return;}
+  try{
+    const r=await fetch(`/api/canli/swap?motor=${encodeURIComponent(motorId)}`,{method:"POST"});
+    const d=await r.json();
+    if(!r.ok){alert("HATA: "+(d.detail||"bilinmiyor"));return;}
+    alert(`${motorAd} canliya alindi. Servis restart oluyor.\n${d.not||""}\n\n10sn sonra sayfa otomatik yenilenecek.`);
+    setTimeout(()=>location.reload(),10000);
+  }catch(e){alert("agri hatasi: "+e);}
 }
 function basCanliPoz(rows){
-  // Acik canli pozisyon tablosu: v7 state'inden canli_miktar>0 kayitlar
-  const tb=document.querySelector("#canliPoz tbody");
-  if(!tb)return;
-  tb.innerHTML=rows.map(p=>
-    `<tr><td>${p.pair}</td><td>${f(p.miktar,2)}</td>`+
-    `<td>${p.giris.toPrecision(6)}</td><td>${p.guncel.toPrecision(6)}</td>`+
-    `<td class="${cls(p.kz_usd)}">${f(p.kz_usd)}</td>`+
-    `<td class="${cls(p.kz_pct)}">${p.kz_pct>0?"+":""}${f(p.kz_pct)}%</td></tr>`).join("")
-    ||"<tr><td colspan=6>açık canlı pozisyon yok</td></tr>";
+  // 18 Tem: her motorun acik pozisyonlari kendi kartinin altindaki motor-poz div'ine
+  // yazilir. Boylece 3'lu grid'de kart+poz birlikte gorunur.
+  const perMotor={};
+  for(const p of rows){
+    // p.bot -> motor.id eslesmesi: CANLI => aktif canli motor
+    let id=(p.bot||"").toLowerCase();
+    if(id==="canli"){
+      // CANLI etiketi aktif motoruna yaz
+      const aktif=(window._aktifCanliMotor||"v7");
+      id=aktif;
+    }
+    (perMotor[id]||(perMotor[id]=[])).push(p);
+  }
+  for(const m of MOTORLAR){
+    const el=document.getElementById("motorpoz-"+m.id);
+    if(!el)continue;
+    const arr=perMotor[m.id]||[];
+    if(!arr.length){
+      el.innerHTML=`<h4>açık pozisyonlar</h4><div class="bos">- yok -</div>`;
+      continue;
+    }
+    const satir=arr.map(p=>{
+      const cn=(p.bot==="CANLI")?`<span class="chip" style="color:#da3633;border:1px solid #da3633;font-size:10px">CANLI</span> `:"";
+      return `<tr><td>${cn}${p.pair}</td>`+
+        `<td>${f(p.miktar,1)}</td>`+
+        `<td>${p.giris.toPrecision(4)}</td>`+
+        `<td>${p.guncel.toPrecision(4)}</td>`+
+        `<td class="${cls(p.kz_usd)}">${f(p.kz_usd)}</td>`+
+        `<td class="${cls(p.kz_pct)}">${p.kz_pct>0?"+":""}${f(p.kz_pct,1)}%</td></tr>`;
+    }).join("");
+    el.innerHTML=`<h4>açık pozisyonlar (${arr.length})</h4>`+
+      `<table><thead><tr><th>pair</th><th>miktar</th><th>giriş</th>`+
+      `<th>güncel</th><th>K/Z $</th><th>K/Z %</th></tr></thead>`+
+      `<tbody>${satir}</tbody></table>`;
+  }
+}
+function basMotorTrades(d){
+  // 19 Tem: her motorun son 24 saatteki islemleri motor-trades div'ine.
+  // pair | giris | cikis | pnl$ | pnl% | hold sn | kapanis | tx (Solscan linki)
+  const cutoff=(Date.now()/1000)-86400;  // son 24 saat
+  for(const m of MOTORLAR){
+    const el=document.getElementById("motortrades-"+m.id);
+    if(!el)continue;
+    const trades=(d[m.id]&&d[m.id].trades)||[];
+    const last=trades.filter(t=>Number(t.ts||0)>=cutoff);
+    if(!last.length){
+      el.innerHTML=`<h4>son 24 saat işlemleri</h4><div class="bos">- yok -</div>`;
+      continue;
+    }
+    const satir=last.map(t=>{
+      const pair=(t.pair||"?").split(" / ")[0];  // sadece token
+      const ep=(t.entry_price||0);
+      const xp=(t.exit_price||0);
+      const pnl=(t.pnl_usd||0);
+      const pct=(t.pnl_pct||0);
+      const hold=Math.round(t.hold_sec||0);
+      const reason=(t.exit_reason||"?");
+      const sig=(t.signature||"");
+      const tx=sig?`<a href="https://solscan.io/tx/${sig}" target="_blank" title="${sig}">${sig.slice(0,6)}</a>`:"-";
+      return `<tr><td>${pair}</td>`+
+        `<td>${ep.toPrecision(3)}</td>`+
+        `<td>${xp.toPrecision(3)}</td>`+
+        `<td class="${cls(pnl)}">${pnl>0?"+":""}${f(pnl)}</td>`+
+        `<td class="${cls(pct)}">${pct>0?"+":""}${f(pct,1)}%</td>`+
+        `<td>${hold}s</td>`+
+        `<td class="${exitSinif(reason)}">${reason}</td>`+
+        `<td>${tx}</td></tr>`;
+    }).join("");
+    el.innerHTML=`<h4>son 24 saat işlemleri (${last.length}/${trades.length} toplam)</h4>`+
+      `<table><thead><tr><th>pair</th><th>giriş</th><th>çıkış</th>`+
+      `<th>K/Z $</th><th>%</th><th>hold</th><th>kapanış</th><th>tx</th></tr></thead>`+
+      `<tbody>${satir}</tbody></table>`;
+  }
 }
 function basCmp(c){
   // kiyas satiri ayni /api/filo cevabinin cmp blogundan: ikinci okuma/hesap yok
@@ -2137,11 +2421,33 @@ function mfeMaeBar(mfe,mae){
     `<rect x="${mid}" y="2" width="${g}" height="${H-4}" fill="#3fb950" opacity=".85"/>`+
     `<line x1="${mid}" y1="0" x2="${mid}" y2="${H}" stroke="#8b949e" stroke-width="1"/></svg>`;
 }
+let isltrFiltre=new Set();  // aktif motor filtresi (bos ise HEPSI)
+function chipRender(){
+  const el=document.getElementById("isltrFiltreChips"); if(!el)return;
+  el.innerHTML=MOTORLAR.map(m=>{
+    const aktif=isltrFiltre.has(m.id);
+    const bg=aktif?m.renk:"transparent";
+    const cl=aktif?"#fff":m.renk;
+    return `<span class="motor-chip" data-motor="${m.id}" `+
+      `style="cursor:pointer;padding:2px 8px;border-radius:8px;border:1px solid ${m.renk};`+
+      `background:${bg};color:${cl};margin-right:4px;font-family:monospace">${m.ad}</span>`;
+  }).join("");
+  el.querySelectorAll(".motor-chip").forEach(ch=>{
+    ch.addEventListener("click",()=>{
+      const id=ch.dataset.motor;
+      isltrFiltre.has(id)?isltrFiltre.delete(id):isltrFiltre.add(id);
+      chipRender(); filoTick();  // yeniden ciz + tabloyu yenile
+    });
+  });
+}
 function basIslemler(d){
   // son islemler iki tabloda: on plan botlari (#isltr), arka plan botlari (#isltrArka);
   // ayni /api/filo cevabindan basilir, veri uretimi degismez
   const on=[],arkaRows=[];
-  for(const m of MOTORLAR)for(const t of d[m.id].trades||[])(m.arka?arkaRows:on).push([m,t]);
+  for(const m of MOTORLAR){
+    if(isltrFiltre.size>0 && !isltrFiltre.has(m.id))continue;  // filtre disi motor
+    for(const t of d[m.id].trades||[])(m.arka?arkaRows:on).push([m,t]);
+  }
   // v7 CANLI satirlari: YALNIZ zincirde imzasi olan gercek islemler tabloya
   // girer; v7'nin paper/kilit-kapali kayitlari karismaz (motor gizli).
   if(!MOTORLAR.some(m=>m.id==="v7"))
@@ -2174,8 +2480,19 @@ function basRejim(d){
   if(r&&r.sol_h1!=null&&r.yas_sec!=null){
     const dk=Math.round(r.yas_sec/60);
     const bayat=r.yas_sec>45*60;
-    e.textContent=`rejim sol_h1 ${f(r.sol_h1,2)} · ${dk} dk`;
-    e.className="badge"+(bayat?" bayat":(r.sol_h1>0?" ok":""));
+    // BTC m15 dahil et (varsa) + gate durumu
+    let btcPart="";
+    if(r.btc_m15!=null){
+      const esik=(r.btc_esik!=null?r.btc_esik:-1.0);
+      const btcOk=r.btc_m15>=esik;
+      const btcRenk=btcOk?"":"color:#f85149";
+      btcPart=` · <span style="${btcRenk}">btc ${r.btc_m15>0?"+":""}${f(r.btc_m15,2)}%</span>`;
+    }
+    e.innerHTML=`rejim sol_h1 ${f(r.sol_h1,2)}${btcPart} · ${dk} dk`;
+    // Class: her iki gate de OK ise ok, biri bayat/kotu ise nötr
+    const solOk=r.sol_h1>0;
+    const btcOk=r.btc_m15==null||r.btc_m15>=(r.btc_esik!=null?r.btc_esik:-1.0);
+    e.className="badge"+(bayat?" bayat":((solOk&&btcOk)?" ok":""));
     return;
   }
   // yedek: islem kayitlarindaki en guncel sol_chg_h1 etiketi (olcum yasi bilinmez)
@@ -2193,8 +2510,58 @@ function basTarama(d){
   e.textContent=`tarama: ${t}`;
   e.className="badge"+(t==="normal"?" ok":(t==="kor"?" err":" bayat"));
 }
+function basSira(d, eqs){
+  // 19 Tem: motor kartlarini SON 24 SAAT getiri yuzdesine gore dinamik sirala.
+  // Isleme (24h icinde) girmemis motorlar sonda.
+  const arr=MOTORLAR.map(m=>{
+    const s=d[m.id]&&d[m.id].summary||{};
+    const pct=Number(s.pnl_24h_pct||0);
+    const n=Number(s.trades_24h||0);
+    return {id:m.id, pct:pct, n:n};
+  });
+  arr.sort((a,b)=>{
+    // isleme girmemis en sonda
+    if(a.n===0 && b.n>0) return 1;
+    if(b.n===0 && a.n>0) return -1;
+    // ikisi de girmemisse alfabetik
+    if(a.n===0 && b.n===0) return a.id.localeCompare(b.id);
+    // getiri yuzdesi desc
+    return b.pct - a.pct;
+  });
+  arr.forEach((it, i)=>{
+    const wrap=document.getElementById("wrap-"+it.id);
+    if(wrap)wrap.style.order=String(i+1);
+    const sira=document.getElementById("sira-"+it.id);
+    if(sira){
+      sira.textContent=(it.n===0)?"—":String(i+1);
+      sira.className="sira"+(it.n===0?" bos":(i===0?" top1":(i===1?" top2":(i===2?" top3":""))));
+    }
+  });
+}
+function basCanliOnay(d){
+  const b=document.getElementById("canliOnayBtn");
+  if(!b)return;
+  const aktif=!!d.live_onay;
+  b.textContent=aktif?"🔴 canlı DURDUR":"🟢 canlı BAŞLAT";
+  b.className="badge"+(aktif?" ok":" err");
+  b.dataset.aktif=aktif?"1":"0";
+}
+document.addEventListener("click", async(ev)=>{
+  const b=ev.target.closest("#canliOnayBtn");
+  if(!b)return;
+  const aktif=b.dataset.aktif==="1";
+  const soru=aktif
+    ?"CANLI ALIM DURDURULSUN mu? Mevcut acik pozisyonlar satisa devam eder, sadece yeni CANLI alim yapilmaz. Paper motorlar etkilenmez."
+    :"CANLI ALIM BASLATILSIN mi? Aktif canli motor tekrar gercek para ile alim yapabilir hale gelir.";
+  if(!confirm(soru))return;
+  try{
+    const r=await fetch("/api/canli_onay",{method:aktif?"DELETE":"POST"});
+    if(!r.ok){alert("HATA: "+r.status);return;}
+    filoTick();
+  }catch(e){alert("agri hatasi: "+e);}
+});
 async function filoTick(){
-  let d; try{const r=await fetch("/api/filo?limit=30"); d=await r.json();}catch(e){return;}
+  let d; try{const r=await fetch("/api/filo?limit=100"); d=await r.json();}catch(e){return;}
   filoSonMs=Date.now();
   const eqs={};
   for(const m of MOTORLAR)eqs[m.id]=basBot(m,d[m.id]).equity;
@@ -2207,8 +2574,13 @@ async function filoTick(){
       if(k)k.classList.toggle("lider",m.id===lid);
     }
   }
-  if(d.canli)basCanli(d.canli);
-  basCmp(d.cmp); basIslemler(d); basRejim(d); basTarama(d); basKill(d.kill);
+  const aktifMotor=d.canli_motor||"v7";
+  basCanliMotor(aktifMotor);        // buton state + rozet
+  if(d.canli)basCanli(d.canli, aktifMotor);  // aktif motor kartina canli veriler
+  basCanliPoz(d.acik_pozlar||[]);   // 5 kaynak birlesik acik-poz tablosu
+  basMotorTrades(d);                 // 18 Tem: her motor karti altina son 10 islem
+  basSira(d, eqs);                   // 19 Tem: getiri yuzdesine gore 1-9 dinamik sira
+  basCmp(d.cmp); basIslemler(d); basRejim(d); basTarama(d); basCanliOnay(d); basKill(d.kill);
   updEtiket();
 }
 
@@ -2254,7 +2626,7 @@ function eqSyncButtons(){
   });
 }
 eqSyncButtons();
-filoTick(); setInterval(filoTick,5000);
+chipRender(); filoTick(); setInterval(filoTick,5000);
 </script></body></html>"""
 
 
@@ -2268,7 +2640,8 @@ def momentum_page() -> str:
     mode = os.getenv("BROKER_MODE", "paper").strip().lower()
     canli_bagli = _canli_bagli_mi()
     if canli_bagli:
-        mod_rozet = '<span class="badge err">CANLI (V7)</span>'
+        aktif = os.getenv("CANLI_MOTOR", "v7").strip().upper()
+        mod_rozet = f'<span class="badge err">CANLI ({aktif})</span>'
         canli_durum = "bagli"
     elif mode == "live":
         mod_rozet = '<span class="badge">live (kilit kapalı)</span>'
@@ -2307,6 +2680,30 @@ def momentum_page() -> str:
     return html
 
 
+@app.post("/api/canli/swap")
+def api_canli_swap(motor: str = Query(...)) -> dict:
+    """Canli hat motor swap. Script'i background subprocess olarak calistirir;
+    script servisi restart eder (bu process olur), yanit HTTP olarak donmez.
+    Kullanici 10sn sonra sayfayi yeniler. Guvenlik: sadece 5 desteklenen motor."""
+    import subprocess
+    if motor not in ("v7", "v7c", "v7cd", "v7d", "v7hizli", "r1", "v7y", "v7t", "v7m"):
+        raise HTTPException(status_code=400, detail=f"desteklenmeyen motor: {motor}")
+    script = str(Path(__file__).resolve().parents[2] / "scripts" / "canli_swap.py")
+    venv_py = str(Path(__file__).resolve().parents[2] / ".venv" / "bin" / "python")
+    try:
+        # detached background: parent panel restart olacagi icin bekleyemeyiz
+        subprocess.Popen(
+            [venv_py, script, motor],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"swap tetiklenemedi: {e}") from e
+    return {"ok": True, "motor": motor,
+            "not": "swap tetiklendi. Servis ~5-10sn icinde restart olacak. "
+                   "10sn sonra sayfayi yenile."}
+
+
 @app.post("/api/kill")
 def api_kill_activate() -> dict:
     activate("panel")
@@ -2317,6 +2714,24 @@ def api_kill_activate() -> dict:
 def api_kill_deactivate() -> dict:
     deactivate()
     return {"kill_switch": False}
+
+
+@app.post("/api/canli_onay")
+def api_canli_onay_ac() -> dict:
+    """LIVE_ONAY dosyasini olusturur -> canli alim serbest."""
+    data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "LIVE_ONAY").write_text("canli-islem-onayliyorum", encoding="utf-8")
+    return {"live_onay": True}
+
+
+@app.delete("/api/canli_onay")
+def api_canli_onay_kapat() -> dict:
+    """LIVE_ONAY dosyasini siler -> canli alim durur (mevcut pozlar etkilenmez)."""
+    p = Path(os.getenv("MOMENTUM_DATA_DIR", "data")) / "LIVE_ONAY"
+    if p.exists():
+        p.unlink()
+    return {"live_onay": False}
 
 
 @app.post("/api/positions/{pool_address}/close")
