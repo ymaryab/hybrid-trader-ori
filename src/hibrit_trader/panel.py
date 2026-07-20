@@ -781,13 +781,13 @@ def api_filo(limit: int = Query(30)) -> dict:
     data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
     now = time.time()
     out: dict = {"ts": round(now, 3)}
-    for prefix in ("v7", "v7c", "v7cd", "v7d", "v7hizli", "r1", "v7t"):
+    for prefix in ("v7", "v7c", "v7d", "v7hizli", "r1", "v7t"):
         out[prefix] = _motor_ozet(data_dir, prefix, now, limit)
     # CANLI 10. motoru: dosya prefix'i "canli_" ama out key "canlim" (cuzdan
     # _canli_blok ile cakismasin, o eski key "canli"yi kullanmaya devam eder).
     out["canlim"] = _motor_ozet(data_dir, "canli", now, limit)
     out["cmp"] = {p: out[p]["summary"]["realized_pnl"]
-                  for p in ("v7", "v7c", "v7cd", "v7d", "v7hizli", "r1", "v7t", "canlim")}
+                  for p in ("v7", "v7c", "v7d", "v7hizli", "r1", "v7t", "canlim")}
     out["kill"] = is_active()
     # rejim rozeti: paylasimli sol_h1 cache + BTC m15 macro (cache'li fetch)
     from hibrit_trader.momentum_session import sol_h1_son_olcum
@@ -840,7 +840,6 @@ def api_filo(limit: int = Query(30)) -> dict:
     tum_pozlar += _paper_bot("V7C", "v7c")
     tum_pozlar += _paper_bot("V7D", "v7d")
     tum_pozlar += _paper_bot("V7HIZLI", "v7hizli")
-    tum_pozlar += _paper_bot("V7CD", "v7cd")
     tum_pozlar += _paper_bot("R1", "r1")
     tum_pozlar += _paper_bot("V7T", "v7t")
     out["acik_pozlar"] = tum_pozlar
@@ -907,11 +906,6 @@ def api_v7hizli_equity(minutes: int = Query(0, ge=0)) -> dict:
 @app.get("/api/sv1/equity")
 def api_sv1_equity(minutes: int = Query(0, ge=0)) -> dict:
     return _equity_series("sv1", minutes)
-
-
-@app.get("/api/v7cd/equity")
-def api_v7cd_equity(minutes: int = Query(0, ge=0)) -> dict:
-    return _equity_series("v7cd", minutes)
 
 
 @app.get("/api/r1/equity")
@@ -1552,9 +1546,6 @@ _FILO_MOTORLAR: list[dict] = [
     {"id": "v7d", "tip": "bot", "ad": "V7D", "renk": "#ff9f43", "slots": 5,
      "rozet": "hızlı çıkış",
      "desc": "hızlı çıkış: liq&ge;$150k · h1 10..50 · tp+2 · felaket -%15 · 15dk sabır stop-2 · 20dk tavan"},
-    {"id": "v7cd", "tip": "bot", "ad": "V7CD", "renk": "#a371f7", "slots": 5,
-     "rozet": "TP+%2 kısmi + trail",
-     "desc": "V7C + trail-arm: TP+%2 hit yarısı sat, kalanı runner (peak*(1-%3) altı trail)"},
     {"id": "v7t", "tip": "bot", "ad": "V7T", "renk": "#79c0ff", "slots": 5,
      "rozet": "antikaçış h1 20-30",
      "desc": "V7T: h1 20-30 hızlı scalp · TP+%1.5 · timeout 20dk"},
@@ -2287,7 +2278,7 @@ function basCanliMotor(aktif){
   // CANLI kartinda "V7 canliya geri" butonu: aktif motor V7 degilse gorunur.
   aktif=(aktif||"v7").toLowerCase();
   window._aktifCanliMotor=aktif;
-  for(const id of ["v7","v7c","v7cd","v7d","v7hizli","r1","v7t"]){
+  for(const id of ["v7","v7c","v7d","v7hizli","r1","v7t"]){
     const roz=document.getElementById("canli-roz-"+id);
     const btn=document.querySelector(`.canli-al-btn[data-motor="${id}"]`);
     const solEl=document.getElementById("sol-"+id);
