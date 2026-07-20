@@ -15,11 +15,11 @@ def _temiz(monkeypatch, tmp_path):
 
 
 def test_olc_mtm_sol_arti_canli_pozisyon(monkeypatch, tmp_path):
-    (tmp_path / "v7_state.json").write_text(json.dumps({"positions": [
+    (tmp_path / "canli_state.json").write_text(json.dumps({"positions": [
         {"canli_miktar": 23.8, "last_price": 1.2},
         {"amount_token": 100.0, "last_price": 2.0},  # canli_miktar yok: sayilmaz
     ]}))
-    (tmp_path / "v7_trades.jsonl").write_text(
+    (tmp_path / "canli_trades.jsonl").write_text(
         json.dumps({"pair": "A", "signature": "imza1"}) + "\n"
         + json.dumps({"pair": "B"}) + "\n")
     monkeypatch.setattr(canli_gosterge, "_sol_bakiye", lambda c: 1.5)

@@ -743,7 +743,7 @@ def test_cuzdan_durum_hesabi(data_dir, monkeypatch):
     from types import SimpleNamespace
 
     # serbest SOL 0.2 x $80 = $16 + canli poz 25000 x 0.00025 = $6.25
-    (data_dir / "v7_state.json").write_text(json.dumps({"positions": [
+    (data_dir / "canli_state.json").write_text(json.dumps({"positions": [
         {"canli_miktar": 25000.0, "last_price": 0.00025},
         {"amount_token": 100.0, "last_price": 1.0},  # canli degil, sayilmaz
     ]}))
