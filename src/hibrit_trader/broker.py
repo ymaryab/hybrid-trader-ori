@@ -185,6 +185,29 @@ def _fills_yaz(row: dict) -> None:
         log.warning("BROKER: dryrun_fills yazilamadi: %s", e)
 
 
+_CANLI_WAL_DOSYA = "canli_fills.jsonl"
+
+_canli_wal_lock = threading.Lock()
+
+
+def _canli_wal_yaz(row: dict) -> None:
+    """Canli dolum WAL'i: zincirde gerceklesen her live fill, motor defterinden
+    bagimsiz aninda diske (fsync). 17 Tem CASHCOW vakasi: dolum ile motor
+    _save() arasinda kayit kaybolursa zincir gercegi burada kalir; mutabakat
+    bu dosyadan yapilir. Yazim hatasi islemi engellemez."""
+    try:
+        d = _exec_data_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        with _canli_wal_lock, open(d / _CANLI_WAL_DOSYA, "a",
+                                   encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception as e:
+        log.critical("BROKER live: canli fill WAL yazilamadi (%s); "
+                     "dolum kaydi sadece motor defterinde", e)
+
+
 # ---- Live cift kilit ----------------------------------------------------------------
 
 def live_kilit_acik() -> bool:
@@ -589,6 +612,18 @@ class LiveExecBroker(DryrunExecBroker):
                                     gercek, miktar_quote, gercek - miktar_quote)
                     miktar_token = gercek
                 else:
+                    # 20 Tem holyshit vakasi: tx zincirde finalized+Err iken
+                    # quote fallback hayali pozisyon yaziyordu. Swap atomik;
+                    # tx basarisizsa para cikmadi (yalniz fee), kayit yok.
+                    durum_tx = _zincir_imza_durumu(self._http, res["signature"])
+                    if durum_tx == "hatali":
+                        gecikme_ms = round((time.monotonic() - t0) * 1000, 1)
+                        log.error("BROKER LIVE %s al: tx zincirde BASARISIZ, "
+                                  "kayit yazilmiyor (tx %s)", order.engine,
+                                  res["signature"])
+                        return ExecFill(ok=False,
+                                        neden="tx_zincirde_basarisiz",
+                                        gecikme_ms=gecikme_ms)
                     log.warning("BROKER LIVE dolum zincirden okunamadi, "
                                 "quote miktari kaydedildi (%.6g)", miktar_quote)
                     miktar_token = miktar_quote
@@ -655,6 +690,12 @@ class LiveExecBroker(DryrunExecBroker):
         gecikme_ms = round((time.monotonic() - t0) * 1000, 1)
         if order.yon == "sat":
             satis_stresi_temizle()
+        _canli_wal_yaz({
+            "ts": round(time.time(), 3), "engine": order.engine,
+            "yon": order.yon, "token_address": order.token_address,
+            "fiyat": fiyat, "miktar_token": miktar_token,
+            "tx": res["signature"],
+        })
         log.warning("BROKER LIVE %s %s fiyat %.8g miktar %.6g tx %s (%.0f ms)",
                     order.engine, order.yon, fiyat, miktar_token,
                     res["signature"], gecikme_ms)
@@ -708,6 +749,12 @@ class LiveExecBroker(DryrunExecBroker):
                                        ctx["token"])
                 if miktar is not None and miktar > 0:
                     fiyat = ctx["usd_exec"] / miktar
+                    _canli_wal_yaz({
+                        "ts": round(time.time(), 3), "engine": ctx["engine"],
+                        "yon": "al", "token_address": ctx["token"],
+                        "fiyat": fiyat, "miktar_token": miktar, "tx": sig,
+                        "kaynak": "belirsiz_uzlastirici",
+                    })
                     self._belirsiz_sonucu_yaz("gerceklesti", {
                         "token_address": ctx["token"], "fiyat": fiyat,
                         "miktar_token": miktar, "tx_id": sig,

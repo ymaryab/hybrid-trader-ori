@@ -1162,3 +1162,86 @@ def test_live_satis_hatasi_stres_baslatir_basari_temizler(data_dir, monkeypatch)
         assert sat2.ok and not broker.satis_stresi_aktif()
     finally:
         broker.satis_stresi_temizle()
+
+
+# ---- atomik persist: canli fill WAL + tx err kontrolu (17 Tem CASHCOW, 20 Tem holyshit) --
+
+def _wal_kayitlari(tmp_path):
+    p = tmp_path / "canli_fills.jsonl"
+    if not p.exists():
+        return []
+    return [json.loads(x) for x in p.read_text().splitlines()]
+
+
+def test_live_al_fill_wal_yazilir(data_dir, monkeypatch):
+    # basarili canli alim: zincir gercegi motor defterinden bagimsiz WAL'de
+    br = _live_broker(data_dir, monkeypatch)
+    _swap_yakala(monkeypatch)
+    monkeypatch.setattr(broker, "_zincir_dolum", lambda *a, **k: 5.0)
+    fill = br.execute(_al_emri())
+    assert fill.ok is True
+    kayitlar = _wal_kayitlari(data_dir)
+    assert len(kayitlar) == 1
+    k = kayitlar[0]
+    assert k["yon"] == "al" and k["tx"] == "SIG" and k["engine"] == "T"
+    assert k["miktar_token"] == pytest.approx(5.0)
+
+
+def test_live_sat_fill_wal_yazilir(data_dir, monkeypatch):
+    br = _live_kur(data_dir, monkeypatch)
+    monkeypatch.setattr(broker, "_zincir_token_bakiye", lambda *a, **k: 50.0)
+    monkeypatch.setattr(
+        "hibrit_trader.jupiter.swap_token_to_sol",
+        lambda *a: {"signature": "SIGSAT", "in_amount": 1,
+                    "out_amount": 123_750_000, "proceeds_usd": 9.9,
+                    "sol_price_usd": 80.0})
+    sat = br.execute(ExecOrder(engine="V7", yon="sat", token_address=TOK,
+                               amount_token=50.0, ref_fiyat=0.2))
+    assert sat.ok is True
+    kayitlar = _wal_kayitlari(data_dir)
+    assert len(kayitlar) == 1
+    assert kayitlar[0]["yon"] == "sat" and kayitlar[0]["tx"] == "SIGSAT"
+
+
+def test_live_al_tx_zincirde_basarisiz_kayit_yok(data_dir, monkeypatch):
+    # 20 Tem holyshit: dolum okunamadi + tx finalized+Err -> quote fallback
+    # YOK, fill reddedilir, WAL'e de yazilmaz (hayali pozisyon engeli)
+    br = _live_broker(data_dir, monkeypatch)
+    _swap_yakala(monkeypatch)
+    monkeypatch.setattr(broker, "_zincir_dolum", lambda *a, **k: None)
+    monkeypatch.setattr(broker, "_zincir_imza_durumu",
+                        lambda http, sig: "hatali")
+    fill = br.execute(_al_emri())
+    assert fill.ok is False and fill.neden == "tx_zincirde_basarisiz"
+    assert _wal_kayitlari(data_dir) == []
+
+
+def test_live_al_dolum_yok_tx_durumu_belirsiz_quote_fallback(data_dir, monkeypatch):
+    # tx durumu okunamiyorsa eski davranis korunur: quote miktari kaydedilir
+    # (para cikmis olabilir; kayitsiz birakmak CASHCOW yetimini uretir)
+    br = _live_broker(data_dir, monkeypatch)
+    _swap_yakala(monkeypatch)
+    monkeypatch.setattr(broker, "_zincir_dolum", lambda *a, **k: None)
+    monkeypatch.setattr(broker, "_zincir_imza_durumu", lambda http, sig: None)
+    fill = br.execute(_al_emri())
+    assert fill.ok is True
+    assert fill.miktar_token == pytest.approx(5.0)  # quote: 5e9 raw @ dec 9
+    assert len(_wal_kayitlari(data_dir)) == 1
+
+
+def test_belirsiz_uzlastirici_gerceklesen_dolum_wal_yazilir(data_dir, monkeypatch):
+    # R2-alim mutabakati "gerceklesti" karari da WAL'e duser
+    br = _live_broker(data_dir, monkeypatch)
+    monkeypatch.setattr(broker, "_belirsiz_poll_sec", lambda: 0.01)
+    monkeypatch.setattr(broker, "_zincir_imza_durumu",
+                        lambda http, sig: "onaylandi")
+    monkeypatch.setattr(broker, "_zincir_dolum", lambda *a, **k: 42.0)
+    br._belirsiz_bekleyen = {"engine": "T", "sig": "SIGB", "token": TOK,
+                             "usd_exec": 10.0, "pubkey": "PUB",
+                             "ts": 0.0}
+    br._belirsiz_uzlastir_worker()
+    kayitlar = _wal_kayitlari(data_dir)
+    assert len(kayitlar) == 1
+    k = kayitlar[0]
+    assert k["kaynak"] == "belirsiz_uzlastirici" and k["tx"] == "SIGB"
+    assert k["miktar_token"] == pytest.approx(42.0)
