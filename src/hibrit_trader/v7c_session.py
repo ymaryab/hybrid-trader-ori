@@ -442,7 +442,35 @@ class V7CEngine:
             return False
         slip = _mom_slippage(usd, pair.liquidity_usd)
         eff_price = taze.fiyat * (1 + slip)
-        self._exec_fill("al", pair.token_address, usd=usd, ref_fiyat=eff_price)
+        karar_fiyat = eff_price
+        devam, canli = self._exec_fill("al", pair.token_address,
+                                       usd=usd, ref_fiyat=eff_price)
+        if not devam:
+            if self._son_exec_neden == "islem_belirsiz":
+                self._belirsiz_aday = {
+                    "pair": pair.name, "chain": pair.chain,
+                    "token_address": pair.token_address,
+                    "pool_address": pair.pool_address,
+                    "usd": usd, "karar_fiyat": karar_fiyat,
+                    "chg_m5": round(getattr(pair, "chg_m5", 0.0), 2),
+                    "chg_h1": round(pair.chg_h1, 2),
+                    "liq_entry": round(pair.liquidity_usd, 2),
+            "pool_yas_dk": (round((time.time() - float(pair.pool_created_at)) / 60.0, 1)
+                            if getattr(pair, "pool_created_at", None) else None),
+                    "sol_chg_h1": sol_h1,
+                    "entry_price_source": taze.kaynak,
+                    "entry_fresh_fark_pct": taze.fark_pct,
+                    "entry_slip_pct": round(slip * 100, 4),
+                    "ts": time.time(),
+                }
+                log.critical("V7C GIRIS BELIRSIZ %s: zincir mutabakati bekleniyor",
+                             pair.name)
+                return False
+            log.error("V7C GIRIS IPTAL %s: canli alim gerceklesmedi", pair.name)
+            kritik_uyari("GIRIS IPTAL", f"giris:v7c:{pair.name}", f"V7C {pair.name}: canli alim gerceklesmedi (broker fail)")
+            return False
+        if canli is not None and canli.fiyat > 0:
+            eff_price = canli.fiyat
         amount_token = usd / eff_price
         now = time.time()
         pos = {
@@ -459,6 +487,8 @@ class V7CEngine:
             "chg_m5": round(getattr(pair, "chg_m5", 0.0), 2),
             "chg_h1": round(pair.chg_h1, 2),
             "liq_entry": round(pair.liquidity_usd, 2),
+            "pool_yas_dk": (round((time.time() - float(pair.pool_created_at)) / 60.0, 1)
+                            if getattr(pair, "pool_created_at", None) else None),
             "sol_chg_h1": sol_h1,
             "entry_price_source": taze.kaynak,
             "entry_fresh_fark_pct": taze.fark_pct,
@@ -523,9 +553,14 @@ class V7CEngine:
             "pool_address": pos["pool_address"],
             "entry_price": pos["entry_price"],
             "exit_price": eff_price,
+            "karar_fiyat": pos.get("karar_fiyat"),
+            "karar_cikis": karar_cikis,
+            "karar_pnl_pct": (round((karar_cikis / pos["karar_fiyat"] - 1) * 100, 3)
+                              if pos.get("karar_fiyat") else None),
             "chg_m5": pos["chg_m5"],
             "chg_h1": pos["chg_h1"],
             "liq_entry": pos["liq_entry"],
+            "pool_yas_dk": pos.get("pool_yas_dk"),
             "sol_chg_h1": pos.get("sol_chg_h1"),
             "entry_price_source": pos.get("entry_price_source"),
             "entry_fresh_fark_pct": pos.get("entry_fresh_fark_pct"),

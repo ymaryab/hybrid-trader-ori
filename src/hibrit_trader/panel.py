@@ -1791,7 +1791,7 @@ _MOMENTUM_HTML = """<!doctype html>
 <hr class="bolme">
 <h2>SON İŞLEMLER · aktif filo <span id="isltrFiltreChips" style="font-size:12px;font-weight:normal;margin-left:8px"></span></h2>
 <div class="tablewrap"><table id="isltr"><thead><tr><th>bot</th><th>pair</th><th>exit</th>
-<th>pnl $</th><th>pnl%</th><th>mfe/mae</th><th>chg_h1</th><th>sol_h1</th><th>liq $</th>
+<th>pnl $</th><th>pnl%</th><th>mfe/mae</th><th>chg_h1</th><th>m5</th><th>yaş</th><th>kaynak</th><th>sol_h1</th><th>liq $</th>
 <th>giriş</th><th>çıkış</th><th>hold sn</th><th>kapanış</th><th>tx</th></tr></thead><tbody></tbody></table></div>
 <!-- 16 Tem: arka plan (X1) bolumu kaldirildi -->
 <div id="arkaBox" style="display:none"><div id="arkaIc"></div></div>
@@ -1801,6 +1801,7 @@ _MOMENTUM_HTML = """<!doctype html>
 <script>
 const f=(x,d=2)=>x==null?"-":Number(x).toFixed(d);
 const saatYerel=iso=>iso?new Date(iso).toLocaleTimeString("tr-TR",{hour12:false}):"-";
+const yasKisa=dk=>dk==null?"-":(dk<60?Math.round(dk)+"dk":(dk<1440?(dk/60).toFixed(1)+"sa":(dk/1440).toFixed(1)+"g"));
 const cls=x=>x>0?"pos":(x<0?"neg":"");
 const eqCharts={};  // canli chartlar: filo tick'i ayni poll'un equity'sini uca basar
 const MOTORLAR="__MOTORLAR__";  // sunucu _FILO_MOTORLAR listesinden basar (tek konfig)
@@ -2444,11 +2445,13 @@ function basIslemler(d){
       on.push([{ad:"V7",renk:"#e3b341",canli:true},t]);
   const fp=x=>x==null?"-":String(parseFloat(Number(x).toPrecision(5)));
   const bas=(sec,rows)=>{
+    const el=document.querySelector(sec);
+    if(!el)return;
     rows.sort((a,b)=>(b[1].ts||0)-(a[1].ts||0));
     // son 24 saat; 20'den fazlaysa en yeni 20, azsa hepsi
     const cutoff=(Date.now()/1000)-86400;
     rows=rows.filter(([m,t])=>Number(t.ts||0)>=cutoff);
-    document.querySelector(sec).innerHTML=rows.slice(0,20).map(([m,t])=>{
+    el.innerHTML=rows.slice(0,20).map(([m,t])=>{
       const cn=!!(m.canli&&t.signature);
       const pnl=cn?t.canli_pnl_usd:t.pnl_usd;  // canli satirda gercek cuzdan pnl
       const sig=t.signature||"";
@@ -2458,10 +2461,11 @@ function basIslemler(d){
       `<td>${t.pair}</td><td><span class="exchip ${exitSinif(t.exit_reason)}">${t.exit_reason}</span></td>`+
       `<td class="${cls(pnl)}">${f(pnl)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
       `<td title="mfe ${f(t.mfe_pct,1)}% / mae ${f(t.mae_pct,1)}%">${mfeMaeBar(t.mfe_pct,t.mae_pct)}</td>`+
-      `<td>${f(t.chg_h1,1)}</td><td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
+      `<td>${f(t.chg_h1,1)}</td><td>${f(t.chg_m5,1)}</td><td>${yasKisa(t.pool_yas_dk)}</td>`+
+      `<td>${t.entry_price_source||"-"}</td><td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
       `<td>${fp(t.entry_price)}</td><td>${fp(t.exit_price)}</td>`+
       `<td>${f(t.hold_sec,0)}</td><td>${saatYerel(t.closed_at)}</td><td>${tx}</td></tr>`;}).join("")
-      ||"<tr><td colspan=14>henüz yok</td></tr>";
+      ||"<tr><td colspan=17>henüz yok</td></tr>";
   };
   bas("#isltr tbody",on); bas("#isltrArka tbody",arkaRows);
 }

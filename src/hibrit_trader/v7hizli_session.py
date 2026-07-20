@@ -496,6 +496,8 @@ class V7HizliEngine:
                     "chg_m5": round(getattr(pair, "chg_m5", 0.0), 2),
                     "chg_h1": round(pair.chg_h1, 2),
                     "liq_entry": round(pair.liquidity_usd, 2),
+            "pool_yas_dk": (round((time.time() - float(pair.pool_created_at)) / 60.0, 1)
+                            if getattr(pair, "pool_created_at", None) else None),
                     "sol_chg_h1": sol_h1,
                     "entry_price_source": taze.kaynak,
                     "entry_fresh_fark_pct": taze.fark_pct,
@@ -527,6 +529,8 @@ class V7HizliEngine:
             "chg_m5": round(getattr(pair, "chg_m5", 0.0), 2),
             "chg_h1": round(pair.chg_h1, 2),
             "liq_entry": round(pair.liquidity_usd, 2),
+            "pool_yas_dk": (round((time.time() - float(pair.pool_created_at)) / 60.0, 1)
+                            if getattr(pair, "pool_created_at", None) else None),
             "sol_chg_h1": sol_h1,
             "entry_price_source": taze.kaynak,
             "entry_fresh_fark_pct": taze.fark_pct,
@@ -680,6 +684,7 @@ class V7HizliEngine:
             "chg_m5": pos["chg_m5"],
             "chg_h1": pos["chg_h1"],
             "liq_entry": pos["liq_entry"],
+            "pool_yas_dk": pos.get("pool_yas_dk"),
             "sol_chg_h1": pos.get("sol_chg_h1"),
             "entry_price_source": pos.get("entry_price_source"),
             "entry_fresh_fark_pct": pos.get("entry_fresh_fark_pct"),
