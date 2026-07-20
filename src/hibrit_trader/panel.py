@@ -1603,7 +1603,8 @@ def _filo_kart_canli(durum: str) -> str:
 def _filo_kart(m: dict, canli_durum: str = "yok") -> str:
     # Canliya-al butonu: broker-gomulu 5 motor icin
     swap_btn = ""
-    if m["id"] in ("v7", "v7c", "v7cd", "v7d", "v7hizli", "r1", "v7t"):
+    # sadece canli_session'in kural ithali olan kaynaklar canliya alinabilir
+    if m["id"] in ("r1", "v7hizli"):
         swap_btn = (f'<button class="canli-al-btn" data-motor="{m["id"]}" '
                     f'onclick="canliAl(\'{m["id"]}\',\'{m["ad"]}\')" '
                     f'title="Canlıya al">🔴 al</button>')
@@ -2301,11 +2302,11 @@ function basCanliMotor(aktif){
   }
 }
 async function canliAl(motorId,motorAd){
-  const onay1=confirm(`${motorAd} motorunu CANLIYA almak istiyor musun?\n\n`+
-    `- Su anki canli motor paper'a duser\n`+
-    `- ${motorAd} state resetlenir: baz = anki cuzdan MTM\n`+
+  const onay1=confirm(`CANLI hattin kural kaynagi ${motorAd} olsun mu?\n\n`+
+    `- CANLI 10. motor ayni birikimli defterle devam eder\n`+
+    `- Deftere kural_degisim satiri duser, hicbir state sifirlanmaz\n`+
     `- Servis ~5-10sn restart olur\n\n`+
-    `Aciklama yaz: "canli" (buyukse hepsi kucuk)`);
+    `Devam edersen bir sonraki kutuya "canli" yazman istenecek`);
   if(!onay1)return;
   const onay2=prompt(`Onay icin "canli" yaz:`);
   if((onay2||"").trim().toLowerCase()!=="canli"){alert("iptal edildi.");return;}
@@ -2595,7 +2596,9 @@ async function filoTick(){
     }
   }
   const aktifMotor=d.canli_motor||"v7";
-  basCanliMotor(aktifMotor);        // buton state + rozet
+  // rozet/buton icin kaynak motor (10. motor mimarisi): CANLI hangi kurali kopyaliyor
+  const aktifKaynak=((d.canlim||{}).summary||{}).kaynak_motor||aktifMotor;
+  basCanliMotor(aktifKaynak);       // buton state + rozet
   if(d.canli)basCanli(d.canli, aktifMotor);  // aktif motor kartina canli veriler
   basCanliPoz(d.acik_pozlar||[]);   // 5 kaynak birlesik acik-poz tablosu
   basMotorTrades(d);                 // 18 Tem: her motor karti altina son 10 islem
@@ -2702,26 +2705,47 @@ def momentum_page() -> str:
 
 @app.post("/api/canli/swap")
 def api_canli_swap(motor: str = Query(...)) -> dict:
-    """Canli hat motor swap. Script'i background subprocess olarak calistirir;
-    script servisi restart eder (bu process olur), yanit HTTP olarak donmez.
-    Kullanici 10sn sonra sayfayi yeniler. Guvenlik: sadece 5 desteklenen motor."""
+    """Canli hat KAYNAK swap (10. motor mimarisi): CANLI motor sabit, sadece
+    kural kaynagi degisir. Dogrulama burada yapilir (net HTTP hatasi), script
+    detached calisir cunku servisi restart eder; ciktisi canli_swap.log'a."""
     import subprocess
-    if motor not in ("v7", "v7c", "v7cd", "v7d", "v7hizli", "r1", "v7t"):
-        raise HTTPException(status_code=400, detail=f"desteklenmeyen motor: {motor}")
+    from hibrit_trader.canli_session import DESTEKLENEN_KAYNAKLAR
+    motor = motor.strip().lower()
+    if motor not in DESTEKLENEN_KAYNAKLAR:
+        raise HTTPException(
+            status_code=400,
+            detail=f"desteklenmeyen kaynak: {motor} "
+                   f"(mevcut: {sorted(DESTEKLENEN_KAYNAKLAR)}); yeni kaynak "
+                   "icin once canli_session'a kural ithali gerekir")
+    data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
+    try:
+        st = json.loads((data_dir / "canli_state.json").read_text())
+        acik = [p.get("pair") for p in st.get("positions", [])
+                if float(p.get("canli_miktar") or 0.0) > 0]
+    except Exception:
+        acik = []
+    if acik:
+        raise HTTPException(
+            status_code=409,
+            detail="acik canli pozisyon var: " + ", ".join(acik) +
+                   "; kural ortasi devir riskli, once kapanmasini bekle")
     script = str(Path(__file__).resolve().parents[2] / "scripts" / "canli_swap.py")
     venv_py = str(Path(__file__).resolve().parents[2] / ".venv" / "bin" / "python")
     try:
-        # detached background: parent panel restart olacagi icin bekleyemeyiz
+        # detached background: parent panel restart olacagi icin bekleyemeyiz.
+        # Cikti log dosyasina: sessiz cokme yasanmasin (20 Tem KeyError vakasi).
+        log_f = open(data_dir / "canli_swap.log", "ab")
         subprocess.Popen(
             [venv_py, script, motor],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=log_f, stderr=log_f,
             start_new_session=True,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"swap tetiklenemedi: {e}") from e
     return {"ok": True, "motor": motor,
-            "not": "swap tetiklendi. Servis ~5-10sn icinde restart olacak. "
-                   "10sn sonra sayfayi yenile."}
+            "not": "kaynak swap tetiklendi (defter sifirlanmaz, kural_degisim "
+                   "satiri motor tarafindan atilir). Servis ~5-10sn icinde "
+                   "restart olacak; sorun olursa data/canli_swap.log'a bak."}
 
 
 @app.post("/api/kill")

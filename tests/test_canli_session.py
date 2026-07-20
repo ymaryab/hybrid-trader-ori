@@ -324,3 +324,18 @@ def test_paper_poz_normal_kapanis_calisiyor(canli_data_dir, monkeypatch):
     eng._close_position(pos, 1.1, "timeout_120", now)
     assert eng.positions == []
     assert (canli_data_dir / canli.TRADES_FILE).exists()
+
+
+def test_canli_swap_api_dogrulama(canli_data_dir, monkeypatch):
+    # desteklenmeyen kaynak 400; acik canli pozisyonda 409 (script hic kosmaz)
+    import hibrit_trader.panel as panel
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as e:
+        panel.api_canli_swap(motor="v6")
+    assert e.value.status_code == 400
+    (canli_data_dir / "canli_state.json").write_text(json.dumps({
+        "positions": [{"pair": "X / SOL", "canli_miktar": 5.0}]}))
+    with pytest.raises(HTTPException) as e:
+        panel.api_canli_swap(motor="r1")
+    assert e.value.status_code == 409
+    assert "X / SOL" in e.value.detail
