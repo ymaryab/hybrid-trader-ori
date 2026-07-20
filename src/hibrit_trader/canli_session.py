@@ -115,6 +115,13 @@ STATE_FILE = "canli_state.json"
 TRADES_FILE = "canli_trades.jsonl"
 LOCK_FILE = "canli_engine.lock"
 TAG = "CANLI"
+PAUSE_FILE = "CANLI_DUR"
+
+
+def canli_pause_aktif() -> bool:
+    """Ana salter: data/CANLI_DUR varsa yeni canli giris yok, cikislar surer.
+    LIVE_ONAY'dan farki: broker'a dokunmaz, satislar kesintisiz calisir."""
+    return (_data_dir() / PAUSE_FILE).exists()
 
 
 class CanliEngine:
@@ -133,6 +140,7 @@ class CanliEngine:
         self._cooldown_until: dict[str, float] = {}
         self._regime_logged = False
         self._kill_logged = False
+        self._pause_logged = False
         self._day_key: str = ""
         self._day_realized: float = 0.0
         self._limit_logged = False
@@ -309,6 +317,15 @@ class CanliEngine:
         if self._kill_logged:
             self._kill_logged = False
             log.warning("CANLI: kill-switch kalkti, girisler serbest")
+        if canli_pause_aktif():
+            if not self._pause_logged:
+                self._pause_logged = True
+                log.critical("CANLI: ana salter KAPALI (CANLI_DUR), yeni girisler "
+                             "durdu (cikislar suruyor)")
+            return "canli_pause"
+        if self._pause_logged:
+            self._pause_logged = False
+            log.warning("CANLI: ana salter ACIK, girisler serbest")
         if DAILY_LOSS_LIMIT_USD > 0 or self._pct_limit_aktif():
             key = time.strftime("%Y-%m-%d", time.gmtime())
             if key != self._day_key:

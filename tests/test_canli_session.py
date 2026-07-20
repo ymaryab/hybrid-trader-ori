@@ -243,3 +243,42 @@ def test_lock_ikinci_instance_engellenir(canli_data_dir):
     eng2 = CanliEngine(_settings())
     assert not eng2._acquire_lock()
     eng1._lock_fh.close()  # temizle
+
+
+# ---- Ana salter (CANLI_DUR): giris durur, cikis surer ----------------------
+
+
+def test_ana_salter_girisleri_keser_acinca_serbest(canli_data_dir):
+    eng = CanliEngine(_settings())
+    assert eng._entries_blocked() is None
+    (canli_data_dir / "CANLI_DUR").write_text("test")
+    assert eng._entries_blocked() == "canli_pause"
+    (canli_data_dir / "CANLI_DUR").unlink()
+    assert eng._entries_blocked() is None
+
+
+def test_ana_salter_cikis_kararini_etkilemez(canli_data_dir):
+    # salter kapaliyken bile cikis degerlendirmesi normal calisir
+    (canli_data_dir / "CANLI_DUR").write_text("test")
+    eng = CanliEngine(_settings())
+    import time as _t
+    now = _t.time()
+    pos = {"pair": "T / SOL", "entry_price": 1.0, "last_price": 1.0,
+           "opened_ts": now, "mfe_pct": 0.0, "mae_pct": 0.0}
+    import hibrit_trader.canli_session as mod
+    fiyat_felaket = 1.0 * (1 + (mod.DISASTER_PCT - 1) / 100)
+    assert eng._eval_position(pos, fiyat_felaket, now) == "stop_felaket"
+
+
+def test_canli_pause_api_dosya_ve_telegram(canli_data_dir, monkeypatch):
+    import hibrit_trader.panel as panel
+    mesajlar = []
+    monkeypatch.setattr("hibrit_trader.killswitch.notify",
+                        lambda m, **k: mesajlar.append(m))
+    r = panel.api_canli_pause_kapat()
+    assert r == {"canli_pause": True}
+    assert (canli_data_dir / "CANLI_DUR").exists()
+    r = panel.api_canli_pause_ac()
+    assert r == {"canli_pause": False}
+    assert not (canli_data_dir / "CANLI_DUR").exists()
+    assert len(mesajlar) == 2 and "SALTER" in mesajlar[0]

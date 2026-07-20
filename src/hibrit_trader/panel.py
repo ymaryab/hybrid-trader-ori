@@ -532,11 +532,14 @@ def _equity_append(data_dir: Path, prefix: str, equity: float) -> None:
         pass
 
 
-def _equity_series(prefix: str, minutes: int) -> dict:
+def _equity_series(prefix: str, minutes: int, equity_jsonl: bool = True) -> dict:
     """Equity serisi: trades kumulatifi + panel orneklemleri + canli uc nokta.
 
     Uc nokta istek aninda state'ten _live_equity ile hesaplanir; ust ozetle
     ayni formul, ayni kaynak. Seri boylece hicbir zaman bayat bitmez.
+
+    equity_jsonl=False: {prefix}_equity.jsonl okunmasin (CANLI 10. motor icin
+    canli_equity.jsonl V7-cuzdan snapshot dosyasi, motor equity ile cakisir).
     """
     data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
     start_bal = 1000.0
@@ -570,19 +573,20 @@ def _equity_series(prefix: str, minutes: int) -> dict:
                 points.append((ts, round(cum, 2)))
             except Exception:
                 continue
-    ep = data_dir / f"{prefix}_equity.jsonl"
-    if ep.exists():
-        for ln in ep.read_text().splitlines():
-            if not ln.strip():
-                continue
-            try:
-                d = json.loads(ln)
-                t = float(d["ts"])
-                if t < created_ts:  # reset oncesi equity noktalarini atla
+    if equity_jsonl:
+        ep = data_dir / f"{prefix}_equity.jsonl"
+        if ep.exists():
+            for ln in ep.read_text().splitlines():
+                if not ln.strip():
                     continue
-                points.append((t, float(d["eq"])))
-            except Exception:
-                continue
+                try:
+                    d = json.loads(ln)
+                    t = float(d["ts"])
+                    if t < created_ts:  # reset oncesi equity noktalarini atla
+                        continue
+                    points.append((t, float(d["eq"])))
+                except Exception:
+                    continue
     # Baslangic capasi: created_ts anindan $start baz
     if created_ts > 0:
         points.append((created_ts, start_bal))
@@ -809,6 +813,8 @@ def api_filo(limit: int = Query(30)) -> dict:
     _lo = data_dir / "LIVE_ONAY"
     out["live_onay"] = bool(_lo.exists() and _lo.read_text(encoding="utf-8").strip() ==
                             "canli-islem-onayliyorum")
+    # 20 Tem: CANLI ana salter (CANLI_DUR dosyasi) — true = girisler durdu
+    out["canli_pause"] = (data_dir / "CANLI_DUR").exists()
     canli = _canli_blok()
     if canli is not None:
         canli["pozisyonlar"] = _canli_pozlar(out["v7"]["positions"])
@@ -818,7 +824,10 @@ def api_filo(limit: int = Query(30)) -> dict:
     # Tum acik pozisyonlar tek listede (CANLI + paper botlar), bot etiketli
     # CANLI = aktif canli motorun canli_miktar>0 pozlari (etikeni CANLI)
     aktif_canli = os.getenv("CANLI_MOTOR", "v7").strip().lower()
-    aktif_state = out.get(aktif_canli, {})
+    # CANLI_MOTOR="canli" -> out anahtari "canlim" (10. motor, 19 Tem).
+    # V7/paper aktif ise ayni prefix ismi kullanilir.
+    motor_key = "canlim" if aktif_canli == "canli" else aktif_canli
+    aktif_state = out.get(motor_key, {})
     tum_pozlar = _canli_pozlar(aktif_state.get("positions", []))
     # Digerleri paper (aktif canli motor da paper olarak eklenirse canli_miktar>0
     # dublikat olabilir — o pozisyonlari filtrele)
@@ -927,38 +936,32 @@ def api_v7m_equity(minutes: int = Query(0, ge=0)) -> dict:
     return _equity_series("v7m", minutes)
 
 
+@app.get("/api/canlim/equity")
+def api_canlim_equity(minutes: int = Query(0, ge=0)) -> dict:
+    """CANLI 10. motor equity: canli_state.json + canli_trades.jsonl'den.
+    canli_equity.jsonl V7-cuzdan snapshot icin ayri kullanildigindan atlanir."""
+    return _equity_series("canli", minutes, equity_jsonl=False)
+
+
 @app.get("/api/canli/equity")
 def api_canli_equity(minutes: int = Query(0, ge=0)) -> dict:
-    """Gercek cuzdan egrisi: canli_equity.jsonl + snapshot uc noktasi.
-
-    Referans = CANLI motorun kendi start_balance'i (canli_state.json). Veri
-    motorun created_ts'inden itibaren kirpilir; boylece grafik sadece bu
-    motorun kumulatif artisini gosterir, eski ASAMA/onceki canli donem
-    olculeri y-eksenini bozmaz. canli_state yoksa baz_usd fallback.
-    """
+    """Gercek cuzdan egrisi: canli_equity.jsonl + snapshot uc noktasi, baz referans."""
     from hibrit_trader import canli_gosterge
-    data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
-    state = _oku_json(data_dir / "canli_state.json")
-    start_bal = float(state.get("start_balance") or 0.0) or canli_gosterge.baz_usd()
-    created_ts = float(state.get("created_ts") or 0.0)
     points: list[tuple[float, float]] = []
-    ep = data_dir / "canli_equity.jsonl"
+    ep = Path(os.getenv("MOMENTUM_DATA_DIR", "data")) / "canli_equity.jsonl"
     if ep.exists():
         for ln in ep.read_text().splitlines():
             if not ln.strip():
                 continue
             try:
                 d = json.loads(ln)
-                ts = float(d["ts"])
-                if created_ts and ts < created_ts:
-                    continue
-                points.append((ts, float(d["eq"])))
+                points.append((float(d["ts"]), float(d["eq"])))
             except Exception:
                 continue
     snap = canli_gosterge.son()
     if snap:  # canli uc nokta: seri bayat bitmesin (motor serileriyle ayni ilke)
         points.append((time.time(), snap["mtm"]))
-    return {"start_balance": start_bal,
+    return {"start_balance": canli_gosterge.baz_usd(),
             "points": _seri_pencere(points, minutes)}
 
 
@@ -1660,11 +1663,9 @@ def _filo_chart(m: dict, canli_durum: str = "yok") -> str:
     if canli_durum in ("bagli", "kilitli"):
         from hibrit_trader import canli_gosterge
         ek = "" if canli_durum == "bagli" else " · kilit kapalı, giriş yok"
-        cstate = _oku_json(Path(os.getenv("MOMENTUM_DATA_DIR", "data")) / "canli_state.json")
-        baz = float(cstate.get("start_balance") or 0.0) or canli_gosterge.baz_usd()
         return ('<div class="chhead"><span class="dot" style="background:#e3b341"></span>'
                 '<b>CANLI</b> <span class="chdesc">gerçek cüzdan (SOL + açık poz), '
-                f'baz ${baz:.2f}{ek}</span>'
+                f'baz ${canli_gosterge.baz_usd():.2f}{ek}</span>'
                 '<span id="eqcanlilabel" class="eqlabel"></span></div>'
                 '<div class="eqwrap"><span id="eqcanlitrend" class="trendroz"></span>'
                 '<canvas id="eqcanlichart"></canvas></div>')
@@ -1801,7 +1802,8 @@ _MOMENTUM_HTML = """<!doctype html>
   <span id="feedBadge" class="badge">feed: -</span>
   <span id="rejimBadge" class="badge">rejim sol_h1: -</span>
   <span id="taramaBadge" class="badge">tarama: -</span>
-  <button id="canliOnayBtn" class="badge" style="cursor:pointer;font-family:monospace" title="Canli alim kilidi (LIVE_ONAY dosyasi)">canlı: -</button>
+  <button id="canliOnayBtn" class="badge" style="cursor:pointer;font-family:monospace" title="Acil fren (LIVE_ONAY dosyasi): kapatinca satislar DAHIL tum canli emirler durur">canlı: -</button>
+  <button id="canliSalterBtn" class="badge" style="cursor:pointer;font-family:monospace" title="Ana salter (CANLI_DUR dosyasi): kapali konumda yeni canli giris yok, cikislar calisir">şalter: -</button>
   <!--MODROZET-->
  </div>
 </div>
@@ -2339,11 +2341,7 @@ function basCanliPoz(rows){
   for(const p of rows){
     // p.bot -> motor.id eslesmesi: CANLI => aktif canli motor
     let id=(p.bot||"").toLowerCase();
-    if(id==="canli"){
-      // CANLI etiketi aktif motoruna yaz
-      const aktif=(window._aktifCanliMotor||"v7");
-      id=aktif;
-    }
+    if(id==="canli") id="canlim";  // 10. motor: CANLI etiketli pozlar canlim kartina yazilir (19 Tem sonrasi)
     (perMotor[id]||(perMotor[id]=[])).push(p);
   }
   for(const m of MOTORLAR){
@@ -2561,16 +2559,40 @@ function basCanliOnay(d){
   b.className="badge"+(aktif?" ok":" err");
   b.dataset.aktif=aktif?"1":"0";
 }
+function basCanliSalter(d){
+  const b=document.getElementById("canliSalterBtn");
+  if(!b)return;
+  const pause=!!d.canli_pause;
+  b.textContent=pause?"⏸ GİRİŞ KAPALI · çıkışlar açık":"⏻ CANLI AÇIK";
+  b.className="badge"+(pause?" err":" ok");
+  b.style.background=pause?"#da3633":"#238636";
+  b.style.color="#fff";
+  b.dataset.pause=pause?"1":"0";
+}
 document.addEventListener("click", async(ev)=>{
   const b=ev.target.closest("#canliOnayBtn");
   if(!b)return;
   const aktif=b.dataset.aktif==="1";
   const soru=aktif
-    ?"CANLI ALIM DURDURULSUN mu? Mevcut acik pozisyonlar satisa devam eder, sadece yeni CANLI alim yapilmaz. Paper motorlar etkilenmez."
+    ?"ACIL FREN: LIVE_ONAY silinsin mi? DIKKAT: satislar DAHIL tum canli emirler durur, acik pozisyonlar satilamaz hale gelir. Sadece giris durdurmak icin SALTER butonunu kullan."
     :"CANLI ALIM BASLATILSIN mi? Aktif canli motor tekrar gercek para ile alim yapabilir hale gelir.";
   if(!confirm(soru))return;
   try{
     const r=await fetch("/api/canli_onay",{method:aktif?"DELETE":"POST"});
+    if(!r.ok){alert("HATA: "+r.status);return;}
+    filoTick();
+  }catch(e){alert("agri hatasi: "+e);}
+});
+document.addEventListener("click", async(ev)=>{
+  const b=ev.target.closest("#canliSalterBtn");
+  if(!b)return;
+  const pause=b.dataset.pause==="1";
+  const soru=pause
+    ?"ANA SALTER ACILSIN mi? CANLI motor tekrar gercek para ile yeni giris yapabilir."
+    :"ANA SALTER KAPATILSIN mi? Yeni canli giris durur; mevcut acik pozisyonlarin cikislari (tp/fren/stop) calismaya DEVAM eder. Paper motorlar etkilenmez.";
+  if(!confirm(soru))return;
+  try{
+    const r=await fetch("/api/canli_pause",{method:pause?"DELETE":"POST"});
     if(!r.ok){alert("HATA: "+r.status);return;}
     filoTick();
   }catch(e){alert("agri hatasi: "+e);}
@@ -2595,7 +2617,7 @@ async function filoTick(){
   basCanliPoz(d.acik_pozlar||[]);   // 5 kaynak birlesik acik-poz tablosu
   basMotorTrades(d);                 // 18 Tem: her motor karti altina son 10 islem
   basSira(d, eqs);                   // 19 Tem: getiri yuzdesine gore 1-9 dinamik sira
-  basCmp(d.cmp); basIslemler(d); basRejim(d); basTarama(d); basCanliOnay(d); basKill(d.kill);
+  basCmp(d.cmp); basIslemler(d); basRejim(d); basTarama(d); basCanliOnay(d); basCanliSalter(d); basKill(d.kill);
   updEtiket();
 }
 
@@ -2742,11 +2764,36 @@ def api_canli_onay_ac() -> dict:
 
 @app.delete("/api/canli_onay")
 def api_canli_onay_kapat() -> dict:
-    """LIVE_ONAY dosyasini siler -> canli alim durur (mevcut pozlar etkilenmez)."""
+    """LIVE_ONAY dosyasini siler -> TUM canli emirler durur (satis dahil)."""
     p = Path(os.getenv("MOMENTUM_DATA_DIR", "data")) / "LIVE_ONAY"
     if p.exists():
         p.unlink()
     return {"live_onay": False}
+
+
+@app.post("/api/canli_pause")
+def api_canli_pause_kapat() -> dict:
+    """CANLI_DUR dosyasini olusturur -> ana salter KAPALI: yeni canli giris yok,
+    mevcut pozisyonlarin cikislari (tp/fren/stop) calismaya devam eder."""
+    from datetime import datetime, timezone
+    from hibrit_trader.killswitch import notify
+    data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "CANLI_DUR").write_text(
+        f"{datetime.now(timezone.utc).isoformat()} panel\n", encoding="utf-8")
+    notify("[CANLI] SALTER KAPALI: yeni giris durdu, cikislar acik")
+    return {"canli_pause": True}
+
+
+@app.delete("/api/canli_pause")
+def api_canli_pause_ac() -> dict:
+    """CANLI_DUR dosyasini siler -> ana salter ACIK: canli girisler serbest."""
+    from hibrit_trader.killswitch import notify
+    p = Path(os.getenv("MOMENTUM_DATA_DIR", "data")) / "CANLI_DUR"
+    if p.exists():
+        p.unlink()
+    notify("[CANLI] SALTER ACIK: canli girisler serbest")
+    return {"canli_pause": False}
 
 
 @app.post("/api/positions/{pool_address}/close")
