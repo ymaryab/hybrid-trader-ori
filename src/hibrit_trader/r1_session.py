@@ -59,6 +59,9 @@ log = logging.getLogger(__name__)
 # ---- R1 esikleri (kullanici kural seti 2026-07-15) --------------------
 CHG_H1_MIN = float(os.getenv("R1_CHG_H1_MIN", "30"))
 CHG_H1_MAX = float(os.getenv("R1_CHG_H1_MAX", "9999"))
+# 20 Tem kanama otopsisi: katastrofik kayiplarin (-%20 alti) tamami h1>119
+# pompa girisleri. Tavan ustu adaylar h1_tavan_skip etiketiyle reddedilir.
+H1_MAX = float(os.getenv("R1_H1_MAX", "150"))
 LIQ_MIN_USD = float(os.getenv("R1_LIQ_MIN_USD", "25000"))
 MAX_SLOTS = 5
 START_BALANCE = float(os.getenv("R1_START_BALANCE", "1000"))
@@ -458,6 +461,10 @@ class R1Engine:
             liq_ok += 1
             h1 = getattr(pr, "chg_h1", 0.0)
             if not (CHG_H1_MIN <= h1 <= CHG_H1_MAX):
+                continue
+            if H1_MAX > 0 and h1 > H1_MAX:
+                safety_reject_kaydet(pr, "R1", "h1_tavan_skip",
+                                     "h1 %.1f > tavan %.0f" % (h1, H1_MAX))
                 continue
             # R1: m5 > 0 zorunlu (tepede yorgun aday elemek)
             m5 = getattr(pr, "chg_m5", 0) or 0
