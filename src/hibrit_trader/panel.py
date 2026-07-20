@@ -2359,7 +2359,8 @@ function basMotorTrades(d){
     const el=document.getElementById("motortrades-"+m.id);
     if(!el)continue;
     const trades=(d[m.id]&&d[m.id].trades)||[];
-    const last=trades.filter(t=>Number(t.ts||0)>=cutoff);
+    // son 24 saat; 20'den fazlaysa en yeni 20 (liste API'den yeni->eski gelir)
+    const last=trades.filter(t=>Number(t.ts||0)>=cutoff).slice(0,20);
     if(!last.length){
       el.innerHTML=`<h4>son 24 saat işlemleri</h4><div class="bos">- yok -</div>`;
       continue;
@@ -2453,7 +2454,10 @@ function basIslemler(d){
   const fp=x=>x==null?"-":String(parseFloat(Number(x).toPrecision(5)));
   const bas=(sec,rows)=>{
     rows.sort((a,b)=>(b[1].ts||0)-(a[1].ts||0));
-    document.querySelector(sec).innerHTML=rows.slice(0,40).map(([m,t])=>{
+    // son 24 saat; 20'den fazlaysa en yeni 20, azsa hepsi
+    const cutoff=(Date.now()/1000)-86400;
+    rows=rows.filter(([m,t])=>Number(t.ts||0)>=cutoff);
+    document.querySelector(sec).innerHTML=rows.slice(0,20).map(([m,t])=>{
       const cn=!!(m.canli&&t.signature);
       const pnl=cn?t.canli_pnl_usd:t.pnl_usd;  // canli satirda gercek cuzdan pnl
       const sig=t.signature||"";
