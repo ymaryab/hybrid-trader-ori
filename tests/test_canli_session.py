@@ -282,3 +282,45 @@ def test_canli_pause_api_dosya_ve_telegram(canli_data_dir, monkeypatch):
     assert r == {"canli_pause": False}
     assert not (canli_data_dir / "CANLI_DUR").exists()
     assert len(mesajlar) == 2 and "SALTER" in mesajlar[0]
+
+
+def test_canli_poz_broker_live_degilse_sanal_kapanis_yok(canli_data_dir, monkeypatch):
+    # 20 Tem HBULL vakasi: LIVE_ONAY dususte fallback paper exec sanal
+    # kapanis yapiyordu; artik pozisyon bekletilir, defter dokunulmaz
+    uyarilar = []
+    monkeypatch.setattr("hibrit_trader.canli_session.kritik_uyari",
+                        lambda *a, **k: uyarilar.append(a))
+    eng = CanliEngine(_settings())
+    import time as _t
+    now = _t.time()
+    pos = {"trade_id": "t1", "pair": "T / SOL", "chain": "solana",
+           "token_address": "TOK", "pool_address": "POOL",
+           "entry_price": 1.0, "last_price": 1.1, "amount_token": 10.0,
+           "cost_usd": 10.0, "opened_ts": now, "opened_at": "x",
+           "chg_m5": 0, "chg_h1": 0, "liq_entry": 1000.0,
+           "mfe_pct": 0.0, "mae_pct": 0.0, "canli_miktar": 10.0}
+    eng.positions = [pos]
+    assert eng._exec.mode == "paper"  # fallback senaryosu
+    eng._close_position(pos, 1.1, "tp_2", now)
+    assert eng.positions == [pos]  # pozisyon YERINDE
+    assert pos.get("_sat_bekle_ts", 0) > now  # cooldown kuruldu
+    assert not (canli_data_dir / canli.TRADES_FILE).exists()  # satir yazilmadi
+    assert len(uyarilar) == 1
+
+
+def test_paper_poz_normal_kapanis_calisiyor(canli_data_dir, monkeypatch):
+    # canli_miktar olmayan (saf sanal) pozisyon paper modda normal kapanir
+    monkeypatch.setattr("hibrit_trader.canli_session.get_feed", lambda: None)
+    eng = CanliEngine(_settings())
+    import time as _t
+    now = _t.time()
+    pos = {"trade_id": "t2", "pair": "P / SOL", "chain": "solana",
+           "token_address": "TOK2", "pool_address": "POOL2",
+           "entry_price": 1.0, "last_price": 1.1, "amount_token": 10.0,
+           "cost_usd": 10.0, "opened_ts": now, "opened_at": "x",
+           "chg_m5": 0, "chg_h1": 0, "liq_entry": 100000.0,
+           "mfe_pct": 0.0, "mae_pct": 0.0}
+    eng.positions = [pos]
+    eng._close_position(pos, 1.1, "timeout_120", now)
+    assert eng.positions == []
+    assert (canli_data_dir / canli.TRADES_FILE).exists()

@@ -1,25 +1,19 @@
-"""CANLI motor — 10. slot, gercek cuzdanla emir keser (19 Tem tasarim).
+"""V7HIZLI paper motoru — TP=+%2 tek cikis (15 Tem kullanici karari).
 
-MIMARI (kullanici karari, 19 Tem):
-  - 9 paper motor bolunmeden kendi defterlerinde yarismaya devam eder.
-  - Bu 10. motor AYRI defter tutar, ayni kaynak motor kural setiyle
-    KENDI taramasindan karar verir (drift kabul: bilgi kazanci).
-  - Kural degisirse defter aynen kalir, trades.jsonl'a "kural_degisim"
-    satiri dusulur (kullanici karari: birikimli tek defter).
+Kural seti (kullanici, 2026-07-15):
+  GIRIS : rejim SOL_h1>=0.35 · momentum 10<=chg_h1<=50 · liq>=$100k
+          taze fiyat<=+%2 · safety + kasa dagilim + bos slot (max 5)
+          cooldown normal 15dk / stop 60dk (stop yok, ama tutarlilik icin sabit)
+  CIKIS : SADECE tp_2 (giristen +%2 gorulunce sat)
+          stop YOK, zaman asimi YOK, felaket YOK
+          Satis slippage: normal 150 bps, stop_felaket 1000 bps (tutarlilik icin sabit)
 
-Env:
-  CANLI_ENABLED=1     — panel startup'ta bu motoru baslatir
-  CANLI_KAYNAK_MOTOR  — kural seti hangi paper motordan (default r1)
-  CANLI_MOTOR=canli   — broker.init_motor_exec kilidini bu motora verir
+MOD: SABIT PAPER. BROKER_MODE ne olursa olsun exec paper. Canli para tasimaz.
+V7HIZLI_ENABLED=0 ile kapatilir.
 
-Dosyalar:
-  data/canli_state.json    (sanal bakiye + acik pozisyonlar)
-  data/canli_trades.jsonl  (kapanislar + kural_degisim notlari)
-  data/canli_equity.jsonl  (MTM izleme)
-  data/canli_engine.lock   (tek instance)
-
-Ilk surum (19 Tem): sadece R1 kural seti desteklenir. Gelecekte
-CANLI_KAYNAK_MOTOR degistirilecekse burada kaynak-secim mantigi eklenir.
+Diger motorlara SIFIR dokunus. Sadece su dosyalara yazar:
+  data/v7hizli_state.json   (sanal bakiye + acik pozisyonlar)
+  data/v7hizli_trades.jsonl (her sanal kapanista kayit)
 """
 
 from __future__ import annotations
@@ -47,7 +41,6 @@ from hibrit_trader.uyari_notify import kritik_uyari
 from hibrit_trader.live_sim import fetch_pool_snapshot
 from hibrit_trader import aday_paylastir
 from hibrit_trader.momentum_session import (
-    btc_macro_gate,
     SCAN_INTERVAL_SEC,
     _data_dir,
     _mom_slippage,
@@ -61,73 +54,36 @@ from hibrit_trader.scanner import scan_all_cached as scan_all
 
 log = logging.getLogger(__name__)
 
-# ---- Kaynak motor secimi (kural seti) -----------------------------------
-KAYNAK_MOTOR = os.getenv("CANLI_KAYNAK_MOTOR", "r1").strip().lower()
-DESTEKLENEN_KAYNAKLAR = {"r1", "v7hizli"}  # 20 Tem: v7hizli eklendi
-if KAYNAK_MOTOR not in DESTEKLENEN_KAYNAKLAR:
-    raise RuntimeError(
-        f"CANLI_KAYNAK_MOTOR={KAYNAK_MOTOR} destekli degil "
-        f"(mevcut: {sorted(DESTEKLENEN_KAYNAKLAR)}). "
-        "Yeni kaynak icin canli_session.py'ye ithal ekle."
-    )
+# ---- V7HIZLI esikleri (kullanici kural seti 2026-07-15) --------------------
+CHG_H1_MIN = float(os.getenv("V7HIZLI_CHG_H1_MIN", "5"))
+CHG_H1_MAX = float(os.getenv("V7HIZLI_CHG_H1_MAX", "45"))
+LIQ_MIN_USD = float(os.getenv("V7HIZLI_LIQ_MIN_USD", "100000"))
+MAX_SLOTS = 5
+START_BALANCE = float(os.getenv("V7HIZLI_START_BALANCE", "1000"))
+TP_PCT = float(os.getenv("V7HIZLI_TP_PCT", "2.0"))
+SOL_H1_MIN = float(os.getenv("V7HIZLI_SOL_H1_MIN", "0.35"))
+DAILY_LOSS_LIMIT_USD = float(os.getenv("MOM_DAILY_LOSS_LIMIT_USD", "0"))
+DAILY_LOSS_LIMIT_PCT = float(os.getenv("MOM_DAILY_LOSS_LIMIT_PCT", "25"))
+COOLDOWN_LOSS_SEC = float(os.getenv("MOM_COOLDOWN_STOP_MIN", "60")) * 60
+COOLDOWN_EXIT_SEC = float(os.getenv("MOM_COOLDOWN_EXIT_MIN", "15")) * 60
 
-if KAYNAK_MOTOR == "v7hizli":
-    # V7HIZLI kural seti (20 Tem kullanici karari): TP+%2 tek cikis,
-    # stop/theta/timeout YOK. R1'e ozgu sabitler None kalir.
-    from hibrit_trader import v7hizli_session as _kaynak
-else:
-    from hibrit_trader import r1_session as _kaynak
+# 2s hizli cikis kadansi (v6/v7d ile ayni)
+EXIT_INTERVAL_SEC = float(os.getenv("M_EXIT_INTERVAL_SEC", "2"))
+# Satis slippage tablosu (kullanici karari): normal 150 / stop_felaket 1000
+# stop_gec 300 tutuluyor, motor tetiklemiyor ama tablo tutarli olsun.
+EXIT_SLIPPAGE_BPS = {"tp_2": 150, "stop_gec": 300, "stop_felaket": 1000}
+STOP_RETRY_ADET = 3
+STOP_RETRY_SEC = 3.0
+SAT_COOLDOWN_SEC = 20.0
+KOR_FIYAT_SEC = 120.0
+KOR_ALARM_ARALIK_SEC = 60.0
 
-CHG_H1_MIN = _kaynak.CHG_H1_MIN
-CHG_H1_MAX = _kaynak.CHG_H1_MAX
-LIQ_MIN_USD = _kaynak.LIQ_MIN_USD
-MAX_SLOTS = _kaynak.MAX_SLOTS
-TP_PCT = _kaynak.TP_PCT
-SOL_H1_MIN = _kaynak.SOL_H1_MIN
-DAILY_LOSS_LIMIT_USD = _kaynak.DAILY_LOSS_LIMIT_USD
-DAILY_LOSS_LIMIT_PCT = _kaynak.DAILY_LOSS_LIMIT_PCT
-COOLDOWN_LOSS_SEC = _kaynak.COOLDOWN_LOSS_SEC
-COOLDOWN_EXIT_SEC = _kaynak.COOLDOWN_EXIT_SEC
-EXIT_INTERVAL_SEC = _kaynak.EXIT_INTERVAL_SEC
-EXIT_SLIPPAGE_BPS = _kaynak.EXIT_SLIPPAGE_BPS
-STOP_RETRY_ADET = _kaynak.STOP_RETRY_ADET
-STOP_RETRY_SEC = _kaynak.STOP_RETRY_SEC
-SAT_COOLDOWN_SEC = _kaynak.SAT_COOLDOWN_SEC
-KOR_FIYAT_SEC = _kaynak.KOR_FIYAT_SEC
-KOR_ALARM_ARALIK_SEC = _kaynak.KOR_ALARM_ARALIK_SEC
-# R1'e ozgu sabitler: v7hizli kaynakta tanimsiz (None), _eval_position'da
-# kaynak dali bunlari kullanmaz.
-DISASTER_PCT = getattr(_kaynak, "DISASTER_PCT", None)
-GRACE_SEC = getattr(_kaynak, "GRACE_SEC", None)
-LATE_STOP_PCT = getattr(_kaynak, "LATE_STOP_PCT", None)
-CEILING_SEC = getattr(_kaynak, "CEILING_SEC", None)
-M5_MIN = getattr(_kaynak, "M5_MIN", None)
-KISMI_ORAN = getattr(_kaynak, "KISMI_ORAN", None)
-KISMI_ORAN1 = getattr(_kaynak, "KISMI_ORAN1", None)
-KISMI_ORAN2 = getattr(_kaynak, "KISMI_ORAN2", None)
-TP2_PCT = getattr(_kaynak, "TP2_PCT", None)
-TRAIL_PCT = getattr(_kaynak, "TRAIL_PCT", None)
-
-# CANLI kendi sanal bakiye baslangicini env'den alir (bilet zaten broker tarafinda
-# cuzdan MTM'inden hesaplaniyor; buradaki bakiye paper muhasebesi icin).
-START_BALANCE = float(os.getenv("CANLI_START_BALANCE", "1000"))
-
-STATE_FILE = "canli_state.json"
-TRADES_FILE = "canli_trades.jsonl"
-LOCK_FILE = "canli_engine.lock"
-TAG = "CANLI"
-PAUSE_FILE = "CANLI_DUR"
+STATE_FILE = "v7hizli_state.json"
+TRADES_FILE = "v7hizli_trades.jsonl"
 
 
-def canli_pause_aktif() -> bool:
-    """Ana salter: data/CANLI_DUR varsa yeni canli giris yok, cikislar surer.
-    LIVE_ONAY'dan farki: broker'a dokunmaz, satislar kesintisiz calisir."""
-    return (_data_dir() / PAUSE_FILE).exists()
-
-
-class CanliEngine:
-    """10. motor: gercek cuzdanla emir keser, ayri defter tutar. Kural seti
-    KAYNAK_MOTOR'dan (default r1) import edilir."""
+class V7HizliEngine:
+    """TP=+%2 tek cikis paper motoru. Kendi dosyalari, sifir dokunus."""
 
     def __init__(self, settings) -> None:
         self.settings = settings
@@ -136,25 +92,23 @@ class CanliEngine:
         self.realized_pnl: float = 0.0
         self.positions: list[dict] = []
         self.created_ts: float = time.time()
-        self.kaynak_motor: str = KAYNAK_MOTOR
         self._aggressive = os.getenv("PAPER_AGGRESSIVE", "0") == "1"
         self._cooldown_until: dict[str, float] = {}
         self._regime_logged = False
         self._kill_logged = False
-        self._pause_logged = False
         self._day_key: str = ""
         self._day_realized: float = 0.0
         self._limit_logged = False
         self._day_limit_usd: float | None = None
         self._limit_belirsiz_logged = False
         self._yuklenen_gun_limiti: tuple | None = None
-        self._huni = HuniSayac(TAG)
+        self._huni = HuniSayac("V7HIZLI")
         self._lock_fh = None
         self._son_exec_neden: str | None = None
         self._belirsiz_aday: dict | None = None
-        # broker.init_motor_exec("canli") → CANLI_MOTOR=canli ise live broker,
-        # aksi halde PaperExec. Diger motorlar bu kilidi almaz.
-        self._exec, self._exec_arizali = init_motor_exec("canli")
+        # 16 Tem: CANLI_MOTOR env swap altyapisi. Default paper; CANLI_MOTOR=v7hizli
+        # secilirse make_exec_broker (live/dryrun) devreye girer.
+        self._exec, self._exec_arizali = init_motor_exec("v7hizli")
         self._load()
         self._restore_day_realized()
         if (self._yuklenen_gun_limiti
@@ -186,9 +140,9 @@ class CanliEngine:
             backup = p.with_name(f"{p.name}.corrupt-{int(time.time())}")
             try:
                 p.rename(backup)
-                log.critical("canli state bozuk, yedege tasindi: %s", backup)
+                log.critical("v7hizli state bozuk, yedege tasindi: %s", backup)
             except OSError:
-                log.critical("canli state bozuk ve yedeklenemedi, temiz baslaniyor")
+                log.critical("v7hizli state bozuk ve yedeklenemedi, temiz baslaniyor")
 
     def _save(self) -> None:
         p = self._path(STATE_FILE)
@@ -198,7 +152,6 @@ class CanliEngine:
             "start_balance": round(self.start_balance, 2),
             "realized_pnl": round(self.realized_pnl, 4),
             "created_ts": round(self.created_ts, 3),
-            "kaynak_motor": self.kaynak_motor,
             "positions": self.positions,
             "day_limit_key": self._day_key or None,
             "day_limit_usd": (round(self._day_limit_usd, 4)
@@ -215,64 +168,6 @@ class CanliEngine:
         payload = {"ts": round(time.time(), 3), "ts_iso": _now_iso(), **row}
         with p.open("a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
-
-    # ---- Kural degisim protokolu ---------------------------------------------
-    def _son_kural_kaynagi(self) -> str | None:
-        """trades.jsonl'daki son kural_degisim satirinin 'yeni' alanini dondurur."""
-        p = self._path(TRADES_FILE)
-        if not p.exists():
-            return None
-        try:
-            for ln in reversed(p.read_text().splitlines()):
-                if not ln.strip():
-                    continue
-                try:
-                    r = json.loads(ln)
-                    if r.get("type") == "kural_degisim":
-                        return r.get("yeni")
-                except Exception:
-                    continue
-        except Exception:
-            log.debug("canli kural kaynak okumasi hata", exc_info=True)
-        return None
-
-    def _kural_kontrol(self) -> None:
-        """Startup'ta env'deki kaynak motor son kayitli ile ayni mi kiyasla.
-        Farkliysa trades.jsonl'a kural_degisim satiri yaz (birikimli defter)."""
-        son = self._son_kural_kaynagi()
-        if son == self.kaynak_motor:
-            return
-        self._append_trade({
-            "type": "kural_degisim",
-            "eski": son,
-            "yeni": self.kaynak_motor,
-            "note": f"Kaynak motor {son or '(ilk_baslangic)'} -> {self.kaynak_motor}",
-        })
-        log.warning("CANLI kural degisimi: %s -> %s (defter aynen surer)",
-                    son or "(ilk_baslangic)", self.kaynak_motor)
-
-    def _hizala_baslangic_bakiyesi(self) -> None:
-        """Ilk baslangicta (bos defter) sanal bakiyeyi cuzdan MTM'iyle hizala.
-        canli_gosterge snapshot bekler (max ~30s), alinirsa balance=start=mtm.
-        Boylece kart cuzdan degeriyle ayni görünür, kar%% cuzdan hareketini yansitir.
-        Zaten defter kirliyse (poz/realized/farkli balance) dokunulmaz."""
-        if self.positions or self.realized_pnl != 0.0 or self.balance != START_BALANCE:
-            return
-        for _ in range(10):
-            mtm = self._canli_mtm()
-            if mtm is not None and mtm > 1.0:
-                self.balance = mtm
-                self.start_balance = mtm
-                self.created_ts = time.time()
-                self._save()
-                log.warning(
-                    "CANLI ilk baslangic: sanal bakiye cuzdan MTM'iyle hizalandi ($%.2f)",
-                    mtm)
-                return
-            time.sleep(3.0)
-        log.warning(
-            "CANLI ilk baslangic: cuzdan MTM 30s icinde alinamadi, sanal $%.2f kaldi",
-            self.balance)
 
     # ---- Gun ici realized PnL sayaci -----------------------------------------
     def _day_realized_add(self, pnl: float, now: float) -> None:
@@ -296,8 +191,6 @@ class CanliEngine:
                     continue
                 try:
                     t = json.loads(ln)
-                    if t.get("type") == "kural_degisim":
-                        continue
                     ts = float(t.get("ts") or 0.0)
                     if time.strftime("%Y-%m-%d", time.gmtime(ts)) == self._day_key:
                         total += float(t.get("pnl_usd") or 0.0)
@@ -305,7 +198,7 @@ class CanliEngine:
                     continue
             self._day_realized = total
         except Exception:
-            log.debug("CANLI gun ici pnl geri yuklenemedi", exc_info=True)
+            log.debug("V7HIZLI gun ici pnl geri yuklenemedi", exc_info=True)
 
     def _entries_blocked(self) -> str | None:
         if self._exec_arizali:
@@ -313,20 +206,11 @@ class CanliEngine:
         if kill_is_active():
             if not self._kill_logged:
                 self._kill_logged = True
-                log.critical("CANLI: kill-switch AKTIF, yeni girisler durdu (cikislar suruyor)")
+                log.critical("V7HIZLI: kill-switch AKTIF, yeni girisler durdu (cikislar suruyor)")
             return "kill_switch"
         if self._kill_logged:
             self._kill_logged = False
-            log.warning("CANLI: kill-switch kalkti, girisler serbest")
-        if canli_pause_aktif():
-            if not self._pause_logged:
-                self._pause_logged = True
-                log.critical("CANLI: ana salter KAPALI (CANLI_DUR), yeni girisler "
-                             "durdu (cikislar suruyor)")
-            return "canli_pause"
-        if self._pause_logged:
-            self._pause_logged = False
-            log.warning("CANLI: ana salter ACIK, girisler serbest")
+            log.warning("V7HIZLI: kill-switch kalkti, girisler serbest")
         if DAILY_LOSS_LIMIT_USD > 0 or self._pct_limit_aktif():
             key = time.strftime("%Y-%m-%d", time.gmtime())
             if key != self._day_key:
@@ -338,16 +222,16 @@ class CanliEngine:
             if limit is None and not kesin:
                 if not self._limit_belirsiz_logged:
                     self._limit_belirsiz_logged = True
-                    log.critical("CANLI: gun limiti hesaplanamadi, yeni giris kapali (fail-closed)")
+                    log.critical("V7HIZLI: gun limiti hesaplanamadi, yeni giris kapali (fail-closed)")
                 return "daily_limit_belirsiz"
             if self._limit_belirsiz_logged:
                 self._limit_belirsiz_logged = False
-                log.warning("CANLI: gun limiti hesaplandi, belirsizlik kalkti")
+                log.warning("V7HIZLI: gun limiti hesaplandi, belirsizlik kalkti")
             if limit is not None and self._day_realized <= -limit:
                 if not self._limit_logged:
                     self._limit_logged = True
                     log.critical(
-                        "CANLI: gunluk zarar limiti asildi ($%.2f <= -$%.2f), "
+                        "V7HIZLI: gunluk zarar limiti asildi ($%.2f <= -$%.2f), "
                         "bugun yeni giris yok", self._day_realized, limit,
                     )
                 return "daily_loss_limit"
@@ -363,7 +247,7 @@ class CanliEngine:
             if snap and float(snap.get("mtm") or 0.0) > 0:
                 return float(snap["mtm"])
         except Exception:
-            log.debug("CANLI MTM okunamadi", exc_info=True)
+            log.debug("V7HIZLI canli MTM okunamadi", exc_info=True)
         return None
 
     def _gun_limiti(self) -> tuple[float | None, bool]:
@@ -381,7 +265,7 @@ class CanliEngine:
             limit = min(limit, usd)
         self._day_limit_usd = limit
         self._save()
-        log.warning("CANLI gun limiti sabitlendi: MTM $%.2f x %%%g = $%.2f",
+        log.warning("V7HIZLI gun limiti sabitlendi: MTM $%.2f x %%%g = $%.2f",
                     mtm, DAILY_LOSS_LIMIT_PCT, limit)
         return limit, True
 
@@ -391,11 +275,11 @@ class CanliEngine:
         self._son_exec_neden = None
         try:
             fill = self._exec.execute(ExecOrder(
-                engine="CANLI", yon=yon, token_address=token_address,
+                engine="V7", yon=yon, token_address=token_address,
                 usd=usd, amount_token=amount_token, ref_fiyat=ref_fiyat,
                 slippage_bps=slippage_bps, acilis_ts=acilis_ts))
         except Exception as e:
-            log.error("CANLI yurutme hatasi (%s %s): %s", yon, token_address[:8], e)
+            log.error("V7HIZLI yurutme hatasi (%s %s): %s", yon, token_address[:8], e)
             fill = None
         if self._exec.mode != "live":
             return True, None
@@ -406,14 +290,14 @@ class CanliEngine:
 
     def _acquire_lock(self) -> bool:
         import fcntl
-        p = self._path(LOCK_FILE)
+        p = self._path("v7hizli_engine.lock")
         p.parent.mkdir(parents=True, exist_ok=True)
         fh = p.open("w")
         try:
             fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             fh.close()
-            log.critical("CANLI: baska bir instance calisiyor, motor baslatilmiyor")
+            log.critical("V7HIZLI: baska bir instance calisiyor, motor baslatilmiyor")
             return False
         fh.write(f"{os.getpid()}\n")
         fh.flush()
@@ -424,27 +308,23 @@ class CanliEngine:
     def run_forever(self) -> None:
         if not self._acquire_lock():
             return
-        self._kural_kontrol()
-        self._hizala_baslangic_bakiyesi()
-        mod = getattr(self._exec, "mode", "paper")
         log.warning(
-            "CANLI motor basladi (kaynak=%s, broker=%s) - sanal $%.2f · "
+            "V7HIZLI paper basladi (TP=+%%%.1f tek cikis, stop yok) - sanal $%.2f · "
             "slot %d · giris liq>=$%.0f + h1 %.0f..%.0f · rejim>=%.2f",
-            self.kaynak_motor, mod, self.balance, MAX_SLOTS,
-            LIQ_MIN_USD, CHG_H1_MIN, CHG_H1_MAX, SOL_H1_MIN,
+            TP_PCT, self.balance, MAX_SLOTS, LIQ_MIN_USD, CHG_H1_MIN, CHG_H1_MAX, SOL_H1_MIN,
         )
         self._save()
         feed = get_feed()
         if feed is not None:
             for pos in self.positions:
                 feed.add_pool(pos["pool_address"])
-        # Faz: 8/8 (en son; diger 8 paper motor once tarasin)
-        time.sleep(SCAN_INTERVAL_SEC * 7 / 8)
+        # v7d 7/8 kullaniyor, v7 1/1, momentum 5/8, v6 farkli. v7hizli faz: 6/8.
+        time.sleep(SCAN_INTERVAL_SEC * 6 / 8)
         while True:
             try:
                 self.tick()
             except Exception:
-                log.exception("CANLI tick hatasi")
+                log.exception("v7hizli tick hatasi")
             deadline = time.time() + SCAN_INTERVAL_SEC
             while True:
                 kalan = deadline - time.time()
@@ -454,7 +334,7 @@ class CanliEngine:
                 try:
                     self.fast_exit_tick()
                 except Exception:
-                    log.exception("CANLI hizli cikis hatasi")
+                    log.exception("v7hizli hizli cikis hatasi")
 
     def tick(self) -> None:
         self._belirsiz_takip()
@@ -463,7 +343,7 @@ class CanliEngine:
             self._enter(client)
         self._save()
 
-    # ---- Belirsiz alim mutabakati --------------------------------------------
+    # ---- R2-alim: belirsiz alim mutabakati -----------------------------------
     def _belirsiz_takip(self) -> None:
         if self._belirsiz_aday is None:
             return
@@ -471,7 +351,7 @@ class CanliEngine:
         if sorgu is None:
             self._belirsiz_aday = None
             return
-        durum, detay = sorgu("CANLI")
+        durum, detay = sorgu("V7")
         if durum == "bekliyor":
             return
         aday = self._belirsiz_aday
@@ -479,9 +359,9 @@ class CanliEngine:
         if durum == "gerceklesti" and detay and detay.get("fiyat", 0) > 0:
             self._belirsiz_pozisyon_ac(aday, detay)
         elif durum == "yok":
-            log.warning("CANLI BELIRSIZ SONUC %s: tx zincirde yok, iptal", aday["pair"])
+            log.warning("V7HIZLI BELIRSIZ SONUC %s: tx zincirde yok, iptal", aday["pair"])
         else:
-            log.critical("CANLI BELIRSIZ SONUC %s: cozulemedi (%s)", aday["pair"], durum)
+            log.critical("V7HIZLI BELIRSIZ SONUC %s: cozulemedi (%s)", aday["pair"], durum)
 
     def _belirsiz_pozisyon_ac(self, aday: dict, detay: dict) -> None:
         usd = aday["usd"]
@@ -520,7 +400,7 @@ class CanliEngine:
         feed = get_feed()
         if feed is not None:
             feed.add_pool(pos["pool_address"])
-        log.warning("CANLI BUY (mutabakat) %s $%.2f @ %.8g", aday["pair"], usd, entry)
+        log.warning("V7HIZLI BUY (mutabakat) %s $%.2f @ %.8g", aday["pair"], usd, entry)
 
     def _sol_chg_h1(self, client: httpx.Client) -> float | None:
         return sol_chg_h1(client)
@@ -535,7 +415,7 @@ class CanliEngine:
         try:
             pairs = scan_all(self.settings.scan_chains)
         except Exception as e:
-            log.warning("CANLI giris tick atlandi, tarama hatasi: %r", e)
+            log.warning("V7HIZLI giris tick atlandi, tarama hatasi: %r", e)
             return
         held = {p["pool_address"] for p in self.positions}
         held |= {p["token_address"] for p in self.positions if p.get("token_address")}
@@ -550,7 +430,8 @@ class CanliEngine:
                 continue
             if self._cooldown_until.get(pr.token_address, 0.0) > now:
                 continue
-            _izin, _red_nedeni = aday_paylastir.iddia_et(pr.token_address, "canli", pr.name)
+            # Aday paylastir: baska motor 15dk icinde ayni token'i aldi mi?
+            _izin, _red_nedeni = aday_paylastir.iddia_et(pr.token_address, "v7hizli", pr.name)
             if not _izin:
                 continue
             if pr.liquidity_usd < LIQ_MIN_USD:
@@ -559,17 +440,12 @@ class CanliEngine:
             h1 = getattr(pr, "chg_h1", 0.0)
             if not (CHG_H1_MIN <= h1 <= CHG_H1_MAX):
                 continue
-            if M5_MIN is not None:  # R1 filtresi; v7hizli m5'e bakmaz
-                m5 = getattr(pr, "chg_m5", 0) or 0
-                if m5 <= M5_MIN:
-                    continue
             cands.append(pr)
         cands.sort(key=lambda pr: pr.chg_h1, reverse=True)
         self._huni.ekle(len(pairs), liq_ok, len(cands), now)
         if not cands:
             return
-        # R1 kural seti mirasi: rejim + BTC gate DEVRE DISI (kaynak motor tercihi).
-        # Kendi korumasi var: felaket -%15 + grace stop -%5 + timeout 120dk.
+        # 18 Tem C-plani: rejim gate DEVRE DISI (test). sol_h1 sadece log icin.
         try:
             sol_h1 = self._sol_chg_h1(client)
         except Exception:
@@ -581,12 +457,12 @@ class CanliEngine:
             try:
                 report = check_token(client, pair.chain, pair.token_address)
             except Exception as e:
-                safety_reject_kaydet(pair, TAG, "safety_hata", type(e).__name__)
+                safety_reject_kaydet(pair, "V7HIZLI", "safety_hata", type(e).__name__)
                 continue
             time.sleep(0.2 if self._aggressive else 1.5)
             if not report.ok:
                 safety_reject_kaydet(
-                    pair, TAG, report.kapi or "safety_red",
+                    pair, "V7HIZLI", report.kapi or "safety_red",
                     "; ".join(report.reasons[:2])
                 )
                 continue
@@ -600,9 +476,9 @@ class CanliEngine:
         gas = GAS_COST_USD.get(pair.chain, 0.1)
         if self.balance < usd + gas:
             return False
-        taze = taze_teyit(pair, TAG, client)
+        taze = taze_teyit(pair, "V7HIZLI", client)
         if taze.iptal:
-            log.warning("CANLI GIRIS IPTAL %s: taze fiyat taramanin %%%.2f ustunde (kaynak %s)",
+            log.warning("V7HIZLI GIRIS IPTAL %s: taze fiyat taramanin %%%.2f ustunde (kaynak %s)",
                         pair.name, taze.fark_pct, taze.kaynak)
             return False
         slip = _mom_slippage(usd, pair.liquidity_usd)
@@ -626,10 +502,11 @@ class CanliEngine:
                     "entry_slip_pct": round(slip * 100, 4),
                     "ts": time.time(),
                 }
-                log.critical("CANLI GIRIS BELIRSIZ %s: zincir mutabakati bekleniyor",
+                log.critical("V7HIZLI GIRIS BELIRSIZ %s: zincir mutabakati bekleniyor",
                              pair.name)
                 return False
-            log.error("CANLI GIRIS IPTAL %s: canli alim gerceklesmedi", pair.name)
+            log.error("V7HIZLI GIRIS IPTAL %s: canli alim gerceklesmedi", pair.name)
+            kritik_uyari("GIRIS IPTAL", f"giris:v7hizli:{pair.name}", f"V7HIZLI {pair.name}: canli alim gerceklesmedi (broker fail)")
             return False
         if canli is not None and canli.fiyat > 0:
             eff_price = canli.fiyat
@@ -657,7 +534,6 @@ class CanliEngine:
             "mfe_pct": 0.0,
             "mae_pct": 0.0,
             "last_price": eff_price,
-            "kaynak_motor": self.kaynak_motor,
         }
         if canli is not None:
             if canli.tx_id:
@@ -670,18 +546,17 @@ class CanliEngine:
         feed = get_feed()
         if feed is not None:
             feed.add_pool(pos["pool_address"])
-        aday_paylastir.kaydet(pair.token_address, "canli", pair.name)
-        log.warning("CANLI BUY %s $%.2f @ %.8g (h1 %.1f%%, liq $%.0f, yas %s)",
-                    pair.name, usd, eff_price, pair.chg_h1, pair.liquidity_usd,
-                    yas_str(pair.pool_created_at))
-        notify("[CANLI] ALIM: %s $%.2f @ %.8g (h1 %%%.1f, liq $%.0f)"
+        aday_paylastir.kaydet(pair.token_address, "v7hizli", pair.name)
+        log.warning("V7HIZLI BUY %s $%.2f @ %.8g (h1 %.1f%%, liq $%.0f, yas %s)",
+                    pair.name, usd, eff_price, pair.chg_h1, pair.liquidity_usd, yas_str(pair.pool_created_at))
+        notify("[V7HIZLI] ALIM: %s $%.2f @ %.8g (h1 %%%.1f, liq $%.0f)"
                % (pair.name, usd, eff_price, pair.chg_h1, pair.liquidity_usd))
         return True
 
-    # ---- Cikis: TP+%10 kismi + runner trail. Stop yok, zaman asimi yok. ------
+    # ---- Cikis: SADECE tp_2 (+%2 uzeri). Stop yok, zaman asimi yok. ----------
     def _eval_position(self, pos: dict, price: float, now: float,
                        liquidity_usd: float | None = None) -> str | None:
-        price, ariza = guard_price(pos, price, now, TAG, liquidity_usd=liquidity_usd)
+        price, ariza = guard_price(pos, price, now, "V7HIZLI", liquidity_usd=liquidity_usd)
         if ariza:
             return None
         pos["last_price"] = price
@@ -691,38 +566,15 @@ class CanliEngine:
             pos["mfe_pct"] = round(pnl_pct, 4)
         if pnl_pct < pos["mae_pct"]:
             pos["mae_pct"] = round(pnl_pct, 4)
-        if self.kaynak_motor == "v7hizli":
-            # V7HIZLI: SADECE tp_2. Stop, timeout, felaket, kismi YOK.
-            if pnl_pct > TP_PCT:
-                return "tp_2"
-            return None
-        age = now - pos["opened_ts"]
-        if pnl_pct <= DISASTER_PCT:
-            return "stop_felaket"
-        if pos.get("runner_mode"):
-            peak = float(pos.get("runner_peak") or entry)
-            if price > peak:
-                pos["runner_peak"] = price
-                return None
-            if price <= peak * (1 - TRAIL_PCT / 100.0):
-                return "runner_trail"
-            return None
-        asama = int(pos.get("kismi_asama") or 0)
-        if asama < 2 and pnl_pct >= TP2_PCT:
-            return "tp_partial_2"
-        if asama < 1 and pnl_pct >= TP_PCT:
-            return "tp_partial_1"
-        if age >= GRACE_SEC and pnl_pct <= LATE_STOP_PCT:
-            return "stop_gec"
-        if age >= CEILING_SEC:
-            return "timeout_120"
+        if pnl_pct > TP_PCT:
+            return "tp_2"
         return None
 
     def _fiyat_tazelendi(self, pos: dict, now: float) -> None:
         pos["_taze_fiyat_ts"] = now
         if pos.pop("kor_fiyat", None):
             pos.pop("_kor_alarm_ts", None)
-            log.warning("CANLI kor fiyat sona erdi %s", pos["pair"])
+            log.warning("V7HIZLI kor fiyat sona erdi %s", pos["pair"])
 
     def _manage_exits(self, client: httpx.Client) -> None:
         now = time.time()
@@ -745,7 +597,7 @@ class CanliEngine:
                     if now - pos.get("_kor_alarm_ts", 0.0) >= KOR_ALARM_ARALIK_SEC:
                         pos["_kor_alarm_ts"] = now
                         log.critical(
-                            "CANLI KOR FIYAT %s: %.0fs'dir taze fiyat yok "
+                            "V7HIZLI KOR FIYAT %s: %.0fs'dir taze fiyat yok "
                             "(TP tetiklenemeyebilir)", pos["pair"], taze_yas)
             else:
                 self._fiyat_tazelendi(pos, now)
@@ -777,61 +629,36 @@ class CanliEngine:
     def _close_position(self, pos: dict, price: float, reason: str, now: float) -> None:
         if time.time() < pos.get("_sat_bekle_ts", 0.0):
             return
-        if (float(pos.get("canli_miktar") or 0.0) > 0
-                and getattr(self._exec, "mode", "paper") != "live"):
-            # LIVE_ONAY dusmus / broker fallback: gercek token satilamaz.
-            # Sanal kapanis defteri zincirden koparir (20 Tem HBULL vakasi);
-            # pozisyon bekletilir, kilit acilip restart edilince gercek satis.
-            pos["_sat_bekle_ts"] = time.time() + SAT_COOLDOWN_SEC
-            log.critical("CANLI SATIS ERTELENDI %s (%s): canli pozisyon ama "
-                         "broker live degil (%s), sanal kapanis YAPILMADI; "
-                         "LIVE_ONAY + restart gerekir", pos["pair"], reason,
-                         getattr(self._exec, "mode", "?"))
-            kritik_uyari("SATIS ERTELENDI", f"sat:canli:{pos['pair']}",
-                         "CANLI %s: broker live degil, gercek satis yapilamiyor"
-                         % pos["pair"])
-            return
-        kismi = reason in ("tp_partial_1", "tp_partial_2", "tp_runner_partial")
         cost = pos["cost_usd"]
-        if reason == "tp_partial_1":
-            satilan_oran = KISMI_ORAN1
-        elif reason == "tp_partial_2":
-            satilan_oran = KISMI_ORAN2
-        elif reason == "tp_runner_partial":
-            satilan_oran = KISMI_ORAN
-        else:
-            satilan_oran = 1.0
-        satilan_amount = pos["amount_token"] * satilan_oran
-        satilan_cost = cost * satilan_oran
-        slip = _mom_slippage(satilan_cost, pos["liq_entry"])
+        slip = _mom_slippage(cost, pos["liq_entry"])
         eff_price = price * (1 - slip)
         karar_cikis = eff_price
         sat_bps = EXIT_SLIPPAGE_BPS.get(reason, 150)
         deneme = STOP_RETRY_ADET if reason in ("stop_gec", "stop_felaket") else 1
-        canli_miktar_satilacak = (float(pos.get("canli_miktar") or 0.0) * satilan_oran
-                                  if pos.get("canli_miktar") else satilan_amount)
         devam, canli = False, None
         for i in range(deneme):
             devam, canli = self._exec_fill("sat", pos["token_address"],
-                                           amount_token=canli_miktar_satilacak,
+                                           amount_token=pos.get("canli_miktar")
+                                           or pos["amount_token"],
                                            ref_fiyat=eff_price,
                                            slippage_bps=sat_bps,
                                            acilis_ts=pos["opened_ts"])
             if devam:
                 break
             if i + 1 < deneme:
-                log.warning("CANLI SATIS TEKRAR %s (%s): deneme %d/%d basarisiz",
+                log.warning("V7HIZLI SATIS TEKRAR %s (%s): deneme %d/%d basarisiz",
                             pos["pair"], reason, i + 1, deneme)
                 time.sleep(STOP_RETRY_SEC)
         if not devam:
             pos["_sat_bekle_ts"] = time.time() + SAT_COOLDOWN_SEC
-            log.error("CANLI SATIS ERTELENDI %s: canli satis gerceklesmedi", pos["pair"])
+            log.error("V7HIZLI SATIS ERTELENDI %s: canli satis gerceklesmedi", pos["pair"])
+            kritik_uyari("SATIS ERTELENDI", f"sat:v7hizli:{pos['pair']}", f"V7HIZLI {pos['pair']}: canli satis fail, retry cooldown")
             return
         if canli is not None and canli.fiyat > 0:
             eff_price = canli.fiyat
         gas = GAS_COST_USD.get(pos["chain"], 0.1)
-        proceeds = satilan_amount * eff_price - gas
-        pnl = proceeds - satilan_cost
+        proceeds = pos["amount_token"] * eff_price - gas
+        pnl = proceeds - cost
         hold_sec = round(now - pos["opened_ts"], 1)
         pnl_pct = (eff_price / pos["entry_price"] - 1) * 100 if pos["entry_price"] > 0 else 0.0
         price_src = pos.pop("_price_src", "poll")
@@ -869,7 +696,6 @@ class CanliEngine:
             "tetik_gecikme_sec": tetik_gecikme,
             "opened_at": pos["opened_at"],
             "closed_at": _now_iso(),
-            "kaynak_motor": pos.get("kaynak_motor") or self.kaynak_motor,
         }
         if canli is not None and canli.tx_id:
             row["signature"] = canli.tx_id
@@ -883,30 +709,6 @@ class CanliEngine:
         self.balance += proceeds
         self.realized_pnl += pnl
         self._day_realized_add(pnl, now)
-        if kismi:
-            pos["amount_token"] -= satilan_amount
-            pos["cost_usd"] = round(cost - satilan_cost, 4)
-            if pos.get("canli_miktar"):
-                pos["canli_miktar"] -= canli_miktar_satilacak
-            if reason == "tp_partial_1":
-                pos["kismi_asama"] = 1
-                self._save()
-                log.warning("CANLI PARTIAL-1/3 %s: TP+%%%.0f, 1/3 satildi pnl $%.2f (%.2f%%), "
-                            "%.0f%% i +%.0f%% bekliyor, kalan 1/3 runner",
-                            pos["pair"], TP_PCT, pnl, pnl_pct, 100/3, TP2_PCT)
-                notify("[CANLI] PARTIAL-1/3: %s +$%.2f (%%%.2f) — 1/3 sirada +%%%.0f"
-                       % (pos["pair"], pnl, pnl_pct, TP2_PCT))
-            elif reason in ("tp_partial_2", "tp_runner_partial"):
-                pos["kismi_asama"] = 2
-                pos["runner_mode"] = True
-                pos["runner_peak"] = float(pos.get("last_price") or eff_price)
-                self._save()
-                log.warning("CANLI PARTIAL-2/3 %s: 1/3 daha satildi pnl $%.2f (%.2f%%), "
-                            "kalan 1/3 runner (peak=%.8g, trail=%.1f%%)",
-                            pos["pair"], pnl, pnl_pct, pos["runner_peak"], TRAIL_PCT)
-                notify("[CANLI] PARTIAL-2/3: %s +$%.2f (%%%.2f) — kalan 1/3 runner (peak %.8g)"
-                       % (pos["pair"], pnl, pnl_pct, pos["runner_peak"]))
-            return
         cd = COOLDOWN_LOSS_SEC if reason in ("stop_gec", "stop_felaket") else COOLDOWN_EXIT_SEC
         if pos.get("token_address"):
             self._cooldown_until[pos["token_address"]] = now + cd
@@ -918,7 +720,7 @@ class CanliEngine:
         feed = get_feed()
         if feed is not None:
             feed.remove_pool(pos["pool_address"])
-        log.warning("CANLI SELL %s pnl $%.2f (%.2f%%) — %s, hold %.0fs (mfe %.1f%% mae %.1f%%)",
+        log.warning("V7HIZLI SELL %s pnl $%.2f (%.2f%%) — %s, hold %.0fs (mfe %.1f%% mae %.1f%%)",
                     pos["pair"], pnl, pnl_pct, reason, hold_sec, pos["mfe_pct"], pos["mae_pct"])
-        notify("[CANLI] SATIM: %s pnl $%.2f (%%%.2f) — %s, hold %.0fdk"
+        notify("[V7HIZLI] SATIM: %s pnl $%.2f (%%%.2f) — %s, hold %.0fdk"
                % (pos["pair"], pnl, pnl_pct, reason, hold_sec / 60))
