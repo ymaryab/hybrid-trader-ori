@@ -71,3 +71,26 @@ def test_h1_tavan_bandin_icini_etkilemez(monkeypatch):
                                         _pair("YORGUN", h1=80.0, m5=0.0)])
     eng._enter(None)
     assert acilan == ["SINIRDA"]
+
+
+def test_m5_tavan_ustu_reddedilir_etiketli(monkeypatch):
+    assert r1.M5_MAX == 75.0  # env default
+    kayitlar = []
+    monkeypatch.setattr(r1, "safety_reject_kaydet",
+                        lambda pr, m, n, d="": kayitlar.append((pr.name, n)))
+    eng, acilan = _engine(monkeypatch)
+    monkeypatch.setattr(r1, "scan_all",
+                        lambda chains: [_pair("NORMAL", h1=80.0, m5=20.0),
+                                        _pair("PARABOL", h1=120.0, m5=200.0)])
+    eng._enter(None)
+    assert acilan == ["NORMAL"]
+    assert ("PARABOL", "m5_tavan_skip") in kayitlar
+
+
+def test_m5_tavan_sifir_devre_disi(monkeypatch):
+    monkeypatch.setattr(r1, "M5_MAX", 0.0)
+    monkeypatch.setattr(r1, "safety_reject_kaydet", lambda *a, **k: None)
+    eng, acilan = _engine(monkeypatch)
+    monkeypatch.setattr(r1, "scan_all", lambda chains: [_pair("PARABOL", h1=120.0, m5=200.0)])
+    eng._enter(None)
+    assert acilan == ["PARABOL"]

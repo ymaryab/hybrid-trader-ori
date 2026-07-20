@@ -62,6 +62,10 @@ CHG_H1_MAX = float(os.getenv("R1_CHG_H1_MAX", "9999"))
 # 20 Tem kanama otopsisi: katastrofik kayiplarin (-%20 alti) tamami h1>119
 # pompa girisleri. Tavan ustu adaylar h1_tavan_skip etiketiyle reddedilir.
 H1_MAX = float(os.getenv("R1_H1_MAX", "150"))
+# m5 tavani (20 Tem): dakikalik parabolik mum (guldlon m5 234 -> -%97 rug).
+# Kazananlarin max m5'i 56; 75 tarihsel hicbir kazanani kesmiyor. h1 penceresi
+# dolmamis genc tokenlarda h1 tavaninin yakalayamadigi bosluyu kapatir.
+M5_MAX = float(os.getenv("R1_M5_MAX", "75"))
 LIQ_MIN_USD = float(os.getenv("R1_LIQ_MIN_USD", "25000"))
 MAX_SLOTS = 5
 START_BALANCE = float(os.getenv("R1_START_BALANCE", "1000"))
@@ -469,6 +473,10 @@ class R1Engine:
             # R1: m5 > 0 zorunlu (tepede yorgun aday elemek)
             m5 = getattr(pr, "chg_m5", 0) or 0
             if m5 <= M5_MIN:
+                continue
+            if M5_MAX > 0 and m5 > M5_MAX:
+                safety_reject_kaydet(pr, "R1", "m5_tavan_skip",
+                                     "m5 %.1f > tavan %.0f" % (m5, M5_MAX))
                 continue
             cands.append(pr)
         cands.sort(key=lambda pr: pr.chg_h1, reverse=True)
