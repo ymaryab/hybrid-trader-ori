@@ -781,13 +781,13 @@ def api_filo(limit: int = Query(30)) -> dict:
     data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
     now = time.time()
     out: dict = {"ts": round(now, 3)}
-    for prefix in ("v7", "v7c", "v7cd", "v7d", "v7hizli", "r1", "v7y", "v7t", "v7m"):
+    for prefix in ("v7", "v7c", "v7cd", "v7d", "v7hizli", "r1", "v7t"):
         out[prefix] = _motor_ozet(data_dir, prefix, now, limit)
     # CANLI 10. motoru: dosya prefix'i "canli_" ama out key "canlim" (cuzdan
     # _canli_blok ile cakismasin, o eski key "canli"yi kullanmaya devam eder).
     out["canlim"] = _motor_ozet(data_dir, "canli", now, limit)
     out["cmp"] = {p: out[p]["summary"]["realized_pnl"]
-                  for p in ("v7", "v7c", "v7cd", "v7d", "v7hizli", "r1", "v7y", "v7t", "v7m", "canlim")}
+                  for p in ("v7", "v7c", "v7cd", "v7d", "v7hizli", "r1", "v7t", "canlim")}
     out["kill"] = is_active()
     # rejim rozeti: paylasimli sol_h1 cache + BTC m15 macro (cache'li fetch)
     from hibrit_trader.momentum_session import sol_h1_son_olcum
@@ -842,9 +842,7 @@ def api_filo(limit: int = Query(30)) -> dict:
     tum_pozlar += _paper_bot("V7HIZLI", "v7hizli")
     tum_pozlar += _paper_bot("V7CD", "v7cd")
     tum_pozlar += _paper_bot("R1", "r1")
-    tum_pozlar += _paper_bot("V7Y", "v7y")
     tum_pozlar += _paper_bot("V7T", "v7t")
-    tum_pozlar += _paper_bot("V7M", "v7m")
     out["acik_pozlar"] = tum_pozlar
     # Aktif canli motor: swap butonu icin JS bunu kullanir
     out["canli_motor"] = os.getenv("CANLI_MOTOR", "v7").strip().lower()
@@ -921,19 +919,9 @@ def api_r1_equity(minutes: int = Query(0, ge=0)) -> dict:
     return _equity_series("r1", minutes)
 
 
-@app.get("/api/v7y/equity")
-def api_v7y_equity(minutes: int = Query(0, ge=0)) -> dict:
-    return _equity_series("v7y", minutes)
-
-
 @app.get("/api/v7t/equity")
 def api_v7t_equity(minutes: int = Query(0, ge=0)) -> dict:
     return _equity_series("v7t", minutes)
-
-
-@app.get("/api/v7m/equity")
-def api_v7m_equity(minutes: int = Query(0, ge=0)) -> dict:
-    return _equity_series("v7m", minutes)
 
 
 @app.get("/api/canlim/equity")
@@ -1567,15 +1555,9 @@ _FILO_MOTORLAR: list[dict] = [
     {"id": "v7cd", "tip": "bot", "ad": "V7CD", "renk": "#a371f7", "slots": 5,
      "rozet": "TP+%2 kısmi + trail",
      "desc": "V7C + trail-arm: TP+%2 hit yarısı sat, kalanı runner (peak*(1-%3) altı trail)"},
-    {"id": "v7y", "tip": "bot", "ad": "V7Y", "renk": "#f6b73c", "slots": 5,
-     "rozet": "snipers h1 40-50",
-     "desc": "V7Y: h1 40-50 dar bant · TP+%5 kısmı + trail %10 · felaket -%10 · 10dk grace stop-3 · 30dk tavan"},
     {"id": "v7t", "tip": "bot", "ad": "V7T", "renk": "#79c0ff", "slots": 5,
      "rozet": "antikaçış h1 20-30",
      "desc": "V7T: h1 20-30 hızlı scalp · TP+%1.5 · timeout 20dk"},
-    {"id": "v7m", "tip": "bot", "ad": "V7M", "renk": "#d2a8ff", "slots": 5,
-     "rozet": "majör likidite",
-     "desc": "V7M: h1 10-30 + liq&ge;$300k · TP+%2 · felaket -%12 · 30dk grace stop-3 · 90dk tavan"},
     {"id": "r1", "tip": "bot", "ad": "R1", "renk": "#ff6b35", "slots": 5,
      "rozet": "runner catcher",
      "desc": "R1: h1&gt;30 + m5&gt;0 · TP+%10 kısmı + trail %15 · felaket -%15 · 15dk grace stop-5 · 120dk tavan · tam serbest"},
@@ -1621,7 +1603,7 @@ def _filo_kart_canli(durum: str) -> str:
 def _filo_kart(m: dict, canli_durum: str = "yok") -> str:
     # Canliya-al butonu: broker-gomulu 5 motor icin
     swap_btn = ""
-    if m["id"] in ("v7", "v7c", "v7cd", "v7d", "v7hizli", "r1", "v7y", "v7t", "v7m"):
+    if m["id"] in ("v7", "v7c", "v7cd", "v7d", "v7hizli", "r1", "v7t"):
         swap_btn = (f'<button class="canli-al-btn" data-motor="{m["id"]}" '
                     f'onclick="canliAl(\'{m["id"]}\',\'{m["ad"]}\')" '
                     f'title="Canlıya al">🔴 al</button>')
@@ -2303,7 +2285,7 @@ function basCanliMotor(aktif){
   // CANLI kartinda "V7 canliya geri" butonu: aktif motor V7 degilse gorunur.
   aktif=(aktif||"v7").toLowerCase();
   window._aktifCanliMotor=aktif;
-  for(const id of ["v7","v7c","v7cd","v7d","v7hizli","r1","v7y","v7t","v7m"]){
+  for(const id of ["v7","v7c","v7cd","v7d","v7hizli","r1","v7t"]){
     const roz=document.getElementById("canli-roz-"+id);
     const btn=document.querySelector(`.canli-al-btn[data-motor="${id}"]`);
     const solEl=document.getElementById("sol-"+id);
@@ -2723,7 +2705,7 @@ def api_canli_swap(motor: str = Query(...)) -> dict:
     script servisi restart eder (bu process olur), yanit HTTP olarak donmez.
     Kullanici 10sn sonra sayfayi yeniler. Guvenlik: sadece 5 desteklenen motor."""
     import subprocess
-    if motor not in ("v7", "v7c", "v7cd", "v7d", "v7hizli", "r1", "v7y", "v7t", "v7m"):
+    if motor not in ("v7", "v7c", "v7cd", "v7d", "v7hizli", "r1", "v7t"):
         raise HTTPException(status_code=400, detail=f"desteklenmeyen motor: {motor}")
     script = str(Path(__file__).resolve().parents[2] / "scripts" / "canli_swap.py")
     venv_py = str(Path(__file__).resolve().parents[2] / ".venv" / "bin" / "python")
