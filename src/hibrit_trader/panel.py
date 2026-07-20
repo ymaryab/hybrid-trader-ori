@@ -193,6 +193,13 @@ def _start_engine() -> None:
             from hibrit_trader.r1_session import R1Engine
             r1 = R1Engine(settings)
             threading.Thread(target=r1.run_forever, daemon=True).start()
+        if os.getenv("R2_ENABLED", "1") != "0":
+            # R2 RUNNER (21 Tem): iddiali runner yakalayici. 30<=h1<=150 +
+            # m5 3..75 + yas>=60dk; breakeven kilidi + 1/4 kar kilidi +
+            # ratchet trail 20/15/10; felaket -15, 180dk tavan. SABIT PAPER.
+            from hibrit_trader.r2_session import R2Engine
+            r2 = R2Engine(settings)
+            threading.Thread(target=r2.run_forever, daemon=True).start()
         if os.getenv("CANLI_ENABLED", "0") != "0":
             # CANLI 10. motor (19 Tem): 9 paper motoru bolunmeden birakir,
             # KAYNAK_MOTOR kural setiyle kendi taramasindan karar verir, canli
@@ -787,13 +794,13 @@ def api_filo(limit: int = Query(30)) -> dict:
     data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
     now = time.time()
     out: dict = {"ts": round(now, 3)}
-    for prefix in ("v7", "v7c", "v7d", "v7hizli", "v7ht", "r1", "v7t"):
+    for prefix in ("v7", "v7c", "v7d", "v7hizli", "v7ht", "r1", "r2", "v7t"):
         out[prefix] = _motor_ozet(data_dir, prefix, now, limit)
     # CANLI 10. motoru: dosya prefix'i "canli_" ama out key "canlim" (cuzdan
     # _canli_blok ile cakismasin, o eski key "canli"yi kullanmaya devam eder).
     out["canlim"] = _motor_ozet(data_dir, "canli", now, limit)
     out["cmp"] = {p: out[p]["summary"]["realized_pnl"]
-                  for p in ("v7", "v7c", "v7d", "v7hizli", "v7ht", "r1", "v7t", "canlim")}
+                  for p in ("v7", "v7c", "v7d", "v7hizli", "v7ht", "r1", "r2", "v7t", "canlim")}
     out["kill"] = is_active()
     # rejim rozeti: paylasimli sol_h1 cache + BTC m15 macro (cache'li fetch)
     from hibrit_trader.momentum_session import sol_h1_son_olcum
@@ -848,6 +855,7 @@ def api_filo(limit: int = Query(30)) -> dict:
     tum_pozlar += _paper_bot("V7HIZLI", "v7hizli")
     tum_pozlar += _paper_bot("V7HT", "v7ht")
     tum_pozlar += _paper_bot("R1", "r1")
+    tum_pozlar += _paper_bot("R2", "r2")
     tum_pozlar += _paper_bot("V7T", "v7t")
     out["acik_pozlar"] = tum_pozlar
     # Aktif canli motor: swap butonu icin JS bunu kullanir
@@ -913,6 +921,11 @@ def api_v7hizli_equity(minutes: int = Query(0, ge=0)) -> dict:
 @app.get("/api/v7ht/equity")
 def api_v7ht_equity(minutes: int = Query(0, ge=0)) -> dict:
     return _equity_series("v7ht", minutes)
+
+
+@app.get("/api/r2/equity")
+def api_r2_equity(minutes: int = Query(0, ge=0)) -> dict:
+    return _equity_series("r2", minutes)
 
 
 @app.get("/api/sv1/equity")
@@ -1567,6 +1580,9 @@ _FILO_MOTORLAR: list[dict] = [
     {"id": "r1", "tip": "bot", "ad": "R1", "renk": "#ff6b35", "slots": 5,
      "rozet": "runner catcher",
      "desc": "R1: h1&gt;30 + m5&gt;0 · TP+%10 kısmı + trail %15 · felaket -%15 · 15dk grace stop-5 · 120dk tavan · tam serbest"},
+    {"id": "r2", "tip": "bot", "ad": "R2", "renk": "#ff9f43", "slots": 5,
+     "rozet": "runner v2 · ratchet trail",
+     "desc": "R2 RUNNER: h1 30-150 + m5 3-75 + yaş&ge;60dk · breakeven+1 kilidi (mfe10) · +40 tepede 1/4 kâr kilidi · ratchet trail 20/15/10 · felaket -15 · 15dk grace stop-5 · 180dk tavan"},
     {"id": "canlim", "tip": "bot", "ad": "CANLI", "renk": "#26c281", "slots": 5,
      "rozet": "10. motor · kaynak " + os.getenv("CANLI_KAYNAK_MOTOR", "r1").upper(),
      "desc": "CANLI 10. motor (19 Tem): gerçek cüzdanla emir keser · kural seti CANLI_KAYNAK_MOTOR env'den (default R1) · birikimli defter + kural_degisim satırları"},
