@@ -929,23 +929,36 @@ def api_v7m_equity(minutes: int = Query(0, ge=0)) -> dict:
 
 @app.get("/api/canli/equity")
 def api_canli_equity(minutes: int = Query(0, ge=0)) -> dict:
-    """Gercek cuzdan egrisi: canli_equity.jsonl + snapshot uc noktasi, baz referans."""
+    """Gercek cuzdan egrisi: canli_equity.jsonl + snapshot uc noktasi.
+
+    Referans = CANLI motorun kendi start_balance'i (canli_state.json). Veri
+    motorun created_ts'inden itibaren kirpilir; boylece grafik sadece bu
+    motorun kumulatif artisini gosterir, eski ASAMA/onceki canli donem
+    olculeri y-eksenini bozmaz. canli_state yoksa baz_usd fallback.
+    """
     from hibrit_trader import canli_gosterge
+    data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
+    state = _oku_json(data_dir / "canli_state.json")
+    start_bal = float(state.get("start_balance") or 0.0) or canli_gosterge.baz_usd()
+    created_ts = float(state.get("created_ts") or 0.0)
     points: list[tuple[float, float]] = []
-    ep = Path(os.getenv("MOMENTUM_DATA_DIR", "data")) / "canli_equity.jsonl"
+    ep = data_dir / "canli_equity.jsonl"
     if ep.exists():
         for ln in ep.read_text().splitlines():
             if not ln.strip():
                 continue
             try:
                 d = json.loads(ln)
-                points.append((float(d["ts"]), float(d["eq"])))
+                ts = float(d["ts"])
+                if created_ts and ts < created_ts:
+                    continue
+                points.append((ts, float(d["eq"])))
             except Exception:
                 continue
     snap = canli_gosterge.son()
     if snap:  # canli uc nokta: seri bayat bitmesin (motor serileriyle ayni ilke)
         points.append((time.time(), snap["mtm"]))
-    return {"start_balance": canli_gosterge.baz_usd(),
+    return {"start_balance": start_bal,
             "points": _seri_pencere(points, minutes)}
 
 
@@ -1647,9 +1660,11 @@ def _filo_chart(m: dict, canli_durum: str = "yok") -> str:
     if canli_durum in ("bagli", "kilitli"):
         from hibrit_trader import canli_gosterge
         ek = "" if canli_durum == "bagli" else " · kilit kapalı, giriş yok"
+        cstate = _oku_json(Path(os.getenv("MOMENTUM_DATA_DIR", "data")) / "canli_state.json")
+        baz = float(cstate.get("start_balance") or 0.0) or canli_gosterge.baz_usd()
         return ('<div class="chhead"><span class="dot" style="background:#e3b341"></span>'
                 '<b>CANLI</b> <span class="chdesc">gerçek cüzdan (SOL + açık poz), '
-                f'baz ${canli_gosterge.baz_usd():.2f}{ek}</span>'
+                f'baz ${baz:.2f}{ek}</span>'
                 '<span id="eqcanlilabel" class="eqlabel"></span></div>'
                 '<div class="eqwrap"><span id="eqcanlitrend" class="trendroz"></span>'
                 '<canvas id="eqcanlichart"></canvas></div>')

@@ -4,8 +4,8 @@ Motor/kural katmanina dokunmaz, sadece okur. Kendi dongusunde calisir ki
 RPC kotasi panel poll'undan bagimsiz kalsin (CANLI_POLL_SEC, varsayilan 45s).
 Son olcum bellekte snapshot olarak durur (son()); egri data/canli_equity.jsonl
 dosyasina yazilir (panel _equity_series ile ayni satir formati: ts/eq).
-Acik pozisyon degeri v7_state.json'daki canli_miktar * last_price'tan gelir;
-motor last_price'i zaten guncelliyor, buradan ek API cagrisi cikmaz.
+Acik pozisyon degeri canli_state.json'daki canli_miktar * last_price'tan gelir;
+CANLI motor last_price'i zaten guncelliyor, buradan ek API cagrisi cikmaz.
 """
 from __future__ import annotations
 
@@ -52,12 +52,12 @@ def _sol_bakiye(client: httpx.Client) -> float | None:
         return None
 
 
-def _v7_canli_ozet() -> tuple[float, int, int]:
+def _canli_ozet() -> tuple[float, int, int]:
     """(acik canli poz degeri usd, acik canli poz sayisi, kapali canli islem sayisi)."""
     d = _data_dir()
     poz_usd, poz_n = 0.0, 0
     try:
-        state = json.loads((d / "v7_state.json").read_text())
+        state = json.loads((d / "canli_state.json").read_text())
         for p in state.get("positions") or []:
             m = float(p.get("canli_miktar") or 0.0)
             if m > 0:
@@ -66,7 +66,7 @@ def _v7_canli_ozet() -> tuple[float, int, int]:
     except Exception:
         pass
     islem_n = 0
-    tp = d / "v7_trades.jsonl"
+    tp = d / "canli_trades.jsonl"
     if tp.exists():
         try:
             for ln in tp.read_text().splitlines():
@@ -113,7 +113,7 @@ def olc(client: httpx.Client) -> dict | None:
         # yanlis fiyatla sahte mtm sicramasi yazmaktansa turu atla
         log.warning("canli gosterge: SOL fiyati alinamadi, tur atlandi")
         return None
-    poz_usd, poz_n, islem_n = _v7_canli_ozet()
+    poz_usd, poz_n, islem_n = _canli_ozet()
     mtm = round(sol * fiyat + poz_usd, 2)
     snap = {"ts": round(time.time(), 1), "mtm": mtm, "sol": round(sol, 4),
             "sol_fiyat": round(fiyat, 2), "poz_usd": poz_usd,

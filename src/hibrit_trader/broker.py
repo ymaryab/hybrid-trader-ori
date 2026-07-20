@@ -452,7 +452,7 @@ def _max_giris_prim_pct() -> float:
 
 def _cuzdan_durum(http: httpx.Client, rpc, pubkey) -> tuple[float, float, float] | None:
     """Alim aninda taze cuzdan durumu: (mtm_usd, serbest_sol, sol_fiyat_usd).
-    MTM = serbest SOL (RPC) x anlik fiyat + acik canli poz degeri (v7_state
+    MTM = serbest SOL (RPC) x anlik fiyat + acik canli poz degeri (canli_state
     canli_miktar*last_price, dosyadan). Hesaplanamazsa None (fail-closed)."""
     from hibrit_trader.jupiter import LAMPORTS_PER_SOL, fetch_sol_price_usd
 
@@ -468,7 +468,7 @@ def _cuzdan_durum(http: httpx.Client, rpc, pubkey) -> tuple[float, float, float]
     from hibrit_trader import canli_gosterge
 
     serbest_sol = lamports / LAMPORTS_PER_SOL
-    poz_usd = canli_gosterge._v7_canli_ozet()[0]
+    poz_usd = canli_gosterge._canli_ozet()[0]
     return serbest_sol * fiyat + poz_usd, serbest_sol, fiyat
 
 
