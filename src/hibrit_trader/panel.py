@@ -1808,6 +1808,7 @@ _MOMENTUM_HTML = """<!doctype html>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script>
 const f=(x,d=2)=>x==null?"-":Number(x).toFixed(d);
+const saatYerel=iso=>iso?new Date(iso).toLocaleTimeString("tr-TR",{hour12:false}):"-";
 const cls=x=>x>0?"pos":(x<0?"neg":"");
 const eqCharts={};  // canli chartlar: filo tick'i ayni poll'un equity'sini uca basar
 const MOTORLAR="__MOTORLAR__";  // sunucu _FILO_MOTORLAR listesinden basar (tek konfig)
@@ -1826,7 +1827,7 @@ async function arsivGolge(){
     `<tr><td>${t.pair}</td><td><span class="chip">${t.exit_reason}</span></td>`+
     `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
     `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_h1,1)}</td>`+
-    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=9>henüz yok</td></tr>";
+    `<td>${f(t.hold_sec,0)}</td><td>${saatYerel(t.closed_at)}</td></tr>`).join("")||"<tr><td colspan=9>henüz yok</td></tr>";
 }
 
 // ---- ARSIV: V4 melez (donuk, acilinca bir kez) ----------------------------------
@@ -1845,7 +1846,7 @@ async function arsivV4(){
     `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
     `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_m5,1)}</td>`+
     `<td>${f(t.chg_h1,1)}</td><td>${f(t.sol_chg_h1,2)}</td>`+
-    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=12>henüz yok</td></tr>";
+    `<td>${f(t.hold_sec,0)}</td><td>${saatYerel(t.closed_at)}</td></tr>`).join("")||"<tr><td colspan=12>henüz yok</td></tr>";
 }
 
 // ---- ARSIV: V8 (donuk, acilinca bir kez) ----------------------------------------
@@ -1863,7 +1864,7 @@ async function arsivV8(){
     `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
     `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_h1,1)}</td>`+
     `<td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
-    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
+    `<td>${f(t.hold_sec,0)}</td><td>${saatYerel(t.closed_at)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
 }
 
 // ---- ARSIV: V9 (donuk, acilinca bir kez) --------------------------------------------
@@ -1881,7 +1882,7 @@ async function arsivV9(){
     `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
     `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_h1,1)}</td>`+
     `<td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
-    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
+    `<td>${f(t.hold_sec,0)}</td><td>${saatYerel(t.closed_at)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
 }
 
 // ---- ARSIV: V10 (donuk, acilinca bir kez) -------------------------------------------
@@ -1899,7 +1900,7 @@ async function arsivV10(){
     `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
     `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_h1,1)}</td>`+
     `<td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
-    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
+    `<td>${f(t.hold_sec,0)}</td><td>${saatYerel(t.closed_at)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
 }
 
 function mtmSatir(s){
@@ -1926,7 +1927,7 @@ async function arsivM1(){
     `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
     `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_m5,2)}</td>`+
     `<td>${f(t.chg_h1,2)}</td><td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
-    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=12>henüz yok</td></tr>";
+    `<td>${f(t.hold_sec,0)}</td><td>${saatYerel(t.closed_at)}</td></tr>`).join("")||"<tr><td colspan=12>henüz yok</td></tr>";
 }
 
 // ---- ARSIV: M2 (durduruldu, acilinca bir kez) ---------------------------------------
@@ -1945,7 +1946,7 @@ async function arsivM2(){
     `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
     `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_m5,2)}</td>`+
     `<td>${f(t.chg_h1,2)}</td><td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
-    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=12>henüz yok</td></tr>";
+    `<td>${f(t.hold_sec,0)}</td><td>${saatYerel(t.closed_at)}</td></tr>`).join("")||"<tr><td colspan=12>henüz yok</td></tr>";
 }
 
 // ---- ARSIV: v2/v3/v5, katlanir bolum acilinca BIR kez yuklenir (donuk) ----------
@@ -1968,7 +1969,7 @@ async function arsivV2(){
     `<tr><td>${t.pair}</td><td>${t.chain}</td><td><span class="chip">${t.exit_reason}</span></td>`+
     `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
     `<td>${f(t.friction_pct)}</td><td>${f(t.chg_m5,1)}</td><td>${f(t.chg_h1,1)}</td>`+
-    `<td>${f(t.liq_entry,0)}</td><td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
+    `<td>${f(t.liq_entry,0)}</td><td>${f(t.hold_sec,0)}</td><td>${saatYerel(t.closed_at)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
 }
 async function arsivV3(){
   let d; try{const r=await fetch("/api/v3?limit=30"); d=await r.json();}catch(e){return;}
@@ -1983,7 +1984,7 @@ async function arsivV3(){
     `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
     `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_m5,1)}</td>`+
     `<td>${f(t.chg_h1,1)}</td><td>${f(t.sol_chg_h1,2)}</td>`+
-    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
+    `<td>${f(t.hold_sec,0)}</td><td>${saatYerel(t.closed_at)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
 }
 async function arsivV5(){
   let d; try{const r=await fetch("/api/v5?limit=30"); d=await r.json();}catch(e){return;}
@@ -1999,7 +2000,7 @@ async function arsivV5(){
     `<td class="${cls(t.pnl_usd)}">${f(t.pnl_usd)}</td><td class="${cls(t.pnl_pct)}">${f(t.pnl_pct)}</td>`+
     `<td>${f(t.mfe_pct,1)}</td><td>${f(t.mae_pct,1)}</td><td>${f(t.chg_h1,1)}</td>`+
     `<td>${f(t.liq_entry,0)}</td>`+
-    `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
+    `<td>${f(t.hold_sec,0)}</td><td>${saatYerel(t.closed_at)}</td></tr>`).join("")||"<tr><td colspan=11>henüz yok</td></tr>";
 }
 let arsivYuklendi=false;
 const arsivBoxEl=document.getElementById("arsivBox");
@@ -2463,7 +2464,7 @@ function basIslemler(d){
       `<td title="mfe ${f(t.mfe_pct,1)}% / mae ${f(t.mae_pct,1)}%">${mfeMaeBar(t.mfe_pct,t.mae_pct)}</td>`+
       `<td>${f(t.chg_h1,1)}</td><td>${f(t.sol_chg_h1,2)}</td><td>${f(t.liq_entry,0)}</td>`+
       `<td>${fp(t.entry_price)}</td><td>${fp(t.exit_price)}</td>`+
-      `<td>${f(t.hold_sec,0)}</td><td>${(t.closed_at||"").slice(11,19)}</td><td>${tx}</td></tr>`;}).join("")
+      `<td>${f(t.hold_sec,0)}</td><td>${saatYerel(t.closed_at)}</td><td>${tx}</td></tr>`;}).join("")
       ||"<tr><td colspan=14>henüz yok</td></tr>";
   };
   bas("#isltr tbody",on); bas("#isltrArka tbody",arkaRows);
