@@ -1577,7 +1577,7 @@ _FILO_MOTORLAR: list[dict] = [
      "rozet": "runner catcher",
      "desc": "R1: h1&gt;30 + m5&gt;0 · TP+%10 kısmı + trail %15 · felaket -%15 · 15dk grace stop-5 · 120dk tavan · tam serbest"},
     {"id": "canlim", "tip": "bot", "ad": "CANLI", "renk": "#26c281", "slots": 5,
-     "rozet": "10. motor · kaynak R1",
+     "rozet": "10. motor · kaynak " + os.getenv("CANLI_KAYNAK_MOTOR", "r1").upper(),
      "desc": "CANLI 10. motor (19 Tem): gerçek cüzdanla emir keser · kural seti CANLI_KAYNAK_MOTOR env'den (default R1) · birikimli defter + kural_degisim satırları"},
 ]
 
