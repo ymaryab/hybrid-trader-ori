@@ -44,7 +44,7 @@ def test_kaynak_r1_sabitleri_devrali(canli_data_dir):
 
 def test_desteklenmeyen_kaynak_fail_fast(monkeypatch):
     # Modul yeniden import edildiginde env yanlissa RuntimeError firlatir.
-    monkeypatch.setenv("CANLI_KAYNAK_MOTOR", "v7hizli")
+    monkeypatch.setenv("CANLI_KAYNAK_MOTOR", "v6")
     import importlib
     import hibrit_trader.canli_session
     with pytest.raises(RuntimeError, match="destekli degil"):
@@ -52,6 +52,78 @@ def test_desteklenmeyen_kaynak_fail_fast(monkeypatch):
     # Modulu geri getir (diger testleri kirmasin)
     monkeypatch.setenv("CANLI_KAYNAK_MOTOR", "r1")
     importlib.reload(hibrit_trader.canli_session)
+
+
+# ---- V7HIZLI kaynak (20 Tem): TP+%2 tek cikis, stop yok --------------------
+
+
+def _v7hizli_reload(monkeypatch):
+    import importlib
+    import hibrit_trader.canli_session as mod
+    monkeypatch.setenv("CANLI_KAYNAK_MOTOR", "v7hizli")
+    return importlib.reload(mod)
+
+
+def _r1_geri_yukle(monkeypatch):
+    import importlib
+    import hibrit_trader.canli_session as mod
+    monkeypatch.setenv("CANLI_KAYNAK_MOTOR", "r1")
+    importlib.reload(mod)
+
+
+def test_kaynak_v7hizli_sabitleri_devrali(canli_data_dir, monkeypatch):
+    try:
+        mod = _v7hizli_reload(monkeypatch)
+        import hibrit_trader.v7hizli_session as v7h
+        assert mod.KAYNAK_MOTOR == "v7hizli"
+        assert mod.TP_PCT == v7h.TP_PCT
+        assert mod.CHG_H1_MIN == v7h.CHG_H1_MIN
+        assert mod.LIQ_MIN_USD == v7h.LIQ_MIN_USD
+        assert mod.MAX_SLOTS == v7h.MAX_SLOTS
+        # R1'e ozgu sabitler v7hizli kaynakta None
+        assert mod.DISASTER_PCT is None
+        assert mod.M5_MIN is None
+        assert mod.TP2_PCT is None
+        assert mod.TRAIL_PCT is None
+    finally:
+        _r1_geri_yukle(monkeypatch)
+
+
+def test_v7hizli_eval_sadece_tp2(canli_data_dir, monkeypatch):
+    # v7hizli kaynakta cikis karari: TP+%2 uzeri tp_2, baska hicbir tetik yok
+    try:
+        mod = _v7hizli_reload(monkeypatch)
+        monkeypatch.setattr(mod, "guard_price",
+                            lambda pos, price, now, tag, liquidity_usd=None: (price, False))
+        eng = mod.CanliEngine(_settings())
+        import time as _t
+        now = _t.time()
+
+        def poz(entry=1.0, yas_sec=0.0):
+            return {"pair": "T / SOL", "entry_price": entry, "last_price": entry,
+                    "opened_ts": now - yas_sec, "mfe_pct": 0.0, "mae_pct": 0.0}
+
+        tp_esik = mod.TP_PCT  # v7hizli varsayilan 2.0
+        assert eng._eval_position(poz(), 1.0 * (1 + (tp_esik + 0.5) / 100), now) == "tp_2"
+        assert eng._eval_position(poz(), 1.0 * (1 + (tp_esik - 0.5) / 100), now) is None
+        # stop/felaket yok: -%50 bile satis tetiklemez
+        assert eng._eval_position(poz(), 0.5, now) is None
+        # zaman asimi yok: 10 saatlik pozisyon da tetiklenmez
+        assert eng._eval_position(poz(yas_sec=36000), 1.0, now) is None
+    finally:
+        _r1_geri_yukle(monkeypatch)
+
+
+def test_r1_eval_degismedi(canli_data_dir):
+    # regresyon: r1 kaynakta felaket freni calisiyor olmali
+    eng = CanliEngine(_settings())
+    import time as _t
+    now = _t.time()
+    pos = {"pair": "T / SOL", "entry_price": 1.0, "last_price": 1.0,
+           "opened_ts": now, "mfe_pct": 0.0, "mae_pct": 0.0}
+    import hibrit_trader.canli_session as mod
+    fiyat_felaket = 1.0 * (1 + (mod.DISASTER_PCT - 1) / 100)
+    assert eng._eval_position(pos, fiyat_felaket, now) == "stop_felaket"
 
 
 # ---- Broker dispatch: CANLI_MOTOR=canli ise live, aksi halde paper ---------

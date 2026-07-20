@@ -62,7 +62,7 @@ log = logging.getLogger(__name__)
 
 # ---- Kaynak motor secimi (kural seti) -----------------------------------
 KAYNAK_MOTOR = os.getenv("CANLI_KAYNAK_MOTOR", "r1").strip().lower()
-DESTEKLENEN_KAYNAKLAR = {"r1"}  # 19 Tem: sadece R1 kural seti ithal edildi
+DESTEKLENEN_KAYNAKLAR = {"r1", "v7hizli"}  # 20 Tem: v7hizli eklendi
 if KAYNAK_MOTOR not in DESTEKLENEN_KAYNAKLAR:
     raise RuntimeError(
         f"CANLI_KAYNAK_MOTOR={KAYNAK_MOTOR} destekli degil "
@@ -70,8 +70,12 @@ if KAYNAK_MOTOR not in DESTEKLENEN_KAYNAKLAR:
         "Yeni kaynak icin canli_session.py'ye ithal ekle."
     )
 
-# R1 kural seti (19 Tem kaynak). Yeni kaynak eklenince if/elif bloguna donusur.
-from hibrit_trader import r1_session as _kaynak
+if KAYNAK_MOTOR == "v7hizli":
+    # V7HIZLI kural seti (20 Tem kullanici karari): TP+%2 tek cikis,
+    # stop/theta/timeout YOK. R1'e ozgu sabitler None kalir.
+    from hibrit_trader import v7hizli_session as _kaynak
+else:
+    from hibrit_trader import r1_session as _kaynak
 
 CHG_H1_MIN = _kaynak.CHG_H1_MIN
 CHG_H1_MAX = _kaynak.CHG_H1_MAX
@@ -90,16 +94,18 @@ STOP_RETRY_SEC = _kaynak.STOP_RETRY_SEC
 SAT_COOLDOWN_SEC = _kaynak.SAT_COOLDOWN_SEC
 KOR_FIYAT_SEC = _kaynak.KOR_FIYAT_SEC
 KOR_ALARM_ARALIK_SEC = _kaynak.KOR_ALARM_ARALIK_SEC
-DISASTER_PCT = _kaynak.DISASTER_PCT
-GRACE_SEC = _kaynak.GRACE_SEC
-LATE_STOP_PCT = _kaynak.LATE_STOP_PCT
-CEILING_SEC = _kaynak.CEILING_SEC
-M5_MIN = _kaynak.M5_MIN
-KISMI_ORAN = _kaynak.KISMI_ORAN
-KISMI_ORAN1 = _kaynak.KISMI_ORAN1
-KISMI_ORAN2 = _kaynak.KISMI_ORAN2
-TP2_PCT = _kaynak.TP2_PCT
-TRAIL_PCT = _kaynak.TRAIL_PCT
+# R1'e ozgu sabitler: v7hizli kaynakta tanimsiz (None), _eval_position'da
+# kaynak dali bunlari kullanmaz.
+DISASTER_PCT = getattr(_kaynak, "DISASTER_PCT", None)
+GRACE_SEC = getattr(_kaynak, "GRACE_SEC", None)
+LATE_STOP_PCT = getattr(_kaynak, "LATE_STOP_PCT", None)
+CEILING_SEC = getattr(_kaynak, "CEILING_SEC", None)
+M5_MIN = getattr(_kaynak, "M5_MIN", None)
+KISMI_ORAN = getattr(_kaynak, "KISMI_ORAN", None)
+KISMI_ORAN1 = getattr(_kaynak, "KISMI_ORAN1", None)
+KISMI_ORAN2 = getattr(_kaynak, "KISMI_ORAN2", None)
+TP2_PCT = getattr(_kaynak, "TP2_PCT", None)
+TRAIL_PCT = getattr(_kaynak, "TRAIL_PCT", None)
 
 # CANLI kendi sanal bakiye baslangicini env'den alir (bilet zaten broker tarafinda
 # cuzdan MTM'inden hesaplaniyor; buradaki bakiye paper muhasebesi icin).
@@ -535,9 +541,10 @@ class CanliEngine:
             h1 = getattr(pr, "chg_h1", 0.0)
             if not (CHG_H1_MIN <= h1 <= CHG_H1_MAX):
                 continue
-            m5 = getattr(pr, "chg_m5", 0) or 0
-            if m5 <= M5_MIN:
-                continue
+            if M5_MIN is not None:  # R1 filtresi; v7hizli m5'e bakmaz
+                m5 = getattr(pr, "chg_m5", 0) or 0
+                if m5 <= M5_MIN:
+                    continue
             cands.append(pr)
         cands.sort(key=lambda pr: pr.chg_h1, reverse=True)
         self._huni.ekle(len(pairs), liq_ok, len(cands), now)
@@ -666,6 +673,11 @@ class CanliEngine:
             pos["mfe_pct"] = round(pnl_pct, 4)
         if pnl_pct < pos["mae_pct"]:
             pos["mae_pct"] = round(pnl_pct, 4)
+        if self.kaynak_motor == "v7hizli":
+            # V7HIZLI: SADECE tp_2. Stop, timeout, felaket, kismi YOK.
+            if pnl_pct > TP_PCT:
+                return "tp_2"
+            return None
         age = now - pos["opened_ts"]
         if pnl_pct <= DISASTER_PCT:
             return "stop_felaket"
