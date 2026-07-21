@@ -41,3 +41,27 @@ def test_uc_cikis_kapisi():
     assert eng._eval_position(poz(), 0.85, now) is None          # -15: kapak alti
     assert eng._eval_position(poz(), 0.79, now) == "stop_felaket"  # -21: kapak
     assert eng._eval_position(poz(yas_dk=61), 0.9, now) == "timeout_60"
+
+
+def test_sonda_teyit_ve_kes(monkeypatch):
+    # replay birebir: 1/3 sonda; +1 teyitte kalan alinir; teyitsiz -2 kes
+    eng = yz.YZEngine(SimpleNamespace(scan_chains=("solana",)))
+    eng.balance = 100.0
+    now = time.time()
+
+    def sonda_poz():
+        return {"pair": "T / SOL", "chain": "solana", "entry_price": 1.0,
+                "last_price": 1.0, "opened_ts": now, "mfe_pct": 0.0,
+                "mae_pct": 0.0, "amount_token": 10.0, "cost_usd": 10.0,
+                "liq_entry": 200000.0, "sonda": True, "sonda_tam_usd": 30.0}
+
+    p = sonda_poz()
+    assert eng._eval_position(p, 1.011, now) is None  # teyit: olceklendi, tp degil
+    assert p["sonda"] is False and p["sonda_durum"] == "teyitli"
+    assert p["cost_usd"] == pytest.approx(30.0)
+    assert p["entry_price"] > 1.0  # harmanli giris
+    p2 = sonda_poz()
+    assert eng._eval_position(p2, 0.979, now) == "sonda_kes"
+    p3 = sonda_poz(); eng.balance = 5.0
+    assert eng._eval_position(p3, 1.011, now) is None
+    assert p3["sonda_durum"] == "olceklenemedi" and p3["cost_usd"] == 10.0

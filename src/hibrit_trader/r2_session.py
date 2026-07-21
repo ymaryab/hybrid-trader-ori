@@ -76,7 +76,7 @@ EXIT_INTERVAL_SEC = float(os.getenv("M_EXIT_INTERVAL_SEC", "2"))
 # Satis slippage tablosu — Runner Catcher agresif: normal 300 / felaket 1500
 EXIT_SLIPPAGE_BPS = {"tp_kilit_25": 300, "tp_kilit_40": 300, "runner_trail": 300,
                      "breakeven_stop": 300, "stop_gec": 500,
-                     "stop_felaket": 1500, "timeout_180": 300}
+                     "stop_felaket": 1500, "timeout_180": 300, "sonda_kes": 300}
 # 21 Tem korelasyon raporu: R2 sinifi (runner) SOL- girislerde kanadi
 # (R1 tarihi: SOL- net -861 vs SOL+ +139). sol_h1 esigin altindaysa giris
 # yok, adaylar rejim_reject (30dk recheck) ile izlenir. -999 = devre disi.
@@ -117,6 +117,12 @@ KISMI_ORAN_HARITASI = {"tp_kilit_25": KILIT_ORAN,
 TRAIL_T1 = float(os.getenv("R2_TRAIL_T1", "20"))              # tepe kari <50 iken
 TRAIL_T2 = float(os.getenv("R2_TRAIL_T2", "15"))              # 50..100
 TRAIL_T3 = float(os.getenv("R2_TRAIL_T3", "10"))              # >100 (ac gozluluk freni)
+# Sonda-ve-olcekle (22 Tem replay onayli; DEGISTIRME: dogrulama dongusu):
+# 1/3 sonda; +2 teyitte kalan alinir; teyitsiz -2 sonda_kes.
+SONDA_AKTIF = os.getenv("R2_SONDA", "1") == "1"
+SONDA_ORAN = float(os.getenv("R2_SONDA_ORAN", str(1/3)))
+SONDA_TEYIT_PCT = float(os.getenv("R2_SONDA_TEYIT", "2.0"))
+SONDA_KES_PCT = float(os.getenv("R2_SONDA_KES", "-2.0"))
 
 STATE_FILE = "r2_state.json"
 TRADES_FILE = "r2_trades.jsonl"
@@ -588,6 +594,9 @@ class R2Engine:
             return False
         if canli is not None and canli.fiyat > 0:
             eff_price = canli.fiyat
+        tam_usd = usd
+        if SONDA_AKTIF:
+            usd = round(tam_usd * SONDA_ORAN, 4)
         amount_token = usd / eff_price
         now = time.time()
         pos = {
@@ -615,6 +624,9 @@ class R2Engine:
             "mae_pct": 0.0,
             "last_price": eff_price,
         }
+        if SONDA_AKTIF:
+            pos["sonda"] = True
+            pos["sonda_tam_usd"] = round(tam_usd, 4)
         if canli is not None:
             if canli.tx_id:
                 pos["tx_al"] = canli.tx_id
@@ -646,6 +658,13 @@ class R2Engine:
             pos["mfe_pct"] = round(pnl_pct, 4)
         if pnl_pct < pos["mae_pct"]:
             pos["mae_pct"] = round(pnl_pct, 4)
+        if pos.get("sonda"):
+            if pnl_pct >= SONDA_TEYIT_PCT:
+                self._sonda_olcekle(pos, price, now)
+                entry = pos["entry_price"]
+                pnl_pct = (price / entry - 1) * 100 if entry > 0 else 0.0
+            elif pnl_pct <= SONDA_KES_PCT:
+                return "sonda_kes"
         age = now - pos["opened_ts"]
         # 1) Felaket freni (her an) -%15 alti
         if pnl_pct <= DISASTER_PCT:
@@ -687,6 +706,30 @@ class R2Engine:
         if age >= CEILING_SEC:
             return "timeout_180"
         return None
+
+    def _sonda_olcekle(self, pos: dict, price: float, now: float) -> None:
+        """Teyit geldi: kalan 2/3 alinir, giris harmanlanir. Replay'e birebir."""
+        ek_usd = round(float(pos.get("sonda_tam_usd") or 0) - pos["cost_usd"], 4)
+        gas = GAS_COST_USD.get(pos["chain"], 0.1)
+        if ek_usd <= 0 or self.balance < ek_usd + gas:
+            pos["sonda"] = False
+            pos["sonda_durum"] = "olceklenemedi"
+            return
+        slip = _mom_slippage(ek_usd, pos["liq_entry"])
+        fiyat_al = price * (1 + slip)
+        ek_amount = ek_usd / fiyat_al
+        yeni_amount = pos["amount_token"] + ek_amount
+        yeni_cost = pos["cost_usd"] + ek_usd
+        pos["entry_price"] = yeni_cost / yeni_amount
+        pos["amount_token"] = yeni_amount
+        pos["cost_usd"] = round(yeni_cost, 4)
+        pos["sonda"] = False
+        pos["sonda_durum"] = "teyitli"
+        self.balance -= (ek_usd + gas)
+        self._save()
+        log.warning("R2 SONDA TEYIT %s: +%%%.1f goruldu, kalan alindi "
+                    "(harmanli giris %.8g, tam maliyet $%.2f)",
+                    pos["pair"], SONDA_TEYIT_PCT, pos["entry_price"], pos["cost_usd"])
 
     def _fiyat_tazelendi(self, pos: dict, now: float) -> None:
         pos["_taze_fiyat_ts"] = now
@@ -747,6 +790,9 @@ class R2Engine:
     def _close_position(self, pos: dict, price: float, reason: str, now: float) -> None:
         if time.time() < pos.get("_sat_bekle_ts", 0.0):
             return
+        sonda_durum = (pos.get("sonda_durum")
+                       or ("kesildi" if reason == "sonda_kes"
+                           else ("teyitsiz" if pos.get("sonda") else None)))
         # R2 kismi: iki asamali kar kilidi; geri kalan tam satis
         kismi = reason in KISMI_ORAN_HARITASI
         cost = pos["cost_usd"]
@@ -820,6 +866,7 @@ class R2Engine:
             "tetik_gecikme_sec": tetik_gecikme,
             "opened_at": pos["opened_at"],
             "closed_at": _now_iso(),
+            "sonda_durum": sonda_durum,
         }
         if canli is not None and canli.tx_id:
             row["signature"] = canli.tx_id

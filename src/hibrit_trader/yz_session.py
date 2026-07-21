@@ -64,6 +64,13 @@ TIMEOUT_MIN = float(os.getenv("YZ_TIMEOUT_MIN", "60"))
 # olayindan (USOH rug -99.9 dahil). -20 kapagi tarihsel +25\$ kurtarir; feda
 # edilen dipten-donme kazanci ~1\$. Gracesiz, her an. 0 = devre disi.
 FELAKET_PCT = float(os.getenv("YZ_FELAKET_PCT", "-20"))
+# Sonda-ve-olcekle (22 Tem replay onayli; DEGISTIRME: dogrulama dongusu):
+# 1/3 sonda ile gir; +TEYIT goruldugunde kalan 2/3 alinir (harmanli giris);
+# teyitsizken -KES gorulurse sonda kapatilir. Teyit sonrasi normal kurallar.
+SONDA_AKTIF = os.getenv("YZ_SONDA", "1") == "1"
+SONDA_ORAN = float(os.getenv("YZ_SONDA_ORAN", str(1/3)))
+SONDA_TEYIT_PCT = float(os.getenv("YZ_SONDA_TEYIT", "1.0"))
+SONDA_KES_PCT = float(os.getenv("YZ_SONDA_KES", "-2.0"))
 DAILY_LOSS_LIMIT_USD = float(os.getenv("MOM_DAILY_LOSS_LIMIT_USD", "0"))
 DAILY_LOSS_LIMIT_PCT = float(os.getenv("MOM_DAILY_LOSS_LIMIT_PCT", "25"))
 COOLDOWN_LOSS_SEC = float(os.getenv("MOM_COOLDOWN_STOP_MIN", "60")) * 60
@@ -74,7 +81,7 @@ EXIT_INTERVAL_SEC = float(os.getenv("M_EXIT_INTERVAL_SEC", "2"))
 # Satis slippage tablosu (kullanici karari): normal 150 / stop_felaket 1000
 # stop_gec 300 tutuluyor, motor tetiklemiyor ama tablo tutarli olsun.
 EXIT_SLIPPAGE_BPS = {"tp_2": 150, "stop_gec": 300, "stop_felaket": 1000,
-                     "timeout_60": 300}
+                     "timeout_60": 300, "sonda_kes": 300}
 STOP_RETRY_ADET = 3
 STOP_RETRY_SEC = 3.0
 SAT_COOLDOWN_SEC = 20.0
@@ -515,6 +522,9 @@ class YZEngine:
             return False
         if canli is not None and canli.fiyat > 0:
             eff_price = canli.fiyat
+        tam_usd = usd
+        if SONDA_AKTIF:
+            usd = round(tam_usd * SONDA_ORAN, 4)  # 1/3 sonda; kalan teyitte alinir
         amount_token = usd / eff_price
         now = time.time()
         pos = {
@@ -542,6 +552,9 @@ class YZEngine:
             "mae_pct": 0.0,
             "last_price": eff_price,
         }
+        if SONDA_AKTIF:
+            pos["sonda"] = True
+            pos["sonda_tam_usd"] = round(tam_usd, 4)
         if canli is not None:
             if canli.tx_id:
                 pos["tx_al"] = canli.tx_id
@@ -573,6 +586,13 @@ class YZEngine:
             pos["mfe_pct"] = round(pnl_pct, 4)
         if pnl_pct < pos["mae_pct"]:
             pos["mae_pct"] = round(pnl_pct, 4)
+        if pos.get("sonda"):
+            if pnl_pct >= SONDA_TEYIT_PCT:
+                self._sonda_olcekle(pos, price, now)
+                entry = pos["entry_price"]
+                pnl_pct = (price / entry - 1) * 100 if entry > 0 else 0.0
+            elif pnl_pct <= SONDA_KES_PCT:
+                return "sonda_kes"
         if pnl_pct > TP_PCT:
             return "tp_2"
         if FELAKET_PCT < 0 and pnl_pct <= FELAKET_PCT:
@@ -580,6 +600,30 @@ class YZEngine:
         if TIMEOUT_MIN > 0 and (now - pos["opened_ts"]) >= TIMEOUT_MIN * 60:
             return "timeout_60"
         return None
+
+    def _sonda_olcekle(self, pos: dict, price: float, now: float) -> None:
+        """Teyit geldi: kalan 2/3 alinir, giris harmanlanir. Replay'e birebir."""
+        ek_usd = round(float(pos.get("sonda_tam_usd") or 0) - pos["cost_usd"], 4)
+        gas = GAS_COST_USD.get(pos["chain"], 0.1)
+        if ek_usd <= 0 or self.balance < ek_usd + gas:
+            pos["sonda"] = False
+            pos["sonda_durum"] = "olceklenemedi"
+            return
+        slip = _mom_slippage(ek_usd, pos["liq_entry"])
+        fiyat_al = price * (1 + slip)
+        ek_amount = ek_usd / fiyat_al
+        yeni_amount = pos["amount_token"] + ek_amount
+        yeni_cost = pos["cost_usd"] + ek_usd
+        pos["entry_price"] = yeni_cost / yeni_amount
+        pos["amount_token"] = yeni_amount
+        pos["cost_usd"] = round(yeni_cost, 4)
+        pos["sonda"] = False
+        pos["sonda_durum"] = "teyitli"
+        self.balance -= (ek_usd + gas)
+        self._save()
+        log.warning("YZ SONDA TEYIT %s: +%%%.1f goruldu, kalan alindi "
+                    "(harmanli giris %.8g, tam maliyet $%.2f)",
+                    pos["pair"], SONDA_TEYIT_PCT, pos["entry_price"], pos["cost_usd"])
 
     def _fiyat_tazelendi(self, pos: dict, now: float) -> None:
         pos["_taze_fiyat_ts"] = now
@@ -676,6 +720,9 @@ class YZEngine:
         price_ts = pos.pop("_price_ts", None)
         tetik_gecikme = round(now - price_ts, 3) if price_ts else None
 
+        sonda_durum = (pos.get("sonda_durum")
+                       or ("kesildi" if reason == "sonda_kes"
+                           else ("teyitsiz" if pos.get("sonda") else None)))
         row = {
             "trade_id": pos["trade_id"],
             "pair": pos["pair"],
@@ -708,6 +755,7 @@ class YZEngine:
             "tetik_gecikme_sec": tetik_gecikme,
             "opened_at": pos["opened_at"],
             "closed_at": _now_iso(),
+            "sonda_durum": sonda_durum,
         }
         if canli is not None and canli.tx_id:
             row["signature"] = canli.tx_id

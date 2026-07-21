@@ -159,3 +159,22 @@ def test_sol_eksi_rejim_kapisi(monkeypatch):
     monkeypatch.setattr(r2.R2Engine, "_sol_chg_h1", lambda self, c: 0.5)
     eng._enter(None)
     assert acilan == ["ADAY"]
+
+
+def test_sonda_teyit_2_ve_kes(monkeypatch):
+    eng = _eng(); eng.balance = 100.0
+    now = time.time()
+
+    def sonda_poz():
+        return {"pair": "T / SOL", "chain": "solana", "entry_price": 1.0,
+                "last_price": 1.0, "opened_ts": now, "mfe_pct": 0.0,
+                "mae_pct": 0.0, "amount_token": 10.0, "cost_usd": 10.0,
+                "liq_entry": 200000.0, "sonda": True, "sonda_tam_usd": 30.0}
+
+    p = sonda_poz()
+    assert eng._eval_position(p, 1.015, now) is None  # +1.5: R2 teyidi +2, henuz sonda
+    assert p["sonda"] is True
+    assert eng._eval_position(p, 1.021, now) is None  # +2.1: teyit
+    assert p["sonda"] is False and p["cost_usd"] == pytest.approx(30.0)
+    p2 = sonda_poz()
+    assert eng._eval_position(p2, 0.979, now) == "sonda_kes"
