@@ -29,6 +29,7 @@ def test_tp2_ve_60dk_kosulsuz_cikis():
                 "opened_ts": now - yas_dk * 60, "mfe_pct": 0.0, "mae_pct": 0.0}
 
     assert eng._eval_position(poz(), 1.03, now) == "tp_2"
-    assert eng._eval_position(poz(yas_dk=59), 0.7, now) is None      # stop hala yok
-    assert eng._eval_position(poz(yas_dk=61), 0.7, now) == "timeout_60"
+    assert eng._eval_position(poz(yas_dk=59), 0.85, now) is None     # -15: kapak alti, stop yok
+    assert eng._eval_position(poz(yas_dk=5), 0.79, now) == "stop_felaket"  # -21: kuyruk kapagi
+    assert eng._eval_position(poz(yas_dk=61), 0.9, now) == "timeout_60"
     assert eng._eval_position(poz(yas_dk=61), 1.01, now) == "timeout_60"

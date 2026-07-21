@@ -106,8 +106,9 @@ def test_v7hizli_eval_sadece_tp2(canli_data_dir, monkeypatch):
         tp_esik = mod.TP_PCT  # v7hizli varsayilan 2.0
         assert eng._eval_position(poz(), 1.0 * (1 + (tp_esik + 0.5) / 100), now) == "tp_2"
         assert eng._eval_position(poz(), 1.0 * (1 + (tp_esik - 0.5) / 100), now) is None
-        # stop/felaket yok: -%50 bile satis tetiklemez (60dk icinde)
-        assert eng._eval_position(poz(), 0.5, now) is None
+        # kuyruk kapagi (21 Tem): -%20 altinda felaket, -%15'te degil
+        assert eng._eval_position(poz(), 0.86, now) is None
+        assert eng._eval_position(poz(), 0.5, now) == "stop_felaket"
         # 21 Tem karari: 1 saat sonunda ne olursa olsun cikis
         assert eng._eval_position(poz(yas_sec=36000), 1.0, now) == "timeout_60"
     finally:
@@ -347,7 +348,7 @@ def test_canli_swap_api_dogrulama(canli_data_dir, monkeypatch):
 @pytest.mark.parametrize("kaynak,derin_kayip_beklenen", [
     ("r1", "stop_felaket"), ("r2", "stop_felaket"),
     ("v7", "stop_felaket"), ("v7d", "stop_felaket"),
-    ("v7hizli", None), ("v7ht", None), ("v7c", None), ("v7t", None),
+    ("v7hizli", "stop_felaket"), ("v7ht", None), ("v7c", None), ("v7t", None),
 ])
 def test_tum_kaynaklar_yukleniyor_ve_delege_ediyor(canli_data_dir, monkeypatch,
                                                    kaynak, derin_kayip_beklenen):

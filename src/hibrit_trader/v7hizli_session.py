@@ -66,6 +66,10 @@ SOL_H1_MIN = float(os.getenv("V7HIZLI_SOL_H1_MIN", "0.35"))
 # kazancin %87si ilk saatte; 6sa+ bekleyisin tum tarihsel getirisi 8$, cuval
 # maliyeti ~15 kati. 0 = devre disi.
 TIMEOUT_MIN = float(os.getenv("V7HIZLI_TIMEOUT_MIN", "60"))
+# 21 Tem kuyruk kapagi: canli tam pencere -15.7\$ ve zararin tamami 4 kuyruk
+# olayindan (USOH rug -99.9 dahil). -20 kapagi tarihsel +25\$ kurtarir; feda
+# edilen dipten-donme kazanci ~1\$. Gracesiz, her an. 0 = devre disi.
+FELAKET_PCT = float(os.getenv("V7HIZLI_FELAKET_PCT", "-20"))
 DAILY_LOSS_LIMIT_USD = float(os.getenv("MOM_DAILY_LOSS_LIMIT_USD", "0"))
 DAILY_LOSS_LIMIT_PCT = float(os.getenv("MOM_DAILY_LOSS_LIMIT_PCT", "25"))
 COOLDOWN_LOSS_SEC = float(os.getenv("MOM_COOLDOWN_STOP_MIN", "60")) * 60
@@ -577,6 +581,8 @@ class V7HizliEngine:
             pos["mae_pct"] = round(pnl_pct, 4)
         if pnl_pct > TP_PCT:
             return "tp_2"
+        if FELAKET_PCT < 0 and pnl_pct <= FELAKET_PCT:
+            return "stop_felaket"
         if TIMEOUT_MIN > 0 and (now - pos["opened_ts"]) >= TIMEOUT_MIN * 60:
             return "timeout_60"
         return None
