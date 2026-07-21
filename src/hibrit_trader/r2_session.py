@@ -74,7 +74,7 @@ COOLDOWN_EXIT_SEC = float(os.getenv("MOM_COOLDOWN_EXIT_MIN", "15")) * 60
 # 2s hizli cikis kadansi
 EXIT_INTERVAL_SEC = float(os.getenv("M_EXIT_INTERVAL_SEC", "2"))
 # Satis slippage tablosu — Runner Catcher agresif: normal 300 / felaket 1500
-EXIT_SLIPPAGE_BPS = {"tp_kilit_40": 300, "runner_trail": 300,
+EXIT_SLIPPAGE_BPS = {"tp_kilit_25": 300, "tp_kilit_40": 300, "runner_trail": 300,
                      "breakeven_stop": 300, "stop_gec": 500,
                      "stop_felaket": 1500, "timeout_180": 300}
 STOP_RETRY_ADET = 3
@@ -102,8 +102,14 @@ MIN_YAS_DK = float(os.getenv("R2_MIN_YAS_DK", "60"))          # rug zirhi: genc 
 BREAKEVEN_ARM_PCT = float(os.getenv("R2_BREAKEVEN_ARM_PCT", "10"))
 BREAKEVEN_FLOOR_PCT = float(os.getenv("R2_BREAKEVEN_FLOOR_PCT", "1.0"))
 RUNNER_ARM_PCT = float(os.getenv("R2_RUNNER_ARM_PCT", "25"))  # trail bu tepeden sonra devrede
-KILIT_PCT = float(os.getenv("R2_KILIT_PCT", "40"))            # 1/4 kar kilidi esigi
+# 21 Tem nesteri: iki asamali kar kilidi. Rug/gap sinifi (-175$) hep runner
+# asamasinda vuruyor; tepe aninda ceyrek kasada olsun, gap kalan yariyi vursun.
+KILIT1_PCT = float(os.getenv("R2_KILIT1_PCT", "25"))          # 1. kilit: orijinalin 1/4
+KILIT2_PCT = float(os.getenv("R2_KILIT2_PCT", "40"))          # 2. kilit: orijinalin 1/4 daha
 KILIT_ORAN = float(os.getenv("R2_KILIT_ORAN", "0.25"))
+# kalan uzerinden oranlar: 1. kilit 1/4; 2. kilit kalan 3/4 un 1/3 u = orijinal 1/4
+KISMI_ORAN_HARITASI = {"tp_kilit_25": KILIT_ORAN,
+                       "tp_kilit_40": KILIT_ORAN / (1.0 - KILIT_ORAN)}
 TRAIL_T1 = float(os.getenv("R2_TRAIL_T1", "20"))              # tepe kari <50 iken
 TRAIL_T2 = float(os.getenv("R2_TRAIL_T2", "15"))              # 50..100
 TRAIL_T3 = float(os.getenv("R2_TRAIL_T3", "10"))              # >100 (ac gozluluk freni)
@@ -647,8 +653,13 @@ class R2Engine:
                      else TRAIL_T2 if peak_pnl < 100 else TRAIL_T3)
             if price <= peak * (1 - trail / 100.0):
                 return "runner_trail"
-            # 3) +KILIT_PCT tepede 1/4 kar kilidi (tek sefer)
-            if (not pos.get("kilit_alindi")) and pnl_pct >= KILIT_PCT:
+            # 3) Iki asamali kar kilidi: +25'te 1/4, +40'ta 1/4 daha
+            asama = pos.get("kilit_asama")
+            if asama is None:
+                asama = 2 if pos.get("kilit_alindi") else 0  # eski tek-kilit uyumu
+            if asama < 1 and pnl_pct >= KILIT1_PCT:
+                return "tp_kilit_25"
+            if asama < 2 and pnl_pct >= KILIT2_PCT:
                 return "tp_kilit_40"
             return None
         # 4) Breakeven kilidi: mfe ARM'i gordikten sonra taban giris+FLOOR
@@ -721,13 +732,10 @@ class R2Engine:
     def _close_position(self, pos: dict, price: float, reason: str, now: float) -> None:
         if time.time() < pos.get("_sat_bekle_ts", 0.0):
             return
-        # R2 kismi: sadece tp_kilit_40 (1/4 kar kilidi); geri kalan tam satis
-        kismi = reason == "tp_kilit_40"
+        # R2 kismi: iki asamali kar kilidi; geri kalan tam satis
+        kismi = reason in KISMI_ORAN_HARITASI
         cost = pos["cost_usd"]
-        if kismi:
-            satilan_oran = KILIT_ORAN
-        else:
-            satilan_oran = 1.0
+        satilan_oran = KISMI_ORAN_HARITASI.get(reason, 1.0) if kismi else 1.0
         satilan_amount = pos["amount_token"] * satilan_oran
         satilan_cost = cost * satilan_oran
         slip = _mom_slippage(satilan_cost, pos["liq_entry"])
@@ -816,13 +824,17 @@ class R2Engine:
             pos["cost_usd"] = round(cost - satilan_cost, 4)
             if pos.get("canli_miktar"):
                 pos["canli_miktar"] -= canli_miktar_satilacak
+            pos["kilit_asama"] = 1 if reason == "tp_kilit_25" else 2
             pos["kilit_alindi"] = True
+            kalan = "3/4" if reason == "tp_kilit_25" else "1/2"
             self._save()
-            log.warning("R2 KAR KILIDI %s: +%%%.0f tepede 1/4 satildi pnl $%.2f "
-                        "(%.2f%%), kalan 3/4 runner trail ile kosuyor",
-                        pos["pair"], KILIT_PCT, pnl, pnl_pct)
-            notify("[R2] KAR KILIDI: %s +$%.2f (%%%.2f) — kalan 3/4 runner"
-                   % (pos["pair"], pnl, pnl_pct))
+            log.warning("R2 KAR KILIDI-%s %s: 1/4 satildi pnl $%.2f (%.2f%%), "
+                        "kalan %s runner trail ile kosuyor",
+                        "1" if reason == "tp_kilit_25" else "2",
+                        pos["pair"], pnl, pnl_pct, kalan)
+            notify("[R2] KAR KILIDI %s: %s +$%.2f (%%%.2f) — kalan %s runner"
+                   % ("+25" if reason == "tp_kilit_25" else "+40",
+                      pos["pair"], pnl, pnl_pct, kalan))
             return
         # Tam kapanis
         cd = COOLDOWN_LOSS_SEC if reason in ("stop_gec", "stop_felaket") else COOLDOWN_EXIT_SEC

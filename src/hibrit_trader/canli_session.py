@@ -717,8 +717,8 @@ class CanliEngine:
             "tp_partial_1": KISMI_ORAN1,
             "tp_partial_2": KISMI_ORAN2,
             "tp_runner_partial": KISMI_ORAN,
-            "tp_kilit_40": getattr(_kaynak, "KILIT_ORAN", None),
         }
+        _oran_haritasi.update(getattr(_kaynak, "KISMI_ORAN_HARITASI", {}))
         satilan_oran = _oran_haritasi.get(reason) or 1.0
         kismi = reason in _oran_haritasi and _oran_haritasi[reason] is not None
         cost = pos["cost_usd"]
@@ -828,14 +828,15 @@ class CanliEngine:
                             pos["pair"], pnl, pnl_pct, pos["runner_peak"], TRAIL_PCT)
                 notify("[CANLI] PARTIAL-2/3: %s +$%.2f (%%%.2f) — kalan 1/3 runner (peak %.8g)"
                        % (pos["pair"], pnl, pnl_pct, pos["runner_peak"]))
-            elif reason == "tp_kilit_40":
-                # R2 kaynak: kar kilidi alindi, kalan runner trail ile devam
+            elif reason in ("tp_kilit_25", "tp_kilit_40"):
+                # R2 kaynak: iki asamali kar kilidi, kalan runner trail ile devam
+                pos["kilit_asama"] = 1 if reason == "tp_kilit_25" else 2
                 pos["kilit_alindi"] = True
                 self._save()
-                log.warning("CANLI KAR KILIDI %s: 1/4 satildi pnl $%.2f (%.2f%%), "
-                            "kalan 3/4 runner", pos["pair"], pnl, pnl_pct)
-                notify("[CANLI] KAR KILIDI: %s +$%.2f (%%%.2f) — kalan 3/4 runner"
-                       % (pos["pair"], pnl, pnl_pct))
+                log.warning("CANLI KAR KILIDI %s %s: 1/4 satildi pnl $%.2f (%.2f%%)",
+                            reason[-2:], pos["pair"], pnl, pnl_pct)
+                notify("[CANLI] KAR KILIDI +%s: %s +$%.2f (%%%.2f)"
+                       % (reason[-2:], pos["pair"], pnl, pnl_pct))
             return
         cd = COOLDOWN_LOSS_SEC if reason in ("stop_gec", "stop_felaket") else COOLDOWN_EXIT_SEC
         if pos.get("token_address"):

@@ -58,12 +58,20 @@ def test_ratchet_trail_kademeleri():
     assert eng._eval_position(p, 2.24, now) == "runner_trail"
 
 
-def test_kar_kilidi_tek_sefer():
+def test_iki_asamali_kar_kilidi():
     eng = _eng(); now = time.time()
-    p = _poz(now, mfe=41.0); p["runner_peak"] = 1.41
+    # asama 0 + pnl 30: once kilit-1 (+25)
+    p = _poz(now, mfe=30.0); p["runner_peak"] = 1.30
+    assert eng._eval_position(p, 1.295, now) == "tp_kilit_25"
+    # asama 1 + pnl 41: kilit-2 (+40)
+    p = _poz(now, mfe=41.0); p["runner_peak"] = 1.41; p["kilit_asama"] = 1
     assert eng._eval_position(p, 1.405, now) == "tp_kilit_40"
+    # asama 2: baska kilit yok, trail devrede
+    p = _poz(now, mfe=41.0); p["runner_peak"] = 1.41; p["kilit_asama"] = 2
+    assert eng._eval_position(p, 1.405, now) is None
+    # eski tek-kilit uyumu: kilit_alindi=True -> asama 2 sayilir
     p2 = _poz(now, mfe=41.0, kilit=True); p2["runner_peak"] = 1.41
-    assert eng._eval_position(p2, 1.405, now) is None  # kilit zaten alindi
+    assert eng._eval_position(p2, 1.405, now) is None
 
 
 def test_grace_ve_timeout():
@@ -110,8 +118,10 @@ def test_trail_arming_yolu_peak_kaydeder():
     # pozisyonda peak kaydedilmeli ve dususte trail tetiklenmeli
     eng = _eng(); now = time.time()
     p = _poz(now, mfe=30.0)  # runner_peak YOK (bug tam burada yasiyordu)
-    assert eng._eval_position(p, 1.30, now) is None  # arm + peak kaydi
+    # arm aninda peak kaydedilir VE erken kilit ateslenir (21 Tem nesteri)
+    assert eng._eval_position(p, 1.30, now) == "tp_kilit_25"
     assert p.get("runner_peak") == 1.30
+    p["kilit_asama"] = 2
     assert eng._eval_position(p, 1.03, now) == "runner_trail"  # 1.30*0.8=1.04
 
 
