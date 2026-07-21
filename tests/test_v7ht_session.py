@@ -40,9 +40,9 @@ def test_eval_tp2_ve_cuval_tasfiyesi(monkeypatch):
                 "opened_ts": now - yas_dk * 60, "mfe_pct": 0.0, "mae_pct": 0.0}
 
     assert eng._eval_position(poz(), 1.03, now) == "tp_2"
-    assert eng._eval_position(poz(yas_dk=30), 0.7, now) is None  # stop yok
-    assert eng._eval_position(poz(yas_dk=361), 0.9, now) == "timeout_cuval"
-    assert eng._eval_position(poz(yas_dk=359), 0.9, now) is None
+    assert eng._eval_position(poz(yas_dk=29), 0.7, now) is None  # stop yok
+    assert eng._eval_position(poz(yas_dk=31), 0.9, now) == "timeout_cuval"
+    assert eng._eval_position(poz(yas_dk=28), 0.9, now) is None
 
 
 def test_tavanlar_girisi_keser(monkeypatch):

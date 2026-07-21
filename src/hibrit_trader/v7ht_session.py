@@ -69,9 +69,9 @@ SOL_H1_MIN = float(os.getenv("V7HT_SOL_H1_MIN", "0.35"))
 # A/B tavanlari (R1 kalibrasyonuyla ayni): pompa/parabolik giris reddi
 H1_MAX = float(os.getenv("V7HT_H1_MAX", "150"))
 M5_MAX = float(os.getenv("V7HT_M5_MAX", "75"))
-# Cuval tasfiyesi (21 Tem kalibrasyon): kazananlarin p95 hold=281dk; cuvallar
-# 10-57 saat curuyor. 360dk TP gormeyen pozisyon kapatilir. 0 = devre disi.
-TIMEOUT_MIN = float(os.getenv("V7HT_TIMEOUT_MIN", "360"))
+# Cuval tasfiyesi: 21 Tem kullanici karari 30dk (ilk kalibrasyon 360 idi).
+# 0 = devre disi.
+TIMEOUT_MIN = float(os.getenv("V7HT_TIMEOUT_MIN", "30"))
 DAILY_LOSS_LIMIT_USD = float(os.getenv("MOM_DAILY_LOSS_LIMIT_USD", "0"))
 DAILY_LOSS_LIMIT_PCT = float(os.getenv("MOM_DAILY_LOSS_LIMIT_PCT", "25"))
 COOLDOWN_LOSS_SEC = float(os.getenv("MOM_COOLDOWN_STOP_MIN", "60")) * 60
