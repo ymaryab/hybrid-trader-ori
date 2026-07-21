@@ -37,53 +37,67 @@ from pathlib import Path
 
 import httpx
 
-from hibrit_trader.broker import ExecOrder, PaperExecBroker, jupiter_referans_fiyat
-from hibrit_trader.config import API, GAS_COST_USD
-from hibrit_trader.dexscreener_scan import pair_from_dexscreener
+from hibrit_trader.broker import ExecOrder, PaperExecBroker, init_motor_exec, make_exec_broker  # noqa: F401
+from hibrit_trader.config import GAS_COST_USD
 from hibrit_trader.entry_fresh import (
     HuniSayac,
     rejim_reject_kaydet,
     safety_reject_kaydet,
     taze_teyit,
 )
+from hibrit_trader.fast_price import get_feed
 from hibrit_trader.killswitch import is_active as kill_is_active
+from hibrit_trader.killswitch import notify
+from hibrit_trader.uyari_notify import kritik_uyari
 from hibrit_trader.live_sim import fetch_pool_snapshot
-from hibrit_trader.m1_session import SEED_TOKENS, _best_sane_pool, _light_honeypot_ok
+from hibrit_trader import aday_paylastir
 from hibrit_trader.momentum_session import (
     SCAN_INTERVAL_SEC,
     _data_dir,
     _mom_slippage,
     sol_chg_h1,
+    yas_str,
 )
 from hibrit_trader.paper import _now_iso, new_trade_id
 from hibrit_trader.price_sanity import guard_price
 from hibrit_trader.safety import check_token
+from hibrit_trader.scanner import scan_all_cached as scan_all
 
 log = logging.getLogger(__name__)
 
-# ---- V7C esikleri: v7 varsayilanlari; farklar evren likiditesi + h1 bandi 2..10
-CHG_H1_MIN = 2.0
-CHG_H1_MAX = 10.0
-LIQ_MIN_USD = float(os.getenv("V7C_MIN_LIQ_USD", "3000000"))  # evren + giris esigi
-UNIVERSE_REFRESH_SEC = 24 * 3600
+# ---- V7C esikleri (kullanici kural seti 2026-07-15) --------------------
+CHG_H1_MIN = float(os.getenv("V7C_CHG_H1_MIN", "10"))
+CHG_H1_MAX = float(os.getenv("V7C_CHG_H1_MAX", "50"))
+LIQ_MIN_USD = float(os.getenv("V7C_LIQ_MIN_USD", "100000"))
 MAX_SLOTS = 5
 START_BALANCE = float(os.getenv("V7C_START_BALANCE", "1000"))
-TP_PCT = 2.0            # +%2 UZERI satar (14 Tem: v7 ile birebir, esitlik satmaz)
-GRACE_SEC = 120 * 60    # 14 Tem: v7 ile birebir 120dk
-LATE_STOP_PCT = -2.0
-CEILING_SEC = 120 * 60  # 14 Tem: v7 ile birebir 120dk
-SOL_H1_MIN = 0.5
+TP_PCT = float(os.getenv("V7C_TP_PCT", "2.0"))
+SOL_H1_MIN = float(os.getenv("V7C_SOL_H1_MIN", "0.35"))
+# 21 Tem kullanici karari: 30dk sonunda NE OLURSA OLSUN cikis. 0 = devre disi.
+TIMEOUT_MIN = float(os.getenv("V7C_TIMEOUT_MIN", "30"))
 DAILY_LOSS_LIMIT_USD = float(os.getenv("MOM_DAILY_LOSS_LIMIT_USD", "0"))
+DAILY_LOSS_LIMIT_PCT = float(os.getenv("MOM_DAILY_LOSS_LIMIT_PCT", "25"))
 COOLDOWN_LOSS_SEC = float(os.getenv("MOM_COOLDOWN_STOP_MIN", "60")) * 60
 COOLDOWN_EXIT_SEC = float(os.getenv("MOM_COOLDOWN_EXIT_MIN", "15")) * 60
 
+# 2s hizli cikis kadansi (v6/v7d ile ayni)
+EXIT_INTERVAL_SEC = float(os.getenv("M_EXIT_INTERVAL_SEC", "2"))
+# Satis slippage tablosu (kullanici karari): normal 150 / stop_felaket 1000
+# stop_gec 300 tutuluyor, motor tetiklemiyor ama tablo tutarli olsun.
+EXIT_SLIPPAGE_BPS = {"tp_2": 150, "stop_gec": 300, "stop_felaket": 1000,
+                     "timeout_30": 300}
+STOP_RETRY_ADET = 3
+STOP_RETRY_SEC = 3.0
+SAT_COOLDOWN_SEC = 20.0
+KOR_FIYAT_SEC = 120.0
+KOR_ALARM_ARALIK_SEC = 60.0
+
 STATE_FILE = "v7c_state.json"
 TRADES_FILE = "v7c_trades.jsonl"
-UNIVERSE_FILE = "v7c_universe.json"
 
 
 class V7CEngine:
-    """Sanal senaryo motoru. Kendi dosyalari, diger motorlara sifir dokunus."""
+    """TP=+%2 tek cikis paper motoru. Kendi dosyalari, sifir dokunus."""
 
     def __init__(self, settings) -> None:
         self.settings = settings
@@ -497,53 +511,137 @@ class V7CEngine:
             "mae_pct": 0.0,
             "last_price": eff_price,
         }
+        if canli is not None:
+            if canli.tx_id:
+                pos["tx_al"] = canli.tx_id
+            if canli.miktar_token > 0:
+                pos["canli_miktar"] = canli.miktar_token
         self.balance -= (usd + gas)
         self.positions.append(pos)
         self._save()
-        log.warning("V7C BUY %s $%.2f @ %.8g (h1 %.1f%%, liq $%.0f)",
-                    pair.name, usd, eff_price, pair.chg_h1, pair.liquidity_usd)
+        feed = get_feed()
+        if feed is not None:
+            feed.add_pool(pos["pool_address"])
+        aday_paylastir.kaydet(pair.token_address, "v7c", pair.name)
+        log.warning("V7C BUY %s $%.2f @ %.8g (h1 %.1f%%, liq $%.0f, yas %s)",
+                    pair.name, usd, eff_price, pair.chg_h1, pair.liquidity_usd, yas_str(pair.pool_created_at))
+        notify("[V7C] ALIM: %s $%.2f @ %.8g (h1 %%%.1f, liq $%.0f)"
+               % (pair.name, usd, eff_price, pair.chg_h1, pair.liquidity_usd))
         return True
 
-    # ---- Cikis: v7 ile birebir (tp_2 +%2 uzeri / stop_gec / timeout_120) ----------
+    # ---- Cikis: SADECE tp_2 (+%2 uzeri). Stop yok, zaman asimi yok. ----------
+    def _eval_position(self, pos: dict, price: float, now: float,
+                       liquidity_usd: float | None = None) -> str | None:
+        price, ariza = guard_price(pos, price, now, "V7C", liquidity_usd=liquidity_usd)
+        if ariza:
+            return None
+        pos["last_price"] = price
+        entry = pos["entry_price"]
+        pnl_pct = (price / entry - 1) * 100 if entry > 0 else 0.0
+        if pnl_pct > pos["mfe_pct"]:
+            pos["mfe_pct"] = round(pnl_pct, 4)
+        if pnl_pct < pos["mae_pct"]:
+            pos["mae_pct"] = round(pnl_pct, 4)
+        if pnl_pct > TP_PCT:
+            return "tp_2"
+        if TIMEOUT_MIN > 0 and (now - pos["opened_ts"]) >= TIMEOUT_MIN * 60:
+            return "timeout_30"
+        return None
+
+    def _fiyat_tazelendi(self, pos: dict, now: float) -> None:
+        pos["_taze_fiyat_ts"] = now
+        if pos.pop("kor_fiyat", None):
+            pos.pop("_kor_alarm_ts", None)
+            log.warning("V7C kor fiyat sona erdi %s", pos["pair"])
+
     def _manage_exits(self, client: httpx.Client) -> None:
         now = time.time()
+        feed = get_feed()
         for pos in list(self.positions):
-            price, liq = fetch_pool_snapshot(client, pos["chain"], pos["pool_address"])
+            rec = feed.get_price(pos["pool_address"]) if feed is not None else None
+            liq = None
+            if rec is not None:
+                price, sample_ts = rec
+                src = "fast"
+            else:
+                price, liq = fetch_pool_snapshot(client, pos["chain"], pos["pool_address"])
+                sample_ts, src = None, "poll"
             if price is None or price <= 0:
                 price = pos["last_price"]
-            price, ariza = guard_price(pos, price, now, "V7C", liquidity_usd=liq)
-            if ariza:
-                continue
-            pos["last_price"] = price
-            entry = pos["entry_price"]
-            pnl_pct = (price / entry - 1) * 100 if entry > 0 else 0.0
-            if pnl_pct > pos["mfe_pct"]:
-                pos["mfe_pct"] = round(pnl_pct, 4)
-            if pnl_pct < pos["mae_pct"]:
-                pos["mae_pct"] = round(pnl_pct, 4)
-            age = now - pos["opened_ts"]
-
-            reason = None
-            if pnl_pct > TP_PCT:
-                reason = "tp_2"
-            elif age >= GRACE_SEC and pnl_pct <= LATE_STOP_PCT:
-                reason = "stop_gec"
-            elif age >= CEILING_SEC:
-                reason = "timeout_120"
+                sample_ts, src = None, "poll"
+                taze_yas = now - (pos.get("_taze_fiyat_ts") or pos["opened_ts"])
+                if taze_yas >= KOR_FIYAT_SEC:
+                    pos["kor_fiyat"] = True
+                    if now - pos.get("_kor_alarm_ts", 0.0) >= KOR_ALARM_ARALIK_SEC:
+                        pos["_kor_alarm_ts"] = now
+                        log.critical(
+                            "V7C KOR FIYAT %s: %.0fs'dir taze fiyat yok "
+                            "(TP tetiklenemeyebilir)", pos["pair"], taze_yas)
+            else:
+                self._fiyat_tazelendi(pos, now)
+            reason = self._eval_position(pos, price, now, liquidity_usd=liq)
             if reason:
+                pos["_price_src"] = src
+                pos["_price_ts"] = sample_ts
+                self._close_position(pos, price, reason, now)
+
+    def fast_exit_tick(self) -> None:
+        if not self.positions:
+            return
+        feed = get_feed()
+        if feed is None:
+            return
+        now = time.time()
+        for pos in list(self.positions):
+            rec = feed.get_price(pos["pool_address"])
+            if rec is None:
+                continue
+            price, sample_ts = rec
+            self._fiyat_tazelendi(pos, now)
+            reason = self._eval_position(pos, price, now)
+            if reason:
+                pos["_price_src"] = "fast"
+                pos["_price_ts"] = sample_ts
                 self._close_position(pos, price, reason, now)
 
     def _close_position(self, pos: dict, price: float, reason: str, now: float) -> None:
+        if time.time() < pos.get("_sat_bekle_ts", 0.0):
+            return
         cost = pos["cost_usd"]
         slip = _mom_slippage(cost, pos["liq_entry"])
         eff_price = price * (1 - slip)
-        self._exec_fill("sat", pos["token_address"],
-                        amount_token=pos["amount_token"], ref_fiyat=eff_price)
+        karar_cikis = eff_price
+        sat_bps = EXIT_SLIPPAGE_BPS.get(reason, 150)
+        deneme = STOP_RETRY_ADET if reason in ("stop_gec", "stop_felaket") else 1
+        devam, canli = False, None
+        for i in range(deneme):
+            devam, canli = self._exec_fill("sat", pos["token_address"],
+                                           amount_token=pos.get("canli_miktar")
+                                           or pos["amount_token"],
+                                           ref_fiyat=eff_price,
+                                           slippage_bps=sat_bps,
+                                           acilis_ts=pos["opened_ts"])
+            if devam:
+                break
+            if i + 1 < deneme:
+                log.warning("V7C SATIS TEKRAR %s (%s): deneme %d/%d basarisiz",
+                            pos["pair"], reason, i + 1, deneme)
+                time.sleep(STOP_RETRY_SEC)
+        if not devam:
+            pos["_sat_bekle_ts"] = time.time() + SAT_COOLDOWN_SEC
+            log.error("V7C SATIS ERTELENDI %s: canli satis gerceklesmedi", pos["pair"])
+            kritik_uyari("SATIS ERTELENDI", f"sat:v7c:{pos['pair']}", f"V7C {pos['pair']}: canli satis fail, retry cooldown")
+            return
+        if canli is not None and canli.fiyat > 0:
+            eff_price = canli.fiyat
         gas = GAS_COST_USD.get(pos["chain"], 0.1)
         proceeds = pos["amount_token"] * eff_price - gas
         pnl = proceeds - cost
         hold_sec = round(now - pos["opened_ts"], 1)
         pnl_pct = (eff_price / pos["entry_price"] - 1) * 100 if pos["entry_price"] > 0 else 0.0
+        price_src = pos.pop("_price_src", "poll")
+        price_ts = pos.pop("_price_ts", None)
+        tetik_gecikme = round(now - price_ts, 3) if price_ts else None
 
         row = {
             "trade_id": pos["trade_id"],
