@@ -62,6 +62,8 @@ MAX_SLOTS = 5
 START_BALANCE = float(os.getenv("V7T_START_BALANCE", "1000"))
 TP_PCT = float(os.getenv("V7T_TP_PCT", "1.5"))
 SOL_H1_MIN = float(os.getenv("V7T_SOL_H1_MIN", "0.35"))
+# 21 Tem kullanici karari: 20dk sonunda NE OLURSA OLSUN cikis. 0 = devre disi.
+TIMEOUT_MIN = float(os.getenv("V7T_TIMEOUT_MIN", "20"))
 DAILY_LOSS_LIMIT_USD = float(os.getenv("MOM_DAILY_LOSS_LIMIT_USD", "0"))
 DAILY_LOSS_LIMIT_PCT = float(os.getenv("MOM_DAILY_LOSS_LIMIT_PCT", "25"))
 COOLDOWN_LOSS_SEC = float(os.getenv("MOM_COOLDOWN_STOP_MIN", "60")) * 60
@@ -71,7 +73,8 @@ COOLDOWN_EXIT_SEC = float(os.getenv("MOM_COOLDOWN_EXIT_MIN", "15")) * 60
 EXIT_INTERVAL_SEC = float(os.getenv("M_EXIT_INTERVAL_SEC", "2"))
 # Satis slippage tablosu (kullanici karari): normal 150 / stop_felaket 1000
 # stop_gec 300 tutuluyor, motor tetiklemiyor ama tablo tutarli olsun.
-EXIT_SLIPPAGE_BPS = {"tp_2": 150, "stop_gec": 300, "stop_felaket": 1000}
+EXIT_SLIPPAGE_BPS = {"tp_2": 150, "stop_gec": 300, "stop_felaket": 1000,
+                     "timeout_20": 300}
 STOP_RETRY_ADET = 3
 STOP_RETRY_SEC = 3.0
 SAT_COOLDOWN_SEC = 20.0
@@ -572,6 +575,8 @@ class V7TEngine:
             pos["mae_pct"] = round(pnl_pct, 4)
         if pnl_pct > TP_PCT:
             return "tp_2"
+        if TIMEOUT_MIN > 0 and (now - pos["opened_ts"]) >= TIMEOUT_MIN * 60:
+            return "timeout_20"
         return None
 
     def _fiyat_tazelendi(self, pos: dict, now: float) -> None:
