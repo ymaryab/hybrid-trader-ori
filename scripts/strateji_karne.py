@@ -7,6 +7,10 @@ Bir motorun defterinden 8 metrigi hesaplar ve esiklerle karsilastirir:
   walk-forward pozitif (kronolojik 2. yari neti >0, parametre fit'i yok)
   canli-paper islem basi getiri farki <%15 (canli veri varsa)
 
+Karnenin ustunde CONFIDENCE: olcumun kendisine guven (21 Tem, kullanici):
+  orneklem n/(n+22) x kapsam (gun cesitliligi) x canli-dogrulama.
+  8/8 gecen ama 40 islemlik strateji dusuk guvenlidir; 1000 islemlik baska.
+
 Kullanim: python scripts/strateji_karne.py <motor>   (or: yz, v7hizli, r2...)
 """
 
@@ -137,6 +141,15 @@ def karne(motor: str) -> int:
     print(f"  SONUC: {gecen}/{toplam} kriter gecti"
           + ("  -> ISTATISTIKSEL OLARAK DESTEKLI" if gecen == toplam and toplam == len(ESIKLER)
              else "  -> henuz 'iyi fikir' statusunde"))
+    # ---- Confidence: olcume guven skoru --------------------------------
+    gun_sayisi = len({time.strftime("%Y-%m-%d", time.gmtime(p["ts"])) for p in P})
+    orneklem = max(0.02, n / (n + 22.0))
+    kapsam = 0.7 + 0.3 * min(1.0, gun_sayisi / 10.0)
+    dogrulama = 0.8 + 0.2 * min(1.0, len(canli_rows) / 30.0)
+    conf = 100.0 * orneklem * kapsam * dogrulama
+    print(f"  CONFIDENCE: %{conf:.0f}  (orneklem %{orneklem*100:.0f} [n={n}] x "
+          f"kapsam %{kapsam*100:.0f} [{gun_sayisi} gun] x "
+          f"canli-dogrulama %{dogrulama*100:.0f} [{len(canli_rows)} imzali])")
     return 0
 
 
