@@ -175,6 +175,12 @@ def _start_engine() -> None:
             from hibrit_trader.v7ht_session import V7HTEngine
             v7ht = V7HTEngine(settings)
             threading.Thread(target=v7ht.run_forever, daemon=True).start()
+        if os.getenv("YZ_ENABLED", "1") != "0":
+            # YZ motoru (21 Tem): damitilmis canli cekirdek. TP+2 + 60dk
+            # giyotin + -20 kuyruk kapagi. SABIT PAPER, yz_* dosyalari.
+            from hibrit_trader.yz_session import YZEngine
+            yz = YZEngine(settings)
+            threading.Thread(target=yz.run_forever, daemon=True).start()
         if os.getenv("SV1_ENABLED", "1") != "0":
             # SV1: eski Spotroader/hibrit-trader repodan klon; v7hizli iskeleti
             # uzerinde ilk versiyon. sv1_* dosyalarina yazar. Broker-gomulu.
@@ -794,13 +800,13 @@ def api_filo(limit: int = Query(30)) -> dict:
     data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
     now = time.time()
     out: dict = {"ts": round(now, 3)}
-    for prefix in ("v7", "v7c", "v7d", "v7hizli", "v7ht", "r1", "r2", "v7t"):
+    for prefix in ("v7", "v7c", "v7d", "v7hizli", "v7ht", "yz", "r1", "r2", "v7t"):
         out[prefix] = _motor_ozet(data_dir, prefix, now, limit)
     # CANLI 10. motoru: dosya prefix'i "canli_" ama out key "canlim" (cuzdan
     # _canli_blok ile cakismasin, o eski key "canli"yi kullanmaya devam eder).
     out["canlim"] = _motor_ozet(data_dir, "canli", now, limit)
     out["cmp"] = {p: out[p]["summary"]["realized_pnl"]
-                  for p in ("v7", "v7c", "v7d", "v7hizli", "v7ht", "r1", "r2", "v7t", "canlim")}
+                  for p in ("v7", "v7c", "v7d", "v7hizli", "v7ht", "yz", "r1", "r2", "v7t", "canlim")}
     out["kill"] = is_active()
     # rejim rozeti: paylasimli sol_h1 cache + BTC m15 macro (cache'li fetch)
     from hibrit_trader.momentum_session import sol_h1_son_olcum
@@ -854,6 +860,7 @@ def api_filo(limit: int = Query(30)) -> dict:
     tum_pozlar += _paper_bot("V7D", "v7d")
     tum_pozlar += _paper_bot("V7HIZLI", "v7hizli")
     tum_pozlar += _paper_bot("V7HT", "v7ht")
+    tum_pozlar += _paper_bot("YZ", "yz")
     tum_pozlar += _paper_bot("R1", "r1")
     tum_pozlar += _paper_bot("R2", "r2")
     tum_pozlar += _paper_bot("V7T", "v7t")
@@ -926,6 +933,11 @@ def api_v7ht_equity(minutes: int = Query(0, ge=0)) -> dict:
 @app.get("/api/r2/equity")
 def api_r2_equity(minutes: int = Query(0, ge=0)) -> dict:
     return _equity_series("r2", minutes)
+
+
+@app.get("/api/yz/equity")
+def api_yz_equity(minutes: int = Query(0, ge=0)) -> dict:
+    return _equity_series("yz", minutes)
 
 
 @app.get("/api/sv1/equity")
@@ -1571,6 +1583,9 @@ _FILO_MOTORLAR: list[dict] = [
     {"id": "v7ht", "tip": "bot", "ad": "V7HT", "renk": "#56d364", "slots": 5,
      "rozet": "v7hizli A/B · tavan+6sa tasfiye",
      "desc": "V7HT: v7hizli klonu A/B · ayni giris/cikis + h1&le;150 + m5&le;75 tavan + 6sa TP gormeyen pozisyon tasfiyesi (timeout_cuval)"},
+    {"id": "yz", "tip": "bot", "ad": "YZ", "renk": "#2ea8ff", "slots": 5,
+     "rozet": "damıtılmış çekirdek",
+     "desc": "YZ: haftaların verisinden damıtılmış canlı çekirdek · h1 5-45 + liq&ge;$100k · TP+%2 tek çıkış · 60dk koşulsuz çıkış · -%20 kuyruk kapağı"},
     {"id": "v7d", "tip": "bot", "ad": "V7D", "renk": "#ff9f43", "slots": 5,
      "rozet": "hızlı çıkış",
      "desc": "hızlı çıkış: liq&ge;$150k · h1 10..50 · tp+2 · felaket -%15 · 15dk sabır stop-2 · 20dk tavan"},
@@ -1626,7 +1641,7 @@ def _filo_kart(m: dict, canli_durum: str = "yok") -> str:
     # Canliya-al butonu: broker-gomulu 5 motor icin
     swap_btn = ""
     # canli_session delegasyonu (21 Tem): tum aktif motorlar canliya alinabilir
-    if m["id"] in ("v7", "v7c", "v7d", "v7hizli", "v7ht", "r1", "r2", "v7t"):
+    if m["id"] in ("v7", "v7c", "v7d", "v7hizli", "v7ht", "yz", "r1", "r2", "v7t"):
         swap_btn = (f'<button class="canli-al-btn" data-motor="{m["id"]}" '
                     f'onclick="canliAl(\'{m["id"]}\',\'{m["ad"]}\')" '
                     f'title="Canlıya al">🔴 al</button>')
