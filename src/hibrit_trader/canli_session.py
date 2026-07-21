@@ -63,7 +63,20 @@ log = logging.getLogger(__name__)
 
 # ---- Kaynak motor secimi (kural seti) -----------------------------------
 KAYNAK_MOTOR = os.getenv("CANLI_KAYNAK_MOTOR", "r1").strip().lower()
-DESTEKLENEN_KAYNAKLAR = {"r1", "v7hizli"}  # 20 Tem: v7hizli eklendi
+# 21 Tem genellestirme: tum aktif paper motorlar canliya alinabilir.
+# Giris (_enter) ve cikis (_eval_position) kaynak motorun Engine sinifina
+# DELEGE edilir; boylece kural seti kopya degil, birebir ayni kod calisir.
+_KAYNAK_KAYITLARI = {
+    "r1": ("r1_session", "R1Engine"),
+    "r2": ("r2_session", "R2Engine"),
+    "v7": ("v7_session", "V7Engine"),
+    "v7c": ("v7c_session", "V7CEngine"),
+    "v7d": ("v7d_session", "V7DEngine"),
+    "v7t": ("v7t_session", "V7TEngine"),
+    "v7hizli": ("v7hizli_session", "V7HizliEngine"),
+    "v7ht": ("v7ht_session", "V7HTEngine"),
+}
+DESTEKLENEN_KAYNAKLAR = set(_KAYNAK_KAYITLARI)
 if KAYNAK_MOTOR not in DESTEKLENEN_KAYNAKLAR:
     raise RuntimeError(
         f"CANLI_KAYNAK_MOTOR={KAYNAK_MOTOR} destekli degil "
@@ -71,12 +84,11 @@ if KAYNAK_MOTOR not in DESTEKLENEN_KAYNAKLAR:
         "Yeni kaynak icin canli_session.py'ye ithal ekle."
     )
 
-if KAYNAK_MOTOR == "v7hizli":
-    # V7HIZLI kural seti (20 Tem kullanici karari): TP+%2 tek cikis,
-    # stop/theta/timeout YOK. R1'e ozgu sabitler None kalir.
-    from hibrit_trader import v7hizli_session as _kaynak
-else:
-    from hibrit_trader import r1_session as _kaynak
+import importlib as _importlib
+
+_mod_adi, _sinif_adi = _KAYNAK_KAYITLARI[KAYNAK_MOTOR]
+_kaynak = _importlib.import_module(f"hibrit_trader.{_mod_adi}")
+_KaynakEngine = getattr(_kaynak, _sinif_adi)
 
 CHG_H1_MIN = _kaynak.CHG_H1_MIN
 CHG_H1_MAX = _kaynak.CHG_H1_MAX
@@ -525,75 +537,13 @@ class CanliEngine:
     def _sol_chg_h1(self, client: httpx.Client) -> float | None:
         return sol_chg_h1(client)
 
-    # ---- Giris ---------------------------------------------------------------
+    # ---- Giris: kaynak motorun _enter'ina DELEGE (21 Tem) --------------------
+    # Kaynak kendi giris filtrelerini (band, tavanlar, yas, m5...) kendi modul
+    # sabitleriyle uygular; pozisyon acilisi self._open_position uzerinden
+    # CANLI'nin canli-emirli yoluna gelir. aday_paylastir iddia etiketi kaynak
+    # motor id'siyle gider (PAYLASTIR kapali, kozmetik).
     def _enter(self, client: httpx.Client) -> None:
-        empty = MAX_SLOTS - len(self.positions)
-        if empty <= 0 or self.balance <= 1.0:
-            return
-        if self._entries_blocked():
-            return
-        try:
-            pairs = scan_all(self.settings.scan_chains)
-        except Exception as e:
-            log.warning("CANLI giris tick atlandi, tarama hatasi: %r", e)
-            return
-        held = {p["pool_address"] for p in self.positions}
-        held |= {p["token_address"] for p in self.positions if p.get("token_address")}
-        now = time.time()
-        self._cooldown_until = {
-            t: ts for t, ts in self._cooldown_until.items() if ts > now
-        }
-        cands = []
-        liq_ok = 0
-        for pr in pairs:
-            if pr.pool_address in held or pr.token_address in held or pr.price_usd <= 0:
-                continue
-            if self._cooldown_until.get(pr.token_address, 0.0) > now:
-                continue
-            _izin, _red_nedeni = aday_paylastir.iddia_et(pr.token_address, "canli", pr.name)
-            if not _izin:
-                continue
-            if pr.liquidity_usd < LIQ_MIN_USD:
-                continue
-            liq_ok += 1
-            h1 = getattr(pr, "chg_h1", 0.0)
-            if not (CHG_H1_MIN <= h1 <= CHG_H1_MAX):
-                continue
-            if M5_MIN is not None:  # R1 filtresi; v7hizli m5'e bakmaz
-                m5 = getattr(pr, "chg_m5", 0) or 0
-                if m5 <= M5_MIN:
-                    continue
-            cands.append(pr)
-        cands.sort(key=lambda pr: pr.chg_h1, reverse=True)
-        self._huni.ekle(len(pairs), liq_ok, len(cands), now)
-        if not cands:
-            return
-        # R1 kural seti mirasi: rejim + BTC gate DEVRE DISI (kaynak motor tercihi).
-        # Kendi korumasi var: felaket -%15 + grace stop -%5 + timeout 120dk.
-        try:
-            sol_h1 = self._sol_chg_h1(client)
-        except Exception:
-            sol_h1 = None
-        budget_each = self.balance / empty
-        for pair in cands:
-            if empty <= 0 or budget_each < 1.0:
-                break
-            try:
-                report = check_token(client, pair.chain, pair.token_address)
-            except Exception as e:
-                safety_reject_kaydet(pair, TAG, "safety_hata", type(e).__name__)
-                continue
-            time.sleep(0.2 if self._aggressive else 1.5)
-            if not report.ok:
-                safety_reject_kaydet(
-                    pair, TAG, report.kapi or "safety_red",
-                    "; ".join(report.reasons[:2])
-                )
-                continue
-            if self._open_position(pair, budget_each, sol_h1, client=client):
-                empty -= 1
-                held.add(pair.pool_address)
-                held.add(pair.token_address)
+        return _KaynakEngine._enter(self, client)
 
     def _open_position(self, pair, usd: float, sol_h1: float | None = None,
                        client: httpx.Client | None = None) -> bool:
@@ -682,45 +632,11 @@ class CanliEngine:
                % (pair.name, usd, eff_price, pair.chg_h1, pair.liquidity_usd))
         return True
 
-    # ---- Cikis: TP+%10 kismi + runner trail. Stop yok, zaman asimi yok. ------
+    # ---- Cikis karari: kaynak motorun _eval_position'ina DELEGE (21 Tem) ----
     def _eval_position(self, pos: dict, price: float, now: float,
                        liquidity_usd: float | None = None) -> str | None:
-        price, ariza = guard_price(pos, price, now, TAG, liquidity_usd=liquidity_usd)
-        if ariza:
-            return None
-        pos["last_price"] = price
-        entry = pos["entry_price"]
-        pnl_pct = (price / entry - 1) * 100 if entry > 0 else 0.0
-        if pnl_pct > pos["mfe_pct"]:
-            pos["mfe_pct"] = round(pnl_pct, 4)
-        if pnl_pct < pos["mae_pct"]:
-            pos["mae_pct"] = round(pnl_pct, 4)
-        if self.kaynak_motor == "v7hizli":
-            # V7HIZLI: SADECE tp_2. Stop, timeout, felaket, kismi YOK.
-            if pnl_pct > TP_PCT:
-                return "tp_2"
-            return None
-        age = now - pos["opened_ts"]
-        if pnl_pct <= DISASTER_PCT:
-            return "stop_felaket"
-        if pos.get("runner_mode"):
-            peak = float(pos.get("runner_peak") or entry)
-            if price > peak:
-                pos["runner_peak"] = price
-                return None
-            if price <= peak * (1 - TRAIL_PCT / 100.0):
-                return "runner_trail"
-            return None
-        asama = int(pos.get("kismi_asama") or 0)
-        if asama < 2 and pnl_pct >= TP2_PCT:
-            return "tp_partial_2"
-        if asama < 1 and pnl_pct >= TP_PCT:
-            return "tp_partial_1"
-        if age >= GRACE_SEC and pnl_pct <= LATE_STOP_PCT:
-            return "stop_gec"
-        if age >= CEILING_SEC:
-            return "timeout_120"
-        return None
+        return _KaynakEngine._eval_position(self, pos, price, now,
+                                            liquidity_usd=liquidity_usd)
 
     def _fiyat_tazelendi(self, pos: dict, now: float) -> None:
         pos["_taze_fiyat_ts"] = now
@@ -795,16 +711,17 @@ class CanliEngine:
                          "CANLI %s: broker live degil, gercek satis yapilamiyor"
                          % pos["pair"])
             return
-        kismi = reason in ("tp_partial_1", "tp_partial_2", "tp_runner_partial")
+        # Kismi satis haritasi kaynak motorun sabitlerinden (21 Tem genel):
+        # r1 uc-asama (1/3+1/3+runner), r2 kar kilidi (1/4); digerleri tam satis.
+        _oran_haritasi = {
+            "tp_partial_1": KISMI_ORAN1,
+            "tp_partial_2": KISMI_ORAN2,
+            "tp_runner_partial": KISMI_ORAN,
+            "tp_kilit_40": getattr(_kaynak, "KILIT_ORAN", None),
+        }
+        satilan_oran = _oran_haritasi.get(reason) or 1.0
+        kismi = reason in _oran_haritasi and _oran_haritasi[reason] is not None
         cost = pos["cost_usd"]
-        if reason == "tp_partial_1":
-            satilan_oran = KISMI_ORAN1
-        elif reason == "tp_partial_2":
-            satilan_oran = KISMI_ORAN2
-        elif reason == "tp_runner_partial":
-            satilan_oran = KISMI_ORAN
-        else:
-            satilan_oran = 1.0
         satilan_amount = pos["amount_token"] * satilan_oran
         satilan_cost = cost * satilan_oran
         slip = _mom_slippage(satilan_cost, pos["liq_entry"])
@@ -911,6 +828,14 @@ class CanliEngine:
                             pos["pair"], pnl, pnl_pct, pos["runner_peak"], TRAIL_PCT)
                 notify("[CANLI] PARTIAL-2/3: %s +$%.2f (%%%.2f) — kalan 1/3 runner (peak %.8g)"
                        % (pos["pair"], pnl, pnl_pct, pos["runner_peak"]))
+            elif reason == "tp_kilit_40":
+                # R2 kaynak: kar kilidi alindi, kalan runner trail ile devam
+                pos["kilit_alindi"] = True
+                self._save()
+                log.warning("CANLI KAR KILIDI %s: 1/4 satildi pnl $%.2f (%.2f%%), "
+                            "kalan 3/4 runner", pos["pair"], pnl, pnl_pct)
+                notify("[CANLI] KAR KILIDI: %s +$%.2f (%%%.2f) — kalan 3/4 runner"
+                       % (pos["pair"], pnl, pnl_pct))
             return
         cd = COOLDOWN_LOSS_SEC if reason in ("stop_gec", "stop_felaket") else COOLDOWN_EXIT_SEC
         if pos.get("token_address"):

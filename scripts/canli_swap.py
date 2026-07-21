@@ -36,7 +36,7 @@ def desteklenen_kaynaklar() -> set[str]:
         from hibrit_trader.canli_session import DESTEKLENEN_KAYNAKLAR
         return set(DESTEKLENEN_KAYNAKLAR)
     except Exception:
-        return {"r1", "v7hizli"}
+        return {"r1", "r2", "v7", "v7c", "v7d", "v7t", "v7hizli", "v7ht"}
 
 
 def aktif_kaynak() -> str:

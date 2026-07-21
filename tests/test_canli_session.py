@@ -93,7 +93,7 @@ def test_v7hizli_eval_sadece_tp2(canli_data_dir, monkeypatch):
     # v7hizli kaynakta cikis karari: TP+%2 uzeri tp_2, baska hicbir tetik yok
     try:
         mod = _v7hizli_reload(monkeypatch)
-        monkeypatch.setattr(mod, "guard_price",
+        monkeypatch.setattr("hibrit_trader.v7hizli_session.guard_price",
                             lambda pos, price, now, tag, liquidity_usd=None: (price, False))
         eng = mod.CanliEngine(_settings())
         import time as _t
@@ -339,3 +339,34 @@ def test_canli_swap_api_dogrulama(canli_data_dir, monkeypatch):
         panel.api_canli_swap(motor="r1")
     assert e.value.status_code == 409
     assert "X / SOL" in e.value.detail
+
+
+# ---- 21 Tem: tum motorlar canliya alinabilir (delegasyon dogrulamasi) ------
+
+
+@pytest.mark.parametrize("kaynak,derin_kayip_beklenen", [
+    ("r1", "stop_felaket"), ("r2", "stop_felaket"),
+    ("v7", "stop_felaket"), ("v7d", "stop_felaket"),
+    ("v7hizli", None), ("v7ht", None), ("v7c", None), ("v7t", None),
+])
+def test_tum_kaynaklar_yukleniyor_ve_delege_ediyor(canli_data_dir, monkeypatch,
+                                                   kaynak, derin_kayip_beklenen):
+    import importlib
+    import hibrit_trader.canli_session as mod
+    monkeypatch.setenv("CANLI_KAYNAK_MOTOR", kaynak)
+    try:
+        m = importlib.reload(mod)
+        assert m.KAYNAK_MOTOR == kaynak
+        monkeypatch.setattr(
+            f"hibrit_trader.{m._KAYNAK_KAYITLARI[kaynak][0]}.guard_price",
+            lambda pos, price, now, tag, liquidity_usd=None: (price, False))
+        eng = m.CanliEngine(_settings())
+        import time as _t
+        now = _t.time()
+        pos = {"pair": "T / SOL", "entry_price": 1.0, "last_price": 1.0,
+               "opened_ts": now, "mfe_pct": 0.0, "mae_pct": 0.0}
+        # derin kayipta kaynak motorun kendi karari donmeli
+        # (stoplu motorlar felaket, stopsuzlar None)
+        assert eng._eval_position(pos, 0.5, now) == derin_kayip_beklenen
+    finally:
+        _r1_geri_yukle(monkeypatch)

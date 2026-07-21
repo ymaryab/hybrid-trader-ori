@@ -1625,8 +1625,8 @@ def _filo_kart_canli(durum: str) -> str:
 def _filo_kart(m: dict, canli_durum: str = "yok") -> str:
     # Canliya-al butonu: broker-gomulu 5 motor icin
     swap_btn = ""
-    # sadece canli_session'in kural ithali olan kaynaklar canliya alinabilir
-    if m["id"] in ("r1", "v7hizli"):
+    # canli_session delegasyonu (21 Tem): tum aktif motorlar canliya alinabilir
+    if m["id"] in ("v7", "v7c", "v7d", "v7hizli", "v7ht", "r1", "r2", "v7t"):
         swap_btn = (f'<button class="canli-al-btn" data-motor="{m["id"]}" '
                     f'onclick="canliAl(\'{m["id"]}\',\'{m["ad"]}\')" '
                     f'title="Canlıya al">🔴 al</button>')
