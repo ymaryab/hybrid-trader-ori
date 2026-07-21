@@ -83,6 +83,10 @@ EXIT_SLIPPAGE_BPS = {"tp_partial_1": 300, "tp_partial_2": 300,
                      "tp_runner_partial": 300, "runner_trail": 300,
                      "stop_gec": 500, "stop_felaket": 1500,
                      "timeout_120": 300}
+# 21 Tem korelasyon raporu: R1 sinifi (runner) SOL- girislerde kanadi
+# (R1 tarihi: SOL- net -861 vs SOL+ +139). sol_h1 esigin altindaysa giris
+# yok, adaylar rejim_reject (30dk recheck) ile izlenir. -999 = devre disi.
+SOL_GIRIS_MIN = float(os.getenv("R1_SOL_GIRIS_MIN", "0.0"))
 STOP_RETRY_ADET = 3
 STOP_RETRY_SEC = 3.0
 SAT_COOLDOWN_SEC = 20.0
@@ -491,6 +495,17 @@ class R1Engine:
             sol_h1 = self._sol_chg_h1(client)
         except Exception:
             sol_h1 = None
+        # SOL- rejim kapisi (21 Tem): fail-open (sol_h1 None ise gecer)
+        if SOL_GIRIS_MIN > -999 and sol_h1 is not None and sol_h1 < SOL_GIRIS_MIN:
+            rejim_reject_kaydet(cands, "R1", sol_h1)
+            if not self._regime_logged:
+                self._regime_logged = True
+                log.warning("R1: SOL- rejim kapisi KAPALI (sol_h1 %.2f < %.2f), "
+                            "yeni giris yok", sol_h1, SOL_GIRIS_MIN)
+            return
+        if self._regime_logged:
+            self._regime_logged = False
+            log.warning("R1: rejim kapisi acildi (sol_h1 %s)", sol_h1)
         budget_each = self.balance / empty
         for pair in cands:
             if empty <= 0 or budget_each < 1.0:

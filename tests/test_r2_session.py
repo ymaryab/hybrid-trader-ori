@@ -131,3 +131,31 @@ def test_tavan_runner_icin_de_calisir():
     p = _poz(now, mfe=100.0, yas_sec=181 * 60)
     p["runner_peak"] = 2.0
     assert eng._eval_position(p, 1.9, now) == "timeout_180"
+
+
+def test_sol_eksi_rejim_kapisi(monkeypatch):
+    kayit = []
+    monkeypatch.setattr(r2, "rejim_reject_kaydet",
+                        lambda cands, m, s: kayit.append((len(cands), s)))
+    monkeypatch.setattr(r2, "safety_reject_kaydet", lambda *a, **k: None)
+    eng = _eng()
+    monkeypatch.setattr(r2, "check_token",
+                        lambda c, ch, t: SimpleNamespace(ok=True, kapi=None, reasons=[]))
+    monkeypatch.setattr(r2.aday_paylastir, "iddia_et", lambda t, m, n: (True, None))
+    acilan = []
+    monkeypatch.setattr(
+        r2.R2Engine, "_open_position",
+        lambda self, pair, usd, sol_h1=None, client=None: acilan.append(pair.name) or True)
+    import time as _t
+    now = _t.time()
+    pr = SimpleNamespace(name="ADAY", chain="solana", pool_address="P1",
+                         token_address="T1", price_usd=0.001,
+                         liquidity_usd=50000.0, chg_h1=90.0, chg_m5=12.0,
+                         pool_created_at=now - 7200)
+    monkeypatch.setattr(r2, "scan_all", lambda chains: [pr])
+    monkeypatch.setattr(r2.R2Engine, "_sol_chg_h1", lambda self, c: -0.5)
+    eng._enter(None)
+    assert acilan == [] and kayit and kayit[0][1] == -0.5
+    monkeypatch.setattr(r2.R2Engine, "_sol_chg_h1", lambda self, c: 0.5)
+    eng._enter(None)
+    assert acilan == ["ADAY"]

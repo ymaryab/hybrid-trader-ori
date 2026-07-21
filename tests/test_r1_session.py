@@ -94,3 +94,19 @@ def test_m5_tavan_sifir_devre_disi(monkeypatch):
     monkeypatch.setattr(r1, "scan_all", lambda chains: [_pair("PARABOL", h1=120.0, m5=200.0)])
     eng._enter(None)
     assert acilan == ["PARABOL"]
+
+
+def test_sol_eksi_rejim_kapisi(monkeypatch):
+    # SOL- iken giris yok, adaylar rejim_reject'e duser; SOL+ iken acilir
+    kayit = []
+    monkeypatch.setattr(r1, "rejim_reject_kaydet",
+                        lambda cands, m, s: kayit.append((len(cands), s)))
+    monkeypatch.setattr(r1, "safety_reject_kaydet", lambda *a, **k: None)
+    eng, acilan = _engine(monkeypatch)
+    monkeypatch.setattr(r1, "scan_all", lambda chains: [_pair("ADAY", h1=80.0)])
+    monkeypatch.setattr(r1.R1Engine, "_sol_chg_h1", lambda self, c: -0.5)
+    eng._enter(None)
+    assert acilan == [] and kayit == [(1, -0.5)]
+    monkeypatch.setattr(r1.R1Engine, "_sol_chg_h1", lambda self, c: 0.5)
+    eng._enter(None)
+    assert acilan == ["ADAY"]
