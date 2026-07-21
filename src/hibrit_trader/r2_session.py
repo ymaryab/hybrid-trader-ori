@@ -608,7 +608,7 @@ class R2Engine:
         aday_paylastir.kaydet(pair.token_address, "r2", pair.name)
         log.warning("R2 BUY %s $%.2f @ %.8g (h1 %.1f%%, liq $%.0f, yas %s)",
                     pair.name, usd, eff_price, pair.chg_h1, pair.liquidity_usd, yas_str(pair.pool_created_at))
-        notify("[R1] ALIM: %s $%.2f @ %.8g (h1 %%%.1f, liq $%.0f)"
+        notify("[R2] ALIM: %s $%.2f @ %.8g (h1 %%%.1f, liq $%.0f)"
                % (pair.name, usd, eff_price, pair.chg_h1, pair.liquidity_usd))
         return True
 
@@ -832,5 +832,5 @@ class R2Engine:
             feed.remove_pool(pos["pool_address"])
         log.warning("R2 SELL %s pnl $%.2f (%.2f%%) — %s, hold %.0fs (mfe %.1f%% mae %.1f%%)",
                     pos["pair"], pnl, pnl_pct, reason, hold_sec, pos["mfe_pct"], pos["mae_pct"])
-        notify("[R1] SATIM: %s pnl $%.2f (%%%.2f) — %s, hold %.0fdk"
+        notify("[R2] SATIM: %s pnl $%.2f (%%%.2f) — %s, hold %.0fdk"
                % (pos["pair"], pnl, pnl_pct, reason, hold_sec / 60))
