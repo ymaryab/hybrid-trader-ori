@@ -629,11 +629,17 @@ class R2Engine:
         # 1) Felaket freni (her an) -%15 alti
         if pnl_pct <= DISASTER_PCT:
             return "stop_felaket"
+        # 2) Tavan HER pozisyona uygulanir (runner dahil; 21 Tem Jimhood dersi:
+        #    runner dali tavani atliyordu, 5 saat kosup felakete dustu)
+        if age >= CEILING_SEC:
+            return "timeout_180"
         mfe = float(pos.get("mfe_pct") or 0.0)
-        # 2) Runner trail (mfe>=RUNNER_ARM sonrasi): ratchet 20/15/10.
+        # 3) Runner trail (mfe>=RUNNER_ARM sonrasi): ratchet 20/15/10.
         #    Tepe buyudukce trail daralir (ac gozluluk freni).
         if mfe >= RUNNER_ARM_PCT:
-            peak = float(pos.get("runner_peak") or price)
+            # 21 Tem bugfix: varsayilan 'price' idi; peak hicbir zaman
+            # kaydedilmiyordu ve trail HIC tetiklenmiyordu (Jimhood +293 -> -20).
+            peak = float(pos.get("runner_peak") or 0.0)
             if price > peak:
                 pos["runner_peak"] = peak = price
             peak_pnl = (peak / entry - 1) * 100 if entry > 0 else 0.0

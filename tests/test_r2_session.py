@@ -103,3 +103,21 @@ def test_giris_filtreleri(monkeypatch):
     assert acilan == ["IYI"]
     assert ("PARABOL", "m5_tavan_skip") in kayitlar
     assert ("BEBEK", "yas_skip") in kayitlar
+
+
+def test_trail_arming_yolu_peak_kaydeder():
+    # 21 Tem Jimhood bug regresyonu: runner_peak onceden YOKKEN arm olan
+    # pozisyonda peak kaydedilmeli ve dususte trail tetiklenmeli
+    eng = _eng(); now = time.time()
+    p = _poz(now, mfe=30.0)  # runner_peak YOK (bug tam burada yasiyordu)
+    assert eng._eval_position(p, 1.30, now) is None  # arm + peak kaydi
+    assert p.get("runner_peak") == 1.30
+    assert eng._eval_position(p, 1.03, now) == "runner_trail"  # 1.30*0.8=1.04
+
+
+def test_tavan_runner_icin_de_calisir():
+    # 21 Tem Jimhood dersi: runner modundaki pozisyon da 180dk tavana tabi
+    eng = _eng(); now = time.time()
+    p = _poz(now, mfe=100.0, yas_sec=181 * 60)
+    p["runner_peak"] = 2.0
+    assert eng._eval_position(p, 1.9, now) == "timeout_180"
