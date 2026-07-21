@@ -106,10 +106,10 @@ def test_v7hizli_eval_sadece_tp2(canli_data_dir, monkeypatch):
         tp_esik = mod.TP_PCT  # v7hizli varsayilan 2.0
         assert eng._eval_position(poz(), 1.0 * (1 + (tp_esik + 0.5) / 100), now) == "tp_2"
         assert eng._eval_position(poz(), 1.0 * (1 + (tp_esik - 0.5) / 100), now) is None
-        # stop/felaket yok: -%50 bile satis tetiklemez
+        # stop/felaket yok: -%50 bile satis tetiklemez (60dk icinde)
         assert eng._eval_position(poz(), 0.5, now) is None
-        # zaman asimi yok: 10 saatlik pozisyon da tetiklenmez
-        assert eng._eval_position(poz(yas_sec=36000), 1.0, now) is None
+        # 21 Tem karari: 1 saat sonunda ne olursa olsun cikis
+        assert eng._eval_position(poz(yas_sec=36000), 1.0, now) == "timeout_60"
     finally:
         _r1_geri_yukle(monkeypatch)
 

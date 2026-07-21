@@ -4,8 +4,8 @@ Kural seti (kullanici, 2026-07-15):
   GIRIS : rejim SOL_h1>=0.35 · momentum 10<=chg_h1<=50 · liq>=$100k
           taze fiyat<=+%2 · safety + kasa dagilim + bos slot (max 5)
           cooldown normal 15dk / stop 60dk (stop yok, ama tutarlilik icin sabit)
-  CIKIS : SADECE tp_2 (giristen +%2 gorulunce sat)
-          stop YOK, zaman asimi YOK, felaket YOK
+  CIKIS : tp_2 (giristen +%2) VEYA 60dk tavan (timeout_60, 21 Tem karari)
+          stop YOK, felaket YOK
           Satis slippage: normal 150 bps, stop_felaket 1000 bps (tutarlilik icin sabit)
 
 MOD: SABIT PAPER. BROKER_MODE ne olursa olsun exec paper. Canli para tasimaz.
@@ -62,6 +62,10 @@ MAX_SLOTS = 5
 START_BALANCE = float(os.getenv("V7HIZLI_START_BALANCE", "1000"))
 TP_PCT = float(os.getenv("V7HIZLI_TP_PCT", "2.0"))
 SOL_H1_MIN = float(os.getenv("V7HIZLI_SOL_H1_MIN", "0.35"))
+# 21 Tem kullanici karari: 1 saat sonunda NE OLURSA OLSUN cikis. Sure analizi:
+# kazancin %87si ilk saatte; 6sa+ bekleyisin tum tarihsel getirisi 8$, cuval
+# maliyeti ~15 kati. 0 = devre disi.
+TIMEOUT_MIN = float(os.getenv("V7HIZLI_TIMEOUT_MIN", "60"))
 DAILY_LOSS_LIMIT_USD = float(os.getenv("MOM_DAILY_LOSS_LIMIT_USD", "0"))
 DAILY_LOSS_LIMIT_PCT = float(os.getenv("MOM_DAILY_LOSS_LIMIT_PCT", "25"))
 COOLDOWN_LOSS_SEC = float(os.getenv("MOM_COOLDOWN_STOP_MIN", "60")) * 60
@@ -71,7 +75,8 @@ COOLDOWN_EXIT_SEC = float(os.getenv("MOM_COOLDOWN_EXIT_MIN", "15")) * 60
 EXIT_INTERVAL_SEC = float(os.getenv("M_EXIT_INTERVAL_SEC", "2"))
 # Satis slippage tablosu (kullanici karari): normal 150 / stop_felaket 1000
 # stop_gec 300 tutuluyor, motor tetiklemiyor ama tablo tutarli olsun.
-EXIT_SLIPPAGE_BPS = {"tp_2": 150, "stop_gec": 300, "stop_felaket": 1000}
+EXIT_SLIPPAGE_BPS = {"tp_2": 150, "stop_gec": 300, "stop_felaket": 1000,
+                     "timeout_60": 300}
 STOP_RETRY_ADET = 3
 STOP_RETRY_SEC = 3.0
 SAT_COOLDOWN_SEC = 20.0
@@ -572,6 +577,8 @@ class V7HizliEngine:
             pos["mae_pct"] = round(pnl_pct, 4)
         if pnl_pct > TP_PCT:
             return "tp_2"
+        if TIMEOUT_MIN > 0 and (now - pos["opened_ts"]) >= TIMEOUT_MIN * 60:
+            return "timeout_60"
         return None
 
     def _fiyat_tazelendi(self, pos: dict, now: float) -> None:
