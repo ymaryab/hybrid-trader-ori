@@ -12,9 +12,9 @@ import httpx
 _log = logging.getLogger(__name__)
 KILL_FILE = Path("data/KILL")
 
-# TELEGRAM_SADECE_CANLI=1: yalniz CANLI motoru ilgilendiren mesajlar
-# gecer (icinde CANLI gecen her mesaj: [CANLI] islemleri, salter,
-# canli senkron uyarilari). Diger motorlar, KILL, RPC vb. gecmez.
+# TELEGRAM_SADECE_CANLI=1: yalniz "[CANLI]" onekli mesajlar gecer
+# (islem bildirimleri + salter). Senkron uyarilari dahil baska hicbir
+# mesaj gecmez (22 Tem kullanici talebi).
 
 
 def is_active() -> bool:
@@ -50,7 +50,7 @@ def notify(message: str, bot_token: str = "", chat_id: str = "") -> None:
     # 22 Tem kullanici talebi; filtre hatasi bildirimi engellemez
     try:
         if (os.getenv("TELEGRAM_SADECE_CANLI", "0").strip() == "1"
-                and "CANLI" not in message):
+                and not message.startswith("[CANLI]")):
             return
     except Exception:
         pass

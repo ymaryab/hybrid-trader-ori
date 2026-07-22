@@ -39,11 +39,11 @@ MESAJLAR = [
 
 
 def test_filtre_acik(monkeypatch):
-    """Yalniz CANLI iceren mesajlar gecer; digerleri tamamen kapali."""
+    """Yalniz [CANLI] onekli mesajlar gecer; senkron dahil geri kalan
+    her sey kapali."""
     giden = _gonderilenler(monkeypatch, "1", MESAJLAR)
     assert giden == ["[CANLI] ALIM: X $10",
-                     "[CANLI] SALTER KAPALI: yeni giris durdu",
-                     "⚠️ SENKRON UYARI: CANLI Balloon cuzdan farki"]
+                     "[CANLI] SALTER KAPALI: yeni giris durdu"]
 
 
 def test_filtre_kapali(monkeypatch):
