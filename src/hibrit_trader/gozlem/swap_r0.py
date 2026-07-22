@@ -65,6 +65,9 @@ class SwapR0:
             b["adet"] += 1
             if val.get("err") is not None:
                 b["err_adet"] += 1
+            if b.get("ilk_sig") is None:
+                b["ilk_sig"] = val.get("signature")
+                b["ilk_slot"] = slot
             b["son_sig"] = val.get("signature")
             b["son_slot"] = slot
             return

@@ -60,7 +60,8 @@ async def calistir():
     bus.karar = KararUretici(bus, onbellek)
 
     sayim = SayimR2(bus, sayac)
-    sayim_ws = WssAbone(wss, bus, "ws-sayim", sayim.isle)
+    sayim_ws = WssAbone(wss, bus, "ws-sayim", sayim.isle,
+                        on_ham=sayim.on_ham)
     sayim_ws.abonelik_ayarla({p: et for p, et in PROGRAMLAR.items()})
 
     swap = SwapR0(bus, onbellek)

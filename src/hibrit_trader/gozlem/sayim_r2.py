@@ -30,14 +30,26 @@ IMZALAR = {
 }
 
 
+_HAM_IMZALAR = ("Instruction: Create", "Instruction: Migrate",
+                "initialize2", "Initialize2", "CreatePool")
+
+
 class SayimR2:
     def __init__(self, bus, sayac):
         self.bus = bus
         self.sayac = sayac
         self._puls_gorev = None
 
-    async def isle(self, addr: str, etiket: str, params: dict) -> None:
+    def on_ham(self, ham: str) -> bool:
+        """json.loads oncesi ucuz metin filtresi: firehose'un tamamini
+        ayristirmadan sayar, sadece dogum/mezuniyet adaylarini gecirir.
+        Kisa mesajlar (abonelik onaylari) her zaman gecer."""
+        if len(ham) < 300:
+            return True
         self.sayac.r2_ham_mesaj += 1
+        return any(imza in ham for imza in _HAM_IMZALAR)
+
+    async def isle(self, addr: str, etiket: str, params: dict) -> None:
         val = (params.get("result") or {}).get("value") or {}
         logs = val.get("logs") or []
         if val.get("err") is not None:

@@ -18,12 +18,19 @@ except ImportError:  # testler icin: ws gerektirmeyen moduller etkilenmez
 
 
 class WssAbone:
-    def __init__(self, url: str, bus, src: str, isleyici):
-        """isleyici(addr, etiket, result_dict) -> coroutine"""
+    def __init__(self, url: str, bus, src: str, isleyici, on_ham=None):
+        """isleyici(addr, etiket, result_dict) -> coroutine
+
+        on_ham(ham_str) -> bool: ayristirma ONCESI ucuz metin filtresi.
+        False donerse mesaj json.loads'a girmeden atlanir (sayimi
+        on_ham'in kendisi yapar). Yuksek hacimli firehose baglantilarinda
+        CPU ve bellek churn'unu bir buyukluk sirasi dusurur.
+        """
         self.url = url
         self.bus = bus
         self.src = src
         self.isleyici = isleyici
+        self.on_ham = on_ham
         self.istekler: dict[str, str] = {}   # addr -> etiket
         self._degisti = asyncio.Event()
         self._req_id = 0
@@ -58,38 +65,29 @@ class WssAbone:
                 await asyncio.sleep(bekleme)
                 bekleme = min(bekleme * 2, 60.0)
 
+    async def _abone_ol(self, ws, addr: str, et: str, bekleyen) -> None:
+        self._req_id += 1
+        bekleyen[self._req_id] = (addr, et)
+        await ws.send(json.dumps({
+            "jsonrpc": "2.0", "id": self._req_id,
+            "method": "logsSubscribe",
+            "params": [{"mentions": [addr]},
+                       {"commitment": "processed"}]}))
+
     async def _dongu(self, ws):
         aktif: dict[int, tuple[str, str]] = {}    # subid -> (addr, etiket)
         bekleyen: dict[int, tuple[str, str]] = {} # reqid -> (addr, etiket)
         hedef = dict(self.istekler)
         for addr, et in hedef.items():
-            self._req_id += 1
-            bekleyen[self._req_id] = (addr, et)
-            await ws.send(json.dumps({
-                "jsonrpc": "2.0", "id": self._req_id,
-                "method": "logsSubscribe",
-                "params": [{"mentions": [addr]},
-                           {"commitment": "processed"}]}))
+            await self._abone_ol(ws, addr, et, bekleyen)
         self._degisti.clear()
         while True:
-            din = asyncio.create_task(ws.recv())
-            deg = asyncio.create_task(self._degisti.wait())
-            bit, _ = await asyncio.wait({din, deg},
-                                        return_when=asyncio.FIRST_COMPLETED)
-            if deg in bit and din not in bit:
-                din.cancel()
-                # fark: yeni eklenenler + cikanlar
+            if self._degisti.is_set():
                 yeni = dict(self.istekler)
                 self._degisti.clear()
                 for addr, et in yeni.items():
                     if addr not in hedef:
-                        self._req_id += 1
-                        bekleyen[self._req_id] = (addr, et)
-                        await ws.send(json.dumps({
-                            "jsonrpc": "2.0", "id": self._req_id,
-                            "method": "logsSubscribe",
-                            "params": [{"mentions": [addr]},
-                                       {"commitment": "processed"}]}))
+                        await self._abone_ol(ws, addr, et, bekleyen)
                 for sid, (addr, _et) in list(aktif.items()):
                     if addr not in yeni:
                         self._req_id += 1
@@ -98,10 +96,14 @@ class WssAbone:
                             "method": "logsUnsubscribe", "params": [sid]}))
                         del aktif[sid]
                 hedef = yeni
+            try:
+                async with asyncio.timeout(3):
+                    ham = await ws.recv()
+            except TimeoutError:
+                continue    # sessiz baglanti: abonelik degisimini isle
+            # ucuz on-filtre: firehose'da json.loads'a girmeden ele
+            if self.on_ham is not None and not self.on_ham(ham):
                 continue
-            if deg in bit:
-                deg.cancel()
-            ham = din.result() if din in bit else await din
             try:
                 m = json.loads(ham)
             except ValueError:
