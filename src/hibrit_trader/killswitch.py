@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,9 +12,9 @@ import httpx
 _log = logging.getLogger(__name__)
 KILL_FILE = Path("data/KILL")
 
-# "[MOTOR] ..." onekli mesajlar motor islem bildirimidir; sistem uyarilari
-# (KILL, SENKRON, salter, RPC, kritik uyarilar) oneksizdir ve filtrelenmez.
-_MOTOR_ONEK = re.compile(r"^\[([A-Z0-9]+)\]")
+# TELEGRAM_SADECE_CANLI=1: yalniz CANLI motoru ilgilendiren mesajlar
+# gecer (icinde CANLI gecen her mesaj: [CANLI] islemleri, salter,
+# canli senkron uyarilari). Diger motorlar, KILL, RPC vb. gecmez.
 
 
 def is_active() -> bool:
@@ -48,13 +47,11 @@ def _event(message: str, **fields) -> None:
 
 
 def notify(message: str, bot_token: str = "", chat_id: str = "") -> None:
-    # TELEGRAM_SADECE_CANLI=1: motor onekli mesajlardan yalniz [CANLI]
-    # gecer (22 Tem kullanici talebi); filtre hatasi bildirimi engellemez
+    # 22 Tem kullanici talebi; filtre hatasi bildirimi engellemez
     try:
-        if os.getenv("TELEGRAM_SADECE_CANLI", "0").strip() == "1":
-            m = _MOTOR_ONEK.match(message)
-            if m and m.group(1) != "CANLI":
-                return
+        if (os.getenv("TELEGRAM_SADECE_CANLI", "0").strip() == "1"
+                and "CANLI" not in message):
+            return
     except Exception:
         pass
     token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN", "")

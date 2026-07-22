@@ -28,18 +28,22 @@ def _gonderilenler(monkeypatch, env_deger, mesajlar):
 
 MESAJLAR = [
     "[CANLI] ALIM: X $10",
+    "[CANLI] SALTER KAPALI: yeni giris durdu",
     "[YZ] SATIM: Y pnl $1",
     "[V7HT] ALIM: Z $5",
-    "⚠️ SENKRON UYARI: cuzdan farki",
+    "⚠️ SENKRON UYARI: CANLI Balloon cuzdan farki",
+    "⚠️ SENKRON UYARI: baska motor farki",
     "KILL AKTIF (test): filo durduruldu",
+    "⚠️ RPC HATA: endpoint dustu",
 ]
 
 
 def test_filtre_acik(monkeypatch):
+    """Yalniz CANLI iceren mesajlar gecer; digerleri tamamen kapali."""
     giden = _gonderilenler(monkeypatch, "1", MESAJLAR)
     assert giden == ["[CANLI] ALIM: X $10",
-                     "⚠️ SENKRON UYARI: cuzdan farki",
-                     "KILL AKTIF (test): filo durduruldu"]
+                     "[CANLI] SALTER KAPALI: yeni giris durdu",
+                     "⚠️ SENKRON UYARI: CANLI Balloon cuzdan farki"]
 
 
 def test_filtre_kapali(monkeypatch):
