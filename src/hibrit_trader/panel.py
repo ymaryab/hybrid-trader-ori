@@ -169,6 +169,12 @@ def _start_engine() -> None:
             from hibrit_trader.v7hizli_session import V7HizliEngine
             v7hizli = V7HizliEngine(settings)
             threading.Thread(target=v7hizli.run_forever, daemon=True).start()
+        if os.getenv("V7NEW_ENABLED", "1") != "0":
+            # V7NEW (22 Tem kullanici talebi): v7hizli klonu, tek fark
+            # TP +%5 (tp_5). SABIT PAPER, v7new_* dosyalarina yazar
+            from hibrit_trader.v7new_session import V7NewEngine
+            v7new = V7NewEngine(settings)
+            threading.Thread(target=v7new.run_forever, daemon=True).start()
         if os.getenv("V7HT_ENABLED", "1") != "0":
             # V7HT (21 Tem A/B): v7hizli klonu + h1/m5 tavan + 6sa cuval
             # tasfiyesi. SABIT PAPER, v7ht_* dosyalarina yazar
@@ -806,13 +812,13 @@ def api_filo(limit: int = Query(30)) -> dict:
     data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
     now = time.time()
     out: dict = {"ts": round(now, 3)}
-    for prefix in ("v7", "v7c", "v7d", "v7hizli", "v7ht", "yz", "yzn1", "r1", "r2", "v7t"):
+    for prefix in ("v7", "v7c", "v7d", "v7hizli", "v7new", "v7ht", "yz", "yzn1", "r1", "r2", "v7t"):
         out[prefix] = _motor_ozet(data_dir, prefix, now, limit)
     # CANLI 10. motoru: dosya prefix'i "canli_" ama out key "canlim" (cuzdan
     # _canli_blok ile cakismasin, o eski key "canli"yi kullanmaya devam eder).
     out["canlim"] = _motor_ozet(data_dir, "canli", now, limit)
     out["cmp"] = {p: out[p]["summary"]["realized_pnl"]
-                  for p in ("v7", "v7c", "v7d", "v7hizli", "v7ht", "yz", "yzn1", "r1", "r2", "v7t", "canlim")}
+                  for p in ("v7", "v7c", "v7d", "v7hizli", "v7new", "v7ht", "yz", "yzn1", "r1", "r2", "v7t", "canlim")}
     out["kill"] = is_active()
     # rejim rozeti: paylasimli sol_h1 cache + BTC m15 macro (cache'li fetch)
     from hibrit_trader.momentum_session import sol_h1_son_olcum
@@ -865,6 +871,7 @@ def api_filo(limit: int = Query(30)) -> dict:
     tum_pozlar += _paper_bot("V7C", "v7c")
     tum_pozlar += _paper_bot("V7D", "v7d")
     tum_pozlar += _paper_bot("V7HIZLI", "v7hizli")
+    tum_pozlar += _paper_bot("V7NEW", "v7new")
     tum_pozlar += _paper_bot("V7HT", "v7ht")
     tum_pozlar += _paper_bot("YZ", "yz")
     tum_pozlar += _paper_bot("YZN1", "yzn1")
@@ -930,6 +937,11 @@ def api_v7d_equity(minutes: int = Query(0, ge=0)) -> dict:
 @app.get("/api/v7hizli/equity")
 def api_v7hizli_equity(minutes: int = Query(0, ge=0)) -> dict:
     return _equity_series("v7hizli", minutes)
+
+
+@app.get("/api/v7new/equity")
+def api_v7new_equity(minutes: int = Query(0, ge=0)) -> dict:
+    return _equity_series("v7new", minutes)
 
 
 @app.get("/api/v7ht/equity")
@@ -1592,6 +1604,9 @@ _FILO_MOTORLAR: list[dict] = [
     {"id": "v7hizli", "tip": "bot", "ad": "V7HIZLI", "renk": "#26c281", "slots": 5,
      "rozet": "TP+%2 tek çıkış",
      "desc": "TP+%2 tek çıkış · STOP YOK · zaman aşımı YOK · liq&ge;$100k · h1 10..50"},
+    {"id": "v7new", "tip": "bot", "ad": "V7NEW", "renk": "#e3b341", "slots": 5,
+     "rozet": "TP+%5 tek çıkış",
+     "desc": "V7NEW: v7hizli klonu, tek fark TP+%5 (tp_5) · STOP YOK · felaket -%20 · 60dk timeout · liq&ge;$100k · h1 10..50"},
     {"id": "v7ht", "tip": "bot", "ad": "V7HT", "renk": "#56d364", "slots": 5,
      "rozet": "v7hizli A/B · tavan+6sa tasfiye",
      "desc": "V7HT: v7hizli klonu A/B · ayni giris/cikis + h1&le;150 + m5&le;75 tavan + 6sa TP gormeyen pozisyon tasfiyesi (timeout_cuval)"},
@@ -1656,7 +1671,7 @@ def _filo_kart(m: dict, canli_durum: str = "yok") -> str:
     # Canliya-al butonu: broker-gomulu 5 motor icin
     swap_btn = ""
     # canli_session delegasyonu (21 Tem): tum aktif motorlar canliya alinabilir
-    if m["id"] in ("v7", "v7c", "v7d", "v7hizli", "v7ht", "yz", "yzn1", "r1", "r2", "v7t"):
+    if m["id"] in ("v7", "v7c", "v7d", "v7hizli", "v7new", "v7ht", "yz", "yzn1", "r1", "r2", "v7t"):
         swap_btn = (f'<button class="canli-al-btn" data-motor="{m["id"]}" '
                     f'onclick="canliAl(\'{m["id"]}\',\'{m["ad"]}\')" '
                     f'title="Canlıya al">🔴 al</button>')
