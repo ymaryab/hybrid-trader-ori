@@ -80,32 +80,75 @@ def test_karar_uretici_ve_replay(tmp_path):
 
 
 def test_canli_fill_karar(tmp_path):
+    """WAL gercek yon degeri 'al'; sat ctx uretmez; ayni tx ikinci kez
+    ctx uretmez; CANLI EngineEntryFilled ctx uretmez (cift-ctx korumasi)."""
     async def kos():
         bus, ob, yazici = _bus_kur(tmp_path)
         g = asyncio.create_task(bus.dagitici())
         await bus.yayinla("motor", "CanliFill",
-                          {"yon": "alis", "tx": "SIG1"},
+                          {"yon": "al", "tx": "SIG1"},
                           token="TOKB", src="wal")
         await bus.yayinla("motor", "CanliFill",
                           {"yon": "sat", "tx": "SIG2"},
                           token="TOKB", src="wal")
+        await bus.yayinla("motor", "CanliFill",
+                          {"yon": "al", "tx": "SIG1"},
+                          token="TOKB", src="wal")
+        await bus.yayinla("motor", "EngineEntryFilled",
+                          {"engine": "CANLI", "trade_id": "C-9"},
+                          token="TOKB", src="state:CANLI")
         await bus.q.join()
         g.cancel()
         yazici.kapat()
     asyncio.run(kos())
     karar = list(tmp_path.rglob("*.karar.jsonl"))
     satirlar = karar[0].read_text().splitlines()
-    assert len(satirlar) == 1          # sadece alis ctx uretir
+    assert len(satirlar) == 1          # yalniz ilk 'al' ctx uretir
     assert json.loads(satirlar[0])["payload"]["engine"] == "CANLI"
 
 
-def test_musluk_state_farki_ilk_tur_sessiz(tmp_path):
+def test_acil_cekim_terfi_yarisi(tmp_path):
+    """Karar aninda snapshot yoksa snap_getir ile acil cekim yapilir."""
+    from hibrit_trader.gozlem.karar import KararUretici
+
+    async def sahte_getir(tok):
+        return {"priceUsd": "9.9", "kaynak": "acil"}
+
+    async def kos():
+        yazici = OlayYazici(tmp_path)
+        ob = DurumOnbellek()
+        bus = Bus(yazici, ob, Sayaclar())
+        bus.karar = KararUretici(bus, ob, snap_getir=sahte_getir)
+        g = asyncio.create_task(bus.dagitici())
+        await bus.yayinla("motor", "EngineEntryFilled",
+                          {"engine": "YZ", "trade_id": "Y-1"},
+                          token="YENITOK", src="state:YZ")
+        await bus.q.join()
+        g.cancel()
+        yazici.kapat()
+    asyncio.run(kos())
+    karar = list(tmp_path.rglob("*.karar.jsonl"))
+    p = json.loads(karar[0].read_text().splitlines()[0])["payload"]
+    assert p["snapshot"] is not None
+    assert p["snapshot"]["acil_cekim"] is True
+    assert p["snapshot"]["payload"]["priceUsd"] == "9.9"
+    # acil cekim anlik akisina da olay olarak yazilmis olmali
+    anlik = list(tmp_path.rglob("*.anlik.jsonl"))
+    assert len(anlik) == 1
+
+
+def test_musluk_kesinti_telafisi(tmp_path):
+    """Restart'ta kalici kumede olmayan pozisyonlar telafi bayragiyla
+    yayinlanir; bilinenler yayinlanmaz; sonraki turlar normal."""
     veri = tmp_path / "veri"
     gozlem = tmp_path / "g"
     veri.mkdir()
     gozlem.mkdir()
+    gozlem.joinpath("musluk_ofset.json").write_text(json.dumps(
+        {"ofset": {}, "girisler": ["BILINEN-1"]}))
     (veri / "yz_state.json").write_text(json.dumps(
-        {"positions": [{"trade_id": "A-1", "token_address": "T1"}]}))
+        {"positions": [{"trade_id": "BILINEN-1", "token_address": "T0"},
+                       {"trade_id": "A-1", "token_address": "T1"}]}))
     olaylar = []
 
     class SahteBus:
@@ -114,16 +157,44 @@ def test_musluk_state_farki_ilk_tur_sessiz(tmp_path):
     m = Musluk(SahteBus(), veri, gozlem)
 
     async def kos():
-        await m._state_farki()      # ilk tur: sessiz tohum
-        assert olaylar == []
+        await m._state_farki()      # restart turu: A-1 telafi, BILINEN-1 yok
+        assert len(olaylar) == 1
+        assert olaylar[0][1]["trade_id"] == "A-1"
+        assert olaylar[0][1]["kesinti_telafisi"] is True
         (veri / "yz_state.json").write_text(json.dumps(
             {"positions": [{"trade_id": "A-1", "token_address": "T1"},
                            {"trade_id": "B-2", "token_address": "T2"}]}))
         await m._state_farki()
     asyncio.run(kos())
-    assert len(olaylar) == 1
-    assert olaylar[0][0] == "EngineEntryFilled"
-    assert olaylar[0][1]["trade_id"] == "B-2"
+    assert len(olaylar) == 2
+    assert olaylar[1][0] == "EngineEntryFilled"
+    assert olaylar[1][1]["trade_id"] == "B-2"
+    assert "kesinti_telafisi" not in olaylar[1][1]
+
+
+def test_musluk_defter_telafi_girisi(tmp_path):
+    """Kesinti icinde acilip kapanmis islem: kapanis satirindan once
+    telafi girisi uretilir."""
+    veri = tmp_path / "veri"
+    gozlem = tmp_path / "g"
+    veri.mkdir()
+    gozlem.mkdir()
+    olaylar = []
+
+    class SahteBus:
+        async def yayinla(self, akis, kind, payload, **kw):
+            olaylar.append((kind, payload))
+    m = Musluk(SahteBus(), veri, gozlem)
+
+    async def kos():
+        await m._defter_satiri("YZ", {"trade_id": "KAYIP-7",
+                                      "token_address": "T7",
+                                      "pnl_usd": -3.0})
+    asyncio.run(kos())
+    assert [k for k, _ in olaylar] == ["EngineEntryFilled",
+                                       "EngineExitFilled"]
+    assert olaylar[0][1]["kesinti_telafisi"] is True
+    assert olaylar[0][1]["telafi_kaynak"] == "defter"
 
 
 def test_musluk_defter_ofset(tmp_path):
@@ -151,9 +222,23 @@ def test_musluk_defter_ofset(tmp_path):
         await m._dosya_kuyrugu(str(defter),
                                lambda t: m._defter_satiri("YZ", t))
     asyncio.run(kos())
-    assert len(olaylar) == 1
-    assert olaylar[0][0] == "EngineExitFilled"
-    assert olaylar[0][1]["trade_id"] == "YENI"
+    # gorulmemis tid: telafi girisi + cikis
+    assert [k for k, _ in olaylar] == ["EngineEntryFilled",
+                                       "EngineExitFilled"]
+    assert olaylar[1][1]["trade_id"] == "YENI"
+
+
+def test_yazici_seq_ilk_devir(tmp_path):
+    """Restart sonrasi manifest seq_ilk dosyanin GERCEK ilk seq'i olmali."""
+    y = SegmentYazici(tmp_path, "t2")
+    y.yaz("A", {})
+    y.yaz("A", {})
+    y.kapat()
+    y2 = SegmentYazici(tmp_path, "t2")
+    y2.yaz("A", {})
+    assert y2.seq == 3
+    assert y2._seq_ilk == 1   # dosyanin ilk seq'i, devralinan nokta degil
+    y2.kapat()
 
 
 def test_swap_debi_valfi(tmp_path):

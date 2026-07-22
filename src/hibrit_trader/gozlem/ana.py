@@ -17,7 +17,7 @@ from pathlib import Path
 from .anlik import Anlik
 from .izlenen import IzlenenKume
 from .karar import KararUretici
-from .kaynak_rpc import WssAbone
+from .kaynak_rpc import WssAbone, http_get_json
 from .musluk import Musluk
 from .ortak import Bus, DurumOnbellek, Sayaclar
 from .sayim_r2 import PROGRAMLAR, SayimR2
@@ -57,7 +57,21 @@ async def calistir():
     onbellek = DurumOnbellek()
     sayac = Sayaclar()
     bus = Bus(yazici, onbellek, sayac)
-    bus.karar = KararUretici(bus, onbellek)
+
+    async def snap_getir(tok: str):
+        """Terfi yarisi acil cekimi: token bazli DexScreener sorgusu,
+        en likit solana cifti ham haliyle doner."""
+        y = await http_get_json(
+            "https://api.dexscreener.com/latest/dex/tokens/" + tok,
+            timeout=3)
+        pl = [p for p in (y.get("pairs") or [])
+              if p.get("chainId") == "solana"]
+        if not pl:
+            return None
+        return max(pl, key=lambda x: float(
+            (x.get("liquidity") or {}).get("usd") or 0))
+
+    bus.karar = KararUretici(bus, onbellek, snap_getir=snap_getir)
 
     sayim = SayimR2(bus, sayac)
     sayim_ws = WssAbone(wss, bus, "ws-sayim", sayim.isle,

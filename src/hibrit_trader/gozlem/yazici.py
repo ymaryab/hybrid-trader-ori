@@ -43,30 +43,36 @@ class SegmentYazici:
         return self.kok / "events" / g / f"{h}.{self.akis}.jsonl"
 
     def _seq_devral(self, yol: Path) -> None:
-        """Acik (sikismamis) segmentin son satirindan seq devral."""
+        """Acik (sikismamis) segmentin son satirindan seq devral; dosyanin
+        GERCEK ilk seq'ini de kaydet (manifest seq_ilk dogrulugu)."""
         if not yol.exists():
             return
-        son = None
+        ilk = son = None
+        satir = 0
         with open(yol, "rb") as f:
             for ln in f:
                 if ln.strip():
+                    satir += 1
+                    if ilk is None:
+                        ilk = ln
                     son = ln
         if son:
             try:
                 self.seq = int(json.loads(son)["seq"])
+                self._seq_ilk = int(json.loads(ilk)["seq"])
             except (ValueError, KeyError):
                 pass
-        self._satir = sum(1 for ln in open(yol, "rb") if ln.strip())
+        self._satir = satir
 
     def _ac(self, ts: float) -> None:
         yol = self._segment_yolu(ts)
         yol.parent.mkdir(parents=True, exist_ok=True)
+        self._seq_ilk = None
         if self.seq == 0 and yol.exists():   # sadece surec baslangicinda
-            self._seq_devral(yol)
+            self._seq_devral(yol)            # _seq_ilk = dosyanin ilk seq'i
         self._fh = open(yol, "a", buffering=1)
         self._yol = yol
         self._saat_key = time.strftime("%Y%m%d%H", time.gmtime(ts))
-        self._seq_ilk = None
 
     def _kapat_ve_sikistir(self) -> None:
         if self._fh is None:

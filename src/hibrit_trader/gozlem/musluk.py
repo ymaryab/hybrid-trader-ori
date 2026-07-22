@@ -7,8 +7,18 @@ cikislar defter satirindan, canli dolumlar WAL'dan, reddedilen
 sinyaller reject gunlugunden turetilir. Motor ici kanca, YZn1 100
 islem dondurmasi kalkinca tek satirlik cagriyla eklenecek.
 
-Ofsetler data/gozlem/musluk_ofset.json'da tutulur: yeniden baslatmada
-kacirilan defter satirlari geriye donuk okunur.
+KESINTI TELAFISI (denetim duzeltmesi, 22 Tem): yayinlanan giris
+trade_id'leri diske kalici yazilir. Restart'ta:
+- state'te olup kalici kumede olmayan pozisyonlar SESSIZ TOHUMLANMAZ;
+  kesinti_telafisi=true bayragiyla EngineEntryFilled uretilir (ctx de
+  uretilir; snapshot yasi/acil cekim alanlari gercegi soyler).
+- Kesinti icinde acilip KAPANMIS islemler defter ofset'inden gelir:
+  kapanis satirinin tid'i kalici kumede yoksa once kapanis verisinden
+  turetilmis telafi girisi, sonra cikis olayi yayinlanir.
+Boylece hicbir gercek giris ctx'siz kalmaz; telafi ctx'leri analizde
+ayirt edilebilir (bayrakli), gercek zamanli ctx'lerle karistirilmaz.
+
+Ofset ve giris kumesi data/gozlem/musluk_ofset.json'da tutulur.
 """
 
 from __future__ import annotations
@@ -19,22 +29,42 @@ import json
 import os
 from pathlib import Path
 
+GIRIS_KUME_TAVAN = 4000
+
 
 class Musluk:
     def __init__(self, bus, veri_dizin: Path, gozlem_dizin: Path):
         self.bus = bus
         self.veri = Path(veri_dizin)
         self.ofset_yol = Path(gozlem_dizin) / "musluk_ofset.json"
+        self.ofset: dict = {}
+        self.girisler: set[str] = set()      # yayinlanmis giris tid'leri
+        self._giris_sira: list[str] = []     # tavan budamasi icin FIFO
         try:
-            self.ofset = json.loads(self.ofset_yol.read_text())
+            ham = json.loads(self.ofset_yol.read_text())
+            if "ofset" in ham:               # yeni format
+                self.ofset = ham["ofset"]
+                self._giris_sira = list(ham.get("girisler") or [])
+                self.girisler = set(self._giris_sira)
+            else:                            # eski duz format: sadece ofset
+                self.ofset = ham
         except (OSError, ValueError):
-            self.ofset = {}
+            pass
         self._poz_cache: dict[str, set] = {}
-        self._ilk_tur = True
+
+    def _giris_kaydet(self, tid: str) -> None:
+        if tid and tid not in self.girisler:
+            self.girisler.add(tid)
+            self._giris_sira.append(tid)
 
     def _ofset_kaydet(self):
+        if len(self._giris_sira) > GIRIS_KUME_TAVAN:
+            atilan = self._giris_sira[:-GIRIS_KUME_TAVAN]
+            self._giris_sira = self._giris_sira[-GIRIS_KUME_TAVAN:]
+            self.girisler.difference_update(atilan)
         tmp = self.ofset_yol.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.ofset))
+        tmp.write_text(json.dumps({"ofset": self.ofset,
+                                   "girisler": self._giris_sira}))
         os.replace(tmp, self.ofset_yol)
 
     async def _dosya_kuyrugu(self, yol: str, isleyici):
@@ -78,6 +108,15 @@ class Musluk:
                                    token=t.get("token_address"),
                                    src=f"defter:{motor}")
             return
+        tid = t.get("trade_id")
+        if tid and tid not in self.girisler and motor != "CANLI":
+            # kesinti icinde acilip kapanmis islem: telafi girisi
+            self._giris_kaydet(tid)
+            await self.bus.yayinla(
+                "motor", "EngineEntryFilled",
+                {"engine": motor, "kesinti_telafisi": True,
+                 "telafi_kaynak": "defter", **t},
+                token=t.get("token_address"), src=f"defter:{motor}")
         await self.bus.yayinla("motor", "EngineExitFilled",
                                {"engine": motor, **t},
                                token=t.get("token_address"),
@@ -103,9 +142,21 @@ class Musluk:
             eski = self._poz_cache.get(motor)
             self._poz_cache[motor] = set(pozlar)
             if eski is None:
-                continue    # ilk gorus: sessiz tohumla (eski pozlar yeni degil)
+                # restart/ilk tur: sessiz tohum YOK; kalici kumede olmayan
+                # her acik pozisyon kesinti telafisi olarak yayinlanir
+                for tid, p in pozlar.items():
+                    if tid not in self.girisler:
+                        self._giris_kaydet(tid)
+                        await self.bus.yayinla(
+                            "motor", "EngineEntryFilled",
+                            {"engine": motor, "kesinti_telafisi": True,
+                             "telafi_kaynak": "state", **p},
+                            token=p.get("token_address"),
+                            src=f"state:{motor}")
+                continue
             for tid in set(pozlar) - eski:
                 p = pozlar[tid]
+                self._giris_kaydet(tid)
                 await self.bus.yayinla("motor", "EngineEntryFilled",
                                        {"engine": motor, **p},
                                        token=p.get("token_address"),
