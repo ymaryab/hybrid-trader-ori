@@ -80,6 +80,7 @@ async def calistir():
         asyncio.create_task(sayim_ws.calis(), name="sayim_ws"),
         asyncio.create_task(sayim.puls(), name="sayim_puls"),
         asyncio.create_task(swap_ws.calis(), name="swap_ws"),
+        asyncio.create_task(swap.puls_dongusu(), name="swap_puls"),
         asyncio.create_task(izlenen.calis(), name="izlenen"),
         asyncio.create_task(anlik.snapshot_dongusu(), name="snapshot"),
         asyncio.create_task(anlik.mctx_dongusu(), name="mctx"),

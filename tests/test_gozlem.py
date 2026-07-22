@@ -154,3 +154,30 @@ def test_musluk_defter_ofset(tmp_path):
     assert len(olaylar) == 1
     assert olaylar[0][0] == "EngineExitFilled"
     assert olaylar[0][1]["trade_id"] == "YENI"
+
+
+def test_swap_debi_valfi(tmp_path):
+    from hibrit_trader.gozlem.swap_r0 import SwapR0
+    olaylar = []
+
+    class SahteBus:
+        async def yayinla(self, akis, kind, payload, **kw):
+            olaylar.append((kind, payload))
+    ob = DurumOnbellek()
+    ob.izlenen = {"POOL1": {"token": "T1"}}
+    s = SwapR0(SahteBus(), ob)
+    s.esik = 10
+
+    async def kos():
+        for i in range(15):
+            await s.isle("POOL1", "r0", {"result": {
+                "context": {"slot": 100 + i},
+                "value": {"signature": f"S{i}", "err": None,
+                          "logs": ["x"]}}})
+    asyncio.run(kos())
+    kinds = [k for k, _ in olaylar]
+    assert kinds.count("SwapObserved") == 10        # esige kadar tam mod
+    assert "ThrottleModeChanged" in kinds           # asan mesajla puls moduna
+    assert s._mod["POOL1"] == "puls"
+    assert s._puls["POOL1"]["adet"] == 5            # kalan 5 birikimde
+    assert s._puls["POOL1"]["son_sig"] == "S14"
