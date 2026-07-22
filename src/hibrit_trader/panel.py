@@ -1675,6 +1675,7 @@ def _filo_kart(m: dict, canli_durum: str = "yok") -> str:
             f'<div class="kfoot" id="foot-{m["id"]}">-</div>'
             f'{swap_btn}'
             f'<div class="pnl24" id="pnl24-{m["id"]}" title="Son 24 saat getiri">-</div>'
+            f'<div class="pnl24sub" id="slotwin-{m["id"]}">-</div>'
             f'</div>'
             f'<div class="motor-poz" id="motorpoz-{m["id"]}">'
             f'<h4>açık pozisyonlar</h4>'
@@ -1751,6 +1752,7 @@ _MOMENTUM_HTML = """<!doctype html>
  .kart.bos{background:transparent;border-style:dashed;color:#8b949e}
  .kart.lider{border:2px solid #1f6feb;padding:11px 13px}
  .khead{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+ .khead b{font-size:19px;letter-spacing:.4px}
  .rozet{font-size:11px;padding:0 8px;border-radius:10px;background:#21262d;color:#8b949e}
  .liderroz{display:none;background:#1f6feb;color:#fff}
  .kart.lider .liderroz{display:inline-block}
@@ -1787,6 +1789,8 @@ _MOMENTUM_HTML = """<!doctype html>
    min-width:60px;text-align:right;z-index:1}
  .pnl24.pos{color:#3fb950;border-color:#238636}
  .pnl24.neg{color:#f85149;border-color:#da3633}
+ .pnl24sub{position:absolute;top:58px;right:8px;font:11px monospace;
+   color:#8b949e;text-align:right;line-height:1.5}
  .pnl24.bos{color:#484f58;border-style:dashed;font-weight:normal}
  .canli-al-btn:hover{background:rgba(248,81,73,.18)}
  .canli-al-btn.aktif{background:#da3633;color:#fff;border-color:#da3633;cursor:default}
@@ -2301,8 +2305,9 @@ function basBot(m,d){
   document.getElementById("sub-"+m.id).innerHTML=
     `<span class="${cls(pct)}">${pct>0?"+":""}${f(pct)}%</span> · ${s.trades_total} işlem`;
   const dolu="●".repeat(s.open_slots)+"○".repeat(Math.max(m.slots-s.open_slots,0));
-  document.getElementById("foot-"+m.id).innerHTML=
-    `slot ${dolu} ${s.open_slots}/${m.slots} · win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}`;
+  const sw=document.getElementById("slotwin-"+m.id);
+  if(sw)sw.innerHTML=`slot ${dolu} ${s.open_slots}/${m.slots}<br>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}`;
+  document.getElementById("foot-"+m.id).innerHTML="";
   // 19 Tem: sag ust 24h getiri gostergesi
   const p24=Number(s.pnl_24h_pct||0);
   const n24=Number(s.trades_24h||0);
