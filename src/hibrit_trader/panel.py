@@ -717,7 +717,7 @@ def _motor_ozet(data_dir: Path, prefix: str, now: float, limit: int,
     # dosyasindan son ornek <= t0; yoksa gerceklesen kumulatif. Motor
     # pencereden gencse baz start_balance. CANLI'da equity.jsonl cuzdan
     # snapshot'i oldugu icin kullanilmaz.
-    kayan_dk = float(os.getenv("PANEL_KAYAN_DK", "10"))
+    kayan_dk = float(os.getenv("PANEL_KAYAN_DK", "15"))
     t0 = now - kayan_dk * 60
     eq_now = _live_equity(state)
     eq_once = None
@@ -1734,7 +1734,7 @@ def _filo_kart(m: dict, canli_durum: str = "yok") -> str:
             f'<canvas class="spark" id="spark-{m["id"]}" height="36"></canvas>'
             f'<div class="kfoot" id="foot-{m["id"]}">-</div>'
             f'{swap_btn}'
-            f'<div class="pnl24" id="pnl24-{m["id"]}" title="Son 10 dk getiri (kayan pencere: simdiki deger / 10 dk onceki deger - 1)">-</div>'
+            f'<div class="pnl24" id="pnl24-{m["id"]}" title="Son 15 dk getiri (kayan pencere: simdiki deger / 15 dk onceki deger - 1)">-</div>'
             f'<div class="pnl24sub" id="slotwin-{m["id"]}">-</div>'
             f'</div>'
             f'<div class="motor-poz" id="motorpoz-{m["id"]}">'
@@ -2369,7 +2369,7 @@ function basBot(m,d){
   const sw=document.getElementById("slotwin-"+m.id);
   if(sw)sw.innerHTML=`slot ${dolu} ${s.open_slots}/${m.slots}<br>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}`;
   document.getElementById("foot-"+m.id).innerHTML="";
-  // 23 Tem: sag ust KAYAN 10 DK getiri gostergesi (kullanici formulu)
+  // 24 Tem: sag ust KAYAN 15 DK getiri gostergesi (10->15, oynaklik)
   const p24=Number(s.pnl_1h_pct||0);
   const n24=Number(s.trades_1h||0);
   const p24el=document.getElementById("pnl24-"+m.id);
@@ -2634,7 +2634,7 @@ function basTarama(d){
   e.className="badge"+(t==="normal"?" ok":(t==="kor"?" err":" bayat"));
 }
 function basSira(d, eqs){
-  // 23 Tem: motor kartlarini KAYAN SON 10 DK getirisine gore dinamik sirala.
+  // 24 Tem: motor kartlarini KAYAN SON 15 DK getirisine gore dinamik sirala.
   // Isleme (pencere icinde) girmemis motorlar sonda.
   const arr=MOTORLAR.map(m=>{
     const s=d[m.id]&&d[m.id].summary||{};
