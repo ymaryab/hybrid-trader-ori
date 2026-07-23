@@ -5,8 +5,9 @@ Mantik (kullanici speci + P0 duzeltmeleri):
   (lider degisti mi degil). Basarisiz gecis sonraki turda yeniden denenir.
 - Cift bayrak: user_enabled (yalniz kullanici degistirir) x system_enabled
   (yalniz sistem: tum motorlar <=0 ise OFF, pozitif lider dogunca ON).
-  effective = user_enabled AND system_enabled. system OFF salter'e
-  DOKUNMAZ (secim durur, mevcut kaynak calismaya devam eder).
+  effective = user_enabled AND system_enabled. system OFF SALTERI DE INDIRIR
+  (23 Tem kullanici karari: negatif rejimde giris yok, cikislar surer);
+  pozitif lider donunce salter tekrar acilir.
 - Gecis: tasfiye (CANLI_TASFIYE) -> duzlesme -> swap oncesi lider yeniden
   dogrulanir -> niyet diske yazilir -> canli_swap.py (drop-in + restart).
 - MUTABAKAT: restart seciciyi oldurdugu icin SwitchCompleted/Failed
@@ -240,6 +241,16 @@ def gecis_mutabakati(mevcut: str) -> dict | None:
     return payload
 
 
+def _salter_indir(neden: str) -> None:
+    """Kural 3 eki (23 Tem kullanici karari): tum motorlar <=0 iken
+    salter de iner (CANLI_DUR): yeni canli giris yok, cikislar surer."""
+    (_data_dir() / "CANLI_DUR").write_text(f"otonom: {neden}")
+
+
+def _salter_kaldir() -> None:
+    (_data_dir() / "CANLI_DUR").unlink(missing_ok=True)
+
+
 def _canli_acik_poz() -> int:
     try:
         st = json.loads((_data_dir() / "canli_state.json").read_text())
@@ -288,23 +299,27 @@ def kontrol_dongusu() -> None:
                 if d["system_enabled"]:
                     d["system_enabled"] = False
                     durum_yaz(d)
+                    _salter_indir("tum motorlar <=0")
                     olay_yaz("AutonomOff", {
                         "reason": "ALL_MOTORS_NON_POSITIVE",
                         "eval_id": eval_id, "ranking": skorlar,
                         "leader": lider, "leader_change_pct": lider_pct,
+                        "salter": "kapatildi",
                         "config": config_anlik()})
                     notify("[CANLI] OTONOM BEKLEMEDE: tum motorlar <=0, "
-                           "secim durdu (kaynak sabit)")
+                           "SALTER INDI (giris yok, cikislar acik)")
             elif not d["system_enabled"] and lider is not None and lider_pct > 0:
                 d["system_enabled"] = True
                 durum_yaz(d)
+                _salter_kaldir()
                 olay_yaz("AutonomOn", {
                     "reason": "POSITIVE_LEADER_FOUND", "eval_id": eval_id,
                     "ranking": skorlar, "selected_motor": lider,
                     "selected_change_pct": lider_pct,
+                    "salter": "acildi",
                     "config": config_anlik()})
                 notify(f"[CANLI] OTONOM DEVAM: pozitif lider {lider} "
-                       f"(%{lider_pct})")
+                       f"(%{lider_pct}), salter acildi")
             aday = None
             cooldown_kalan = max(
                 0.0, COOLDOWN_SN - (time.time() - float(d["son_gecis_ts"])))

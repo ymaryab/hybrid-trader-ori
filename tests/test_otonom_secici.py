@@ -119,3 +119,11 @@ def test_tasfiye_kancasi(tmp_path):
     assert cs.tasfiye_talebi_var() is False
     (tmp_path / cs.TASFIYE_FILE).write_text("test")
     assert cs.tasfiye_talebi_var() is True
+
+
+def test_rejim_salteri(tmp_path):
+    """Hepsi <=0 -> salter iner; pozitif lider -> kalkar (23 Tem karari)."""
+    osec._salter_indir("test")
+    assert (tmp_path / "CANLI_DUR").exists()
+    osec._salter_kaldir()
+    assert not (tmp_path / "CANLI_DUR").exists()
