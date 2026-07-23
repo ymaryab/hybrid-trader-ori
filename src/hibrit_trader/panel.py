@@ -175,6 +175,10 @@ def _start_engine() -> None:
             from hibrit_trader.v7new_session import V7NewEngine
             v7new = V7NewEngine(settings)
             threading.Thread(target=v7new.run_forever, daemon=True).start()
+        # Otonom kaynak secici (23 Tem): OTONOM_MOD.json acikken pencere
+        # kazananina otomatik canli kaynak gecisi yapar (tasfiye + swap)
+        from hibrit_trader.otonom_secici import kontrol_dongusu
+        threading.Thread(target=kontrol_dongusu, daemon=True).start()
         if os.getenv("V7HT_ENABLED", "1") != "0":
             # V7HT (21 Tem A/B): v7hizli klonu + h1/m5 tavan + 6sa cuval
             # tasfiyesi. SABIT PAPER, v7ht_* dosyalarina yazar
@@ -846,6 +850,11 @@ def api_filo(limit: int = Query(30)) -> dict:
                             "canli-islem-onayliyorum")
     # 20 Tem: CANLI ana salter (CANLI_DUR dosyasi) — true = girisler durdu
     out["canli_pause"] = (data_dir / "CANLI_DUR").exists()
+    try:
+        from hibrit_trader.otonom_secici import durum_oku
+        out["otonom"] = durum_oku()
+    except Exception:
+        out["otonom"] = {"acik": False}
     canli = _canli_blok()
     if canli is not None:
         canli["pozisyonlar"] = _canli_pozlar(out["v7"]["positions"])
@@ -1856,6 +1865,7 @@ _MOMENTUM_HTML = """<!doctype html>
   <span id="feedBadge" class="badge">feed: -</span>
   <span id="rejimBadge" class="badge">rejim sol_h1: -</span>
   <span id="taramaBadge" class="badge">tarama: -</span>
+  <button id="otonomBtn" class="badge" style="cursor:pointer;font-family:monospace" title="Otonom mod: acikken son penceredeki kazanan motora otomatik gecis (tasfiye + kaynak swap). Kapali: kaynak sabit.">otonom: -</button>
   <button id="canliOnayBtn" class="badge" style="cursor:pointer;font-family:monospace" title="Acil fren (LIVE_ONAY dosyasi): kapatinca satislar DAHIL tum canli emirler durur">canlı: -</button>
   <button id="canliSalterBtn" class="badge" style="cursor:pointer;font-family:monospace" title="Ana salter (CANLI_DUR dosyasi): kapali konumda yeni canli giris yok, cikislar calisir">şalter: -</button>
   <!--MODROZET-->
@@ -2623,6 +2633,17 @@ function basCanliOnay(d){
   b.className="badge"+(aktif?" ok":" err");
   b.dataset.aktif=aktif?"1":"0";
 }
+function basOtonom(d){
+  const b=document.getElementById("otonomBtn");
+  if(!b)return;
+  const o=d.otonom||{acik:false};
+  b.textContent=o.acik?("🤖 OTONOM AÇIK · "+(o.pencere_dk||120)+"dk"):"🤖 otonom kapalı";
+  b.className="badge"+(o.acik?" ok":"");
+  b.style.background=o.acik?"#1f6feb":"";
+  b.style.color=o.acik?"#fff":"";
+  b.dataset.acik=o.acik?"1":"0";
+  b.dataset.dk=o.pencere_dk||120;
+}
 function basCanliSalter(d){
   const b=document.getElementById("canliSalterBtn");
   if(!b)return;
@@ -2646,6 +2667,22 @@ document.addEventListener("click", async(ev)=>{
     if(!r.ok){alert("HATA: "+r.status);return;}
     filoTick();
   }catch(e){alert("agri hatasi: "+e);}
+});
+document.addEventListener("click", async(ev)=>{
+  const b=ev.target.closest("#otonomBtn");
+  if(!b)return;
+  const acik=b.dataset.acik==="1";
+  if(acik){
+    if(!confirm("OTONOM MOD KAPATILSIN mi? Kaynak mevcut motorda sabitlenir, salter degismez."))return;
+    try{const r=await fetch("/api/otonom",{method:"DELETE"});if(!r.ok){alert("HATA: "+r.status);return;}filoTick();}catch(e){alert("agri hatasi: "+e);}
+    return;
+  }
+  let dk=prompt("OTONOM MOD ACILSIN mi? Pencere (dakika), varsayilan icin bos birak:", b.dataset.dk||"120");
+  if(dk===null)return;
+  dk=parseInt(dk,10);
+  const q=(dk&&dk>0)?("?dk="+dk):"";
+  if(!confirm("DIKKAT: otonom mod salteri de ACAR ve son "+((dk&&dk>0)?dk:b.dataset.dk||120)+"dk kazananina gecis icin acik canli pozisyonlari OTOMATIK SATABILIR. Devam?"))return;
+  try{const r=await fetch("/api/otonom"+q,{method:"POST"});if(!r.ok){alert("HATA: "+r.status);return;}filoTick();}catch(e){alert("agri hatasi: "+e);}
 });
 document.addEventListener("click", async(ev)=>{
   const b=ev.target.closest("#canliSalterBtn");
@@ -2683,7 +2720,7 @@ async function filoTick(){
   basCanliPoz(d.acik_pozlar||[]);   // 5 kaynak birlesik acik-poz tablosu
   basMotorTrades(d);                 // 18 Tem: her motor karti altina son 10 islem
   basSira(d, eqs);                   // 19 Tem: getiri yuzdesine gore 1-9 dinamik sira
-  basCmp(d.cmp); basIslemler(d); basRejim(d); basTarama(d); basCanliOnay(d); basCanliSalter(d); basKill(d.kill);
+  basCmp(d.cmp); basIslemler(d); basRejim(d); basTarama(d); basCanliOnay(d); basCanliSalter(d); basOtonom(d); basKill(d.kill);
   updEtiket();
 }
 
@@ -2856,6 +2893,38 @@ def api_canli_onay_kapat() -> dict:
     if p.exists():
         p.unlink()
     return {"live_onay": False}
+
+
+@app.post("/api/otonom")
+def api_otonom_ac(dk: int = Query(0, ge=0)) -> dict:
+    """Otonom kaynak secimi ACIK: pencere kazananina otomatik gecis.
+    Salteri de acar (CANLI_DUR silinir: alip satmaya baslasin)."""
+    from hibrit_trader.otonom_secici import VARSAYILAN_PENCERE_DK, durum_oku, durum_yaz
+    d = durum_oku()
+    d["acik"] = True
+    if dk > 0:
+        d["pencere_dk"] = dk
+    elif not d.get("pencere_dk"):
+        d["pencere_dk"] = VARSAYILAN_PENCERE_DK
+    durum_yaz(d)
+    pause = Path(os.getenv("MOMENTUM_DATA_DIR", "data")) / "CANLI_DUR"
+    if pause.exists():
+        pause.unlink()
+    notify(f"[CANLI] OTONOM MOD ACIK: pencere {d['pencere_dk']}dk, "
+           "salter acildi, kazanan motora otomatik gecis aktif")
+    return {"otonom": d}
+
+
+@app.delete("/api/otonom")
+def api_otonom_kapat() -> dict:
+    """Otonom secim durur; mevcut kaynak calismaya devam eder,
+    saltere DOKUNMAZ."""
+    from hibrit_trader.otonom_secici import durum_oku, durum_yaz
+    d = durum_oku()
+    d["acik"] = False
+    durum_yaz(d)
+    notify("[CANLI] OTONOM MOD KAPALI: kaynak sabit, salter degismedi")
+    return {"otonom": d}
 
 
 @app.post("/api/canli_pause")

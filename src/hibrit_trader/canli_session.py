@@ -140,6 +140,16 @@ def canli_pause_aktif() -> bool:
     return (_data_dir() / PAUSE_FILE).exists()
 
 
+TASFIYE_FILE = "CANLI_TASFIYE"
+
+
+def tasfiye_talebi_var() -> bool:
+    """Otonom gecis tasfiyesi: data/CANLI_TASFIYE varsa TUM acik canli
+    pozisyonlar bir sonraki tik'te "otonom_tasfiye" ile satilir ve yeni
+    giris acilmaz. Dosyayi olusturan (otonom secici) duzlesince siler."""
+    return (_data_dir() / TASFIYE_FILE).exists()
+
+
 class CanliEngine:
     """10. motor: gercek cuzdanla emir keser, ayri defter tutar. Kural seti
     KAYNAK_MOTOR'dan (default r1) import edilir."""
@@ -333,6 +343,8 @@ class CanliEngine:
         if self._kill_logged:
             self._kill_logged = False
             log.warning("CANLI: kill-switch kalkti, girisler serbest")
+        if tasfiye_talebi_var():
+            return "otonom_tasfiye"
         if canli_pause_aktif():
             if not self._pause_logged:
                 self._pause_logged = True
@@ -638,6 +650,8 @@ class CanliEngine:
     # ---- Cikis karari: kaynak motorun _eval_position'ina DELEGE (21 Tem) ----
     def _eval_position(self, pos: dict, price: float, now: float,
                        liquidity_usd: float | None = None) -> str | None:
+        if tasfiye_talebi_var():
+            return "otonom_tasfiye"
         return _KaynakEngine._eval_position(self, pos, price, now,
                                             liquidity_usd=liquidity_usd)
 
