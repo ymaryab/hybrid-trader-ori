@@ -2933,6 +2933,7 @@ def api_canli_onay_kapat() -> dict:
 def api_otonom_ac(dk: int = Query(0, ge=0)) -> dict:
     """user_enabled ACIK (P0: kullanici/sistem bayragi ayri). Salteri de
     acar (CANLI_DUR silinir: alip satmaya baslasin). Olaylar omurgaya."""
+    from hibrit_trader.killswitch import notify
     from hibrit_trader.otonom_secici import durum_oku, durum_yaz, olay_yaz
     d = durum_oku()
     eski_dk = d.get("pencere_dk")
@@ -2959,6 +2960,7 @@ def api_otonom_ac(dk: int = Query(0, ge=0)) -> dict:
 def api_otonom_kapat() -> dict:
     """user_enabled KAPALI: secim durur; mevcut kaynak calismaya devam
     eder, saltere DOKUNMAZ."""
+    from hibrit_trader.killswitch import notify
     from hibrit_trader.otonom_secici import durum_oku, durum_yaz, olay_yaz
     d = durum_oku()
     d["user_enabled"] = False
