@@ -731,29 +731,29 @@ def _motor_ozet(data_dir: Path, prefix: str, now: float, limit: int,
     pnl_24h_usd = sum(float(t.get("pnl_usd") or 0) for t in trades_24h)
     sb = float(state.get("start_balance") or 1000.0)
     pnl_24h_pct = (pnl_24h_usd / sb * 100) if sb > 0 else 0.0
-    # 23 Tem (kullanici formulu): kayan pencere degisimi; pencere suresi
-    # 23 Tem aksami kullanici karariyla 10 DAKIKA (PANEL_KAYAN_DK ile
-    # ayarlanir; otonom secicinin 60dk penceresi AYRIDIR, degismedi).
-    # eq_simdi / eq_pencere_once - 1. Pencere onceki deger: equity ornek
-    # dosyasindan son ornek <= t0; yoksa gerceklesen kumulatif. Motor
-    # pencereden gencse baz start_balance. CANLI'da equity.jsonl cuzdan
-    # snapshot'i oldugu icin kullanilmaz.
-    kayan_dk = float(os.getenv("PANEL_KAYAN_DK", "15"))
-    t0 = now - kayan_dk * 60
-    eq_now = _live_equity(state)
-    eq_once = None
-    if prefix != "canli":
-        for ts_e, eq_e in reversed(_equity_rows(data_dir / f"{prefix}_equity.jsonl")):
-            if ts_e <= t0:
-                if ts_e >= created_ts:
-                    eq_once = eq_e
-                break
-    if eq_once is None:
+    # 24 Tem: rozet SECICIYLE AYNI fonksiyondan hesaplanir (tek gercek
+    # kaynak): pencere OTONOM_MOD pencere_dk (yoksa PANEL_KAYAN_DK).
+    # Boylece secici karari panelden BIREBIR dogrulanabilir.
+    from hibrit_trader.otonom_secici import durum_oku as _oto_durum
+    from hibrit_trader.otonom_secici import kayan_degisim as _kayan
+    try:
+        kayan_dk = float(_oto_durum().get("pencere_dk")
+                         or os.getenv("PANEL_KAYAN_DK", "15"))
+    except Exception:
+        kayan_dk = float(os.getenv("PANEL_KAYAN_DK", "15"))
+    if prefix == "canli":
+        t0 = now - kayan_dk * 60
+        trades_1h = [t for t in trades
+                     if float(t.get("ts") or 0) >= max(t0, created_ts)]
         eq_once = sb + sum(float(t.get("pnl_usd") or 0) for t in trades
                            if created_ts <= float(t.get("ts") or 0) <= t0)
-    trades_1h = [t for t in trades
-                 if float(t.get("ts") or 0) >= max(t0, created_ts)]
-    pnl_1h_pct = ((eq_now / eq_once - 1) * 100) if eq_once and eq_once > 0 else 0.0
+        eq_now_k = sb + sum(float(t.get("pnl_usd") or 0) for t in trades
+                            if float(t.get("ts") or 0) >= created_ts)
+        pnl_1h_pct = ((eq_now_k / eq_once - 1) * 100) if eq_once > 0 else 0.0
+    else:
+        _k = _kayan(prefix, kayan_dk)
+        pnl_1h_pct = _k["pct"]
+        trades_1h = [None] * _k["islem"]
     summary = {
         "balance": round(float(state.get("balance") or 0.0), 2),
         "start_balance": state.get("start_balance"),

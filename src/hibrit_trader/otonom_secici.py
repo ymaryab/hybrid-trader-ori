@@ -127,6 +127,7 @@ def kayan_degisim(motor: str, pencere_dk: float) -> dict:
     eq_simdi = start + gerceklesen pnl (deterministik, defterden yeniden
     uretilebilir; MTM bilerek DAHIL DEGIL: replay edilemez olurdu).
     """
+    from hibrit_trader.jsonl_onbellek import equity_satirlari, islem_satirlari
     d = _data_dir()
     start = 1000.0
     created = 0.0
@@ -140,44 +141,23 @@ def kayan_degisim(motor: str, pencere_dk: float) -> dict:
     kum = start
     kum_t0 = None
     n = 0
-    try:
-        with open(d / f"{motor}_trades.jsonl") as f:
-            for ln in f:
-                if not ln.strip():
-                    continue
-                try:
-                    t = json.loads(ln)
-                except ValueError:
-                    continue
-                if t.get("type") or t.get("exit_reason") == "manuel_kapanis":
-                    continue
-                ts = float(t.get("ts") or 0)
-                if ts < created:
-                    continue
-                if ts > t0 and kum_t0 is None:
-                    kum_t0 = kum
-                kum += float(t.get("pnl_usd") or 0)
-                if ts >= max(t0, created):
-                    n += 1
-    except OSError:
-        pass
+    for ts, pnl, gecerli, _tid in islem_satirlari(d / f"{motor}_trades.jsonl"):
+        if not gecerli or ts < created:
+            continue
+        if ts > t0 and kum_t0 is None:
+            kum_t0 = kum
+        kum += pnl
+        if ts >= max(t0, created):
+            n += 1
     if kum_t0 is None:                     # pencerede islem yok
         baz, baz_ts, baz_kaynak = kum, t0, "gerceklesen"
     else:
         baz, baz_ts, baz_kaynak = kum_t0, t0, "gerceklesen"
-    try:
-        for ln in (d / f"{motor}_equity.jsonl").read_text().splitlines():
-            if not ln.strip():
-                continue
-            try:
-                e = json.loads(ln)
-                ts_e = float(e["ts"])
-            except (ValueError, KeyError):
-                continue
-            if created <= ts_e <= t0:
-                baz, baz_ts, baz_kaynak = float(e["eq"]), ts_e, "equity_ornek"
-    except OSError:
-        pass
+    for ts_e, eq_e in reversed(equity_satirlari(d / f"{motor}_equity.jsonl")):
+        if ts_e <= t0:
+            if ts_e >= created:
+                baz, baz_ts, baz_kaynak = eq_e, ts_e, "equity_ornek"
+            break
     if created > t0 and baz_kaynak == "gerceklesen" and kum_t0 is None:
         baz_kaynak = "start"               # motor pencereden genc
     pct = (kum / baz - 1) * 100 if baz > 0 else 0.0
