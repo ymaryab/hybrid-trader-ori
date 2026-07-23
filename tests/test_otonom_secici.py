@@ -72,6 +72,15 @@ def test_aday_sec_state_trigger():
     assert osec.aday_sec(sk, "yz", min_islem=0) is None
 
 
+def test_pozitif_esik_yuzde1(monkeypatch):
+    """23 Tem karari: %1 altindaki artis negatif sayilir."""
+    sk = {"yz": {"pct": 0.9, "islem": 5}, "r1": {"pct": 0.4, "islem": 3}}
+    assert osec.aday_sec(sk, "r1", min_islem=0) is None      # 0.9 < esik 1.0
+    sk["yz"]["pct"] = 1.0
+    assert osec.aday_sec(sk, "r1", min_islem=0) == "yz"      # tam esik: gecer
+    assert osec.aday_sec(sk, "r1", min_islem=0, esik=2.0) is None
+
+
 def test_durum_gocu_ve_cift_bayrak(tmp_path):
     (tmp_path / osec.DURUM_DOSYA).write_text(json.dumps(
         {"acik": True, "pencere_dk": 45}))

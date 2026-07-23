@@ -50,6 +50,9 @@ MIN_ISLEM = int(os.getenv("OTONOM_MIN_ISLEM", "0"))
 COOLDOWN_SN = float(os.getenv("OTONOM_COOLDOWN_SN", "900"))
 TASFIYE_SN = float(os.getenv("OTONOM_TASFIYE_SN", "180"))
 DOGAL_SN = float(os.getenv("OTONOM_DOGAL_SN", "600"))   # hibrit dogal faz
+# 23 Tem kullanici karari: saatlik artisi bu esigin ALTINDA kalan motor
+# "negatif" sayilir; hepsi altindaysa sistem beklemeye gecer + SALTER INER
+POZITIF_ESIK = float(os.getenv("OTONOM_POZITIF_ESIK", "1.0"))
 
 _yazici = None
 _git_sha_cache: str | None = None
@@ -76,7 +79,7 @@ def _git_sha() -> str:
 def config_anlik() -> dict:
     return {"kontrol_sn": KONTROL_SN, "min_islem": MIN_ISLEM,
             "cooldown_sn": COOLDOWN_SN, "tasfiye_sn": TASFIYE_SN,
-            "dogal_sn": DOGAL_SN}
+            "dogal_sn": DOGAL_SN, "pozitif_esik": POZITIF_ESIK}
 
 
 def olay_yaz(kind: str, payload: dict, actor: str = "system") -> dict:
@@ -202,11 +205,14 @@ def lider_bul(skorlar: dict[str, dict], mevcut: str) -> str | None:
 
 
 def aday_sec(skorlar: dict[str, dict], mevcut: str,
-             min_islem: int = MIN_ISLEM) -> str | None:
-    """STATE-TRIGGER: pozitif ve mevcut kaynaktan farkli lider varsa aday.
-    ZIRVEDE OLANDA KAL: mevcut lider ise gecis yok."""
+             min_islem: int = MIN_ISLEM,
+             esik: float | None = None) -> str | None:
+    """STATE-TRIGGER: esigi (vars. POZITIF_ESIK=+1) asan ve mevcut
+    kaynaktan farkli lider varsa aday. ZIRVEDE OLANDA KAL."""
+    if esik is None:
+        esik = POZITIF_ESIK
     uygun = {m: s for m, s in skorlar.items()
-             if s["islem"] >= min_islem and s["pct"] > 0}
+             if s["islem"] >= min_islem and s["pct"] >= esik}
     if not uygun:
         return None
     lider = lider_bul(uygun, mevcut)
@@ -298,25 +304,29 @@ def kontrol_dongusu() -> None:
             lider_pct = skorlar[lider]["pct"] if lider else 0.0
             eval_id = f"ev-{int(time.time() * 1000)}"
             # kural 3-4: system_enabled (saltere dokunmaz, yalniz secim)
-            if all(s["pct"] <= 0 for s in skorlar.values()):
+            if all(s["pct"] < POZITIF_ESIK for s in skorlar.values()):
                 if d["system_enabled"]:
                     d["system_enabled"] = False
                     durum_yaz(d)
-                    _salter_indir("tum motorlar <=0")
+                    _salter_indir(f"tum motorlar esik altinda (<%{POZITIF_ESIK})")
                     olay_yaz("AutonomOff", {
-                        "reason": "ALL_MOTORS_NON_POSITIVE",
+                        "reason": "ALL_MOTORS_BELOW_THRESHOLD",
+                        "esik": POZITIF_ESIK,
                         "eval_id": eval_id, "ranking": skorlar,
                         "leader": lider, "leader_change_pct": lider_pct,
                         "salter": "kapatildi",
                         "config": config_anlik()})
-                    notify("[CANLI] OTONOM BEKLEMEDE: tum motorlar <=0, "
-                           "SALTER INDI (giris yok, cikislar acik)")
-            elif not d["system_enabled"] and lider is not None and lider_pct > 0:
+                    notify(f"[CANLI] OTONOM BEKLEMEDE: tum motorlar "
+                           f"%{POZITIF_ESIK} esiginin altinda, SALTER INDI "
+                           "(giris yok, cikislar acik)")
+            elif (not d["system_enabled"] and lider is not None
+                  and lider_pct >= POZITIF_ESIK):
                 d["system_enabled"] = True
                 durum_yaz(d)
                 _salter_kaldir()
                 olay_yaz("AutonomOn", {
-                    "reason": "POSITIVE_LEADER_FOUND", "eval_id": eval_id,
+                    "reason": "LEADER_ABOVE_THRESHOLD", "eval_id": eval_id,
+                    "esik": POZITIF_ESIK,
                     "ranking": skorlar, "selected_motor": lider,
                     "selected_change_pct": lider_pct,
                     "salter": "acildi",
