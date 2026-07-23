@@ -114,11 +114,21 @@ def test_olay_omurgaya_yazilir_zarfli(tmp_path):
     assert evs[0]["payload"]["git_sha"]
 
 
-def test_tasfiye_kancasi(tmp_path):
+def test_tasfiye_kancasi_hibrit(tmp_path):
+    """Dogal fazda giris blogu var ama zorla satis yok; zorla_ts gecince
+    zorla satis; eski format (json degil) guvenli tarafta zorla sayilir."""
     import hibrit_trader.canli_session as cs
     assert cs.tasfiye_talebi_var() is False
-    (tmp_path / cs.TASFIYE_FILE).write_text("test")
-    assert cs.tasfiye_talebi_var() is True
+    assert cs.tasfiye_zorla_aktif() is False
+    (tmp_path / cs.TASFIYE_FILE).write_text(json.dumps(
+        {"zorla_ts": time.time() + 300}))
+    assert cs.tasfiye_talebi_var() is True      # giris blogu hemen
+    assert cs.tasfiye_zorla_aktif() is False    # dogal faz: zorlama yok
+    (tmp_path / cs.TASFIYE_FILE).write_text(json.dumps(
+        {"zorla_ts": time.time() - 1}))
+    assert cs.tasfiye_zorla_aktif() is True     # sure doldu: zorla
+    (tmp_path / cs.TASFIYE_FILE).write_text("eski-format")
+    assert cs.tasfiye_zorla_aktif() is True     # parse edilemez: zorla
 
 
 def test_rejim_salteri(tmp_path):

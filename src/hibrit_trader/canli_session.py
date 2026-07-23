@@ -144,10 +144,25 @@ TASFIYE_FILE = "CANLI_TASFIYE"
 
 
 def tasfiye_talebi_var() -> bool:
-    """Otonom gecis tasfiyesi: data/CANLI_TASFIYE varsa TUM acik canli
-    pozisyonlar bir sonraki tik'te "otonom_tasfiye" ile satilir ve yeni
-    giris acilmaz. Dosyayi olusturan (otonom secici) duzlesince siler."""
+    """Otonom gecis tasfiyesi aktif mi: dosya varken yeni giris ACILMAZ.
+    Satis davranisi iki fazli (23 Tem hibrit karari), bkz.
+    tasfiye_zorla_aktif()."""
     return (_data_dir() / TASFIYE_FILE).exists()
+
+
+def tasfiye_zorla_aktif() -> bool:
+    """Hibrit tasfiye fazi: dosyadaki zorla_ts gecilmisse pozisyonlar
+    "otonom_tasfiye" ile ZORLA satilir; oncesinde dogal kurallar
+    (tp/fren/timeout) calismaya devam eder. Dosya parse edilemezse
+    guvenli taraf: zorla satis (eski format uyumu)."""
+    p = _data_dir() / TASFIYE_FILE
+    if not p.exists():
+        return False
+    try:
+        zorla_ts = float(json.loads(p.read_text()).get("zorla_ts") or 0)
+    except (OSError, ValueError, AttributeError):
+        return True
+    return time.time() >= zorla_ts
 
 
 class CanliEngine:
@@ -650,7 +665,7 @@ class CanliEngine:
     # ---- Cikis karari: kaynak motorun _eval_position'ina DELEGE (21 Tem) ----
     def _eval_position(self, pos: dict, price: float, now: float,
                        liquidity_usd: float | None = None) -> str | None:
-        if tasfiye_talebi_var():
+        if tasfiye_zorla_aktif():
             return "otonom_tasfiye"
         return _KaynakEngine._eval_position(self, pos, price, now,
                                             liquidity_usd=liquidity_usd)

@@ -8,7 +8,8 @@ Mantik (kullanici speci + P0 duzeltmeleri):
   effective = user_enabled AND system_enabled. system OFF SALTERI DE INDIRIR
   (23 Tem kullanici karari: negatif rejimde giris yok, cikislar surer);
   pozitif lider donunce salter tekrar acilir.
-- Gecis: tasfiye (CANLI_TASFIYE) -> duzlesme -> swap oncesi lider yeniden
+- Gecis (HIBRIT, 23 Tem): alim durur, DOGAL_SN boyunca dogal
+  cikislar calisir, sure dolunca kalanlar zorla satilir -> duzlesme -> swap oncesi lider yeniden
   dogrulanir -> niyet diske yazilir -> canli_swap.py (drop-in + restart).
 - MUTABAKAT: restart seciciyi oldurdugu icin SwitchCompleted/Failed
   olayini restart sonrasi YENI surec, diskteki niyetle env'i
@@ -48,6 +49,7 @@ KONTROL_SN = float(os.getenv("OTONOM_KONTROL_SN", "300"))
 MIN_ISLEM = int(os.getenv("OTONOM_MIN_ISLEM", "0"))
 COOLDOWN_SN = float(os.getenv("OTONOM_COOLDOWN_SN", "900"))
 TASFIYE_SN = float(os.getenv("OTONOM_TASFIYE_SN", "180"))
+DOGAL_SN = float(os.getenv("OTONOM_DOGAL_SN", "600"))   # hibrit dogal faz
 
 _yazici = None
 _git_sha_cache: str | None = None
@@ -73,7 +75,8 @@ def _git_sha() -> str:
 
 def config_anlik() -> dict:
     return {"kontrol_sn": KONTROL_SN, "min_islem": MIN_ISLEM,
-            "cooldown_sn": COOLDOWN_SN, "tasfiye_sn": TASFIYE_SN}
+            "cooldown_sn": COOLDOWN_SN, "tasfiye_sn": TASFIYE_SN,
+            "dogal_sn": DOGAL_SN}
 
 
 def olay_yaz(kind: str, payload: dict, actor: str = "system") -> dict:
@@ -356,23 +359,35 @@ def kontrol_dongusu() -> None:
                 "cooldown_remaining_sec": 0.0,
                 "open_positions": acik, "config": config_anlik()})
             notify(f"[CANLI] OTONOM GECIS: {mevcut} -> {aday} "
-                   f"(%{lider_pct}); tasfiye basladi ({acik} poz)")
+                   f"(%{lider_pct}); hibrit tasfiye: {acik} poz, "
+                   f"dogal cikisa {DOGAL_SN:.0f}sn")
             tasfiye = _data_dir() / TASFIYE_FILE
-            tasfiye.write_text(f"otonom {switch_id} {mevcut}->{aday}")
             bas = time.time()
+            zorla_ts = bas + DOGAL_SN
+            tasfiye.write_text(json.dumps({
+                "switch_id": switch_id, "from": mevcut, "to": aday,
+                "zorla_ts": zorla_ts}))
             duz = False
-            while time.time() - bas < TASFIYE_SN:
+            dogal_sonu_poz = None
+            while time.time() - bas < DOGAL_SN + TASFIYE_SN:
                 time.sleep(5)
+                if dogal_sonu_poz is None and time.time() >= zorla_ts:
+                    dogal_sonu_poz = _canli_acik_poz()   # zorlamaya kalanlar
                 if _canli_acik_poz() == 0:
                     duz = True
                     break
             tasfiye.unlink(missing_ok=True)
             kalan = _canli_acik_poz()
+            if dogal_sonu_poz is None:       # dogal fazda duzlesti
+                dogal_sonu_poz = 0 if duz else kalan
+            dogal_kapatilan = max(0, acik - max(dogal_sonu_poz, 0))
+            zorla_kapatilan = max(0, max(dogal_sonu_poz, 0) - max(kalan, 0))
             if not duz:
                 olay_yaz("AutonomSwitchAborted", {
                     "switch_id": switch_id, "reason": "timeout",
                     "asama": "tasfiye", "acik_kalan_poz": kalan,
-                    "kapatilan_poz": max(0, acik - max(kalan, 0))})
+                    "dogal_kapatilan": dogal_kapatilan,
+                    "zorla_kapatilan": zorla_kapatilan})
                 notify("[CANLI] OTONOM: tasfiye zaman asimi, gecis iptal")
                 continue
             # swap oncesi son dogrulama: lider hala ayni mi (yaris kosulu)
@@ -390,7 +405,9 @@ def kontrol_dongusu() -> None:
             niyet = {"switch_id": switch_id, "eval_id": eval_id,
                      "from": mevcut, "to": aday, "bas_ts": bas,
                      "tasfiye_sure_sec": round(time.time() - bas, 1),
-                     "positions_closed": acik}
+                     "positions_closed": acik,
+                     "dogal_kapatilan": dogal_kapatilan,
+                     "zorla_kapatilan": zorla_kapatilan}
             yol = _data_dir() / NIYET_DOSYA
             tmp = yol.with_suffix(".tmp")
             tmp.write_text(json.dumps(niyet))
