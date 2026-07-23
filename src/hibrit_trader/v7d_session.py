@@ -31,7 +31,7 @@ from pathlib import Path
 
 import httpx
 
-from hibrit_trader.broker import ExecOrder, PaperExecBroker, make_exec_broker
+from hibrit_trader.broker import ExecOrder, PaperExecBroker, init_motor_exec, make_exec_broker  # noqa: F401
 from hibrit_trader.config import GAS_COST_USD
 from hibrit_trader.entry_fresh import (
     HuniSayac,
@@ -42,13 +42,17 @@ from hibrit_trader.entry_fresh import (
 )
 from hibrit_trader.fast_price import get_feed
 from hibrit_trader.killswitch import is_active as kill_is_active
+from hibrit_trader.killswitch import notify
+from hibrit_trader.uyari_notify import kritik_uyari
 # V7D paper: telegram bildirim GONDERMEZ (canli V7 grubuyla karismasin).
 from hibrit_trader.live_sim import fetch_pool_snapshot
+from hibrit_trader import aday_paylastir
 from hibrit_trader.momentum_session import (
     SCAN_INTERVAL_SEC,
     _data_dir,
     _mom_slippage,
     sol_chg_h1,
+    yas_str,
     sol_h1_son_olcum,
 )
 from hibrit_trader.paper import _now_iso, new_trade_id
@@ -60,21 +64,22 @@ log = logging.getLogger(__name__)
 
 # ---- V7D esikleri (SECICI: dar bant + siki rejim + yuksek tp) -----------------
 CHG_H1_MIN = float(os.getenv("V7D_CHG_H1_MIN", "10"))
-CHG_H1_MAX = float(os.getenv("V7D_CHG_H1_MAX", "20"))   # dar bant (retro: 10-15 optimal)
-LIQ_MIN_USD = float(os.getenv("V7D_LIQ_MIN_USD", "150000"))
+CHG_H1_MAX = float(os.getenv("V7D_CHG_H1_MAX", "50"))   # 16 Tem: 20->50 (dar bant aday yagmurunu bogduguundan v7hizli'ya evir)
+LIQ_MIN_USD = float(os.getenv("V7D_LIQ_MIN_USD", "100000"))
 MAX_SLOTS = 5
 START_BALANCE = float(os.getenv("V7D_START_BALANCE", "1000"))
-TP_PCT = 2.5            # SECICI: +%2.5 UZERI (v7 +2, secici daha secici)
+TP_PCT = 2.0            # 16 Tem: 2.5->2.0 (v7/v7hizli ile ayni; TP nadir tetiklenmemesi icin)
 GRACE_SEC = 15 * 60     # ilk 15dk sabir
 LATE_STOP_PCT = -2.0    # 15dk sonrasi: -%2 alti SAT
 CEILING_SEC = 20 * 60   # 20dk tavan (SECICI biraz daha bekler; v7'de 15dk)
 DISASTER_PCT = -15.0    # HER AN -%15 (v7 ile ayni)
-SOL_H1_MIN = float(os.getenv("V7D_SOL_H1_MIN", "0.5"))   # SIKI rejim (v7 0.35)
-# h1 bant skip: SECICI'de tum h1 10-20 bandi m5<=0 iken ELER (m5>0 zorunlu).
-# LO=HI olursa kacinma kapanir; burada tum h1 aralik: LO=10, HI=20.
-H1_SKIP_LO = float(os.getenv("V7D_H1_SKIP_LO", "10"))
-H1_SKIP_HI = float(os.getenv("V7D_H1_SKIP_HI", "20"))
-H1_SKIP_M5_KOSUL = os.getenv("V7D_H1_SKIP_M5_KOSUL", "1").strip() != "0"
+STOP_PCT = float(os.getenv("V7D_STOP_PCT", "-6.0"))  # 23 Tem kullanici karari: -6 goren HER AN satilir (stop_6)
+SOL_H1_MIN = float(os.getenv("V7D_SOL_H1_MIN", "0.35"))  # 16 Tem kullanici: 0.5 -> 0.35
+# h1 bant kacinma: 16 Tem kapatildi (LO=HI=0). Aday yagmurunu sikilastiran skip
+# filtresi v7hizli ile paralel biçimde acildi.
+H1_SKIP_LO = float(os.getenv("V7D_H1_SKIP_LO", "0"))
+H1_SKIP_HI = float(os.getenv("V7D_H1_SKIP_HI", "0"))
+H1_SKIP_M5_KOSUL = os.getenv("V7D_H1_SKIP_M5_KOSUL", "0").strip() != "0"
 BANT_SKIP_DEDUP_SEC = 30 * 60
 DAILY_LOSS_LIMIT_USD = float(os.getenv("MOM_DAILY_LOSS_LIMIT_USD", "0"))
 # Paper motorda MTM anlamsiz, PCT sinir etkin degil; tutarlilik icin taniml.
@@ -139,9 +144,9 @@ class V7DEngine:
         self._lock_fh = None
         self._son_exec_neden: str | None = None
         self._belirsiz_aday: dict | None = None    # belirsiz alim: benimseme bekleyen aday
-        # SABIT PAPER: BROKER_MODE ne olursa olsun exec paper (canli para tasimaz).
-        self._exec = PaperExecBroker()
-        self._exec_arizali = False
+        # 16 Tem: CANLI_MOTOR env swap altyapisi. Default paper; CANLI_MOTOR=v7d
+        # secilirse make_exec_broker (live/dryrun) devreye girer.
+        self._exec, self._exec_arizali = init_motor_exec("v7d")
         self._load()
         self._restore_day_realized()
         # gun ici restart: kesici esigi ayni gun icin sabit kalir (state'ten)
@@ -491,6 +496,10 @@ class V7DEngine:
                 continue
             if self._cooldown_until.get(pr.token_address, 0.0) > now:
                 continue
+            # Aday paylastir: baska motor 15dk icinde ayni token'i aldi mi?
+            _izin, _red_nedeni = aday_paylastir.iddia_et(pr.token_address, "v7d", pr.name)
+            if not _izin:
+                continue
             if pr.liquidity_usd < LIQ_MIN_USD:
                 continue
             liq_ok += 1
@@ -596,6 +605,7 @@ class V7DEngine:
                              pair.name)
                 return False
             log.error("V7D GIRIS IPTAL %s: canli alim gerceklesmedi", pair.name)
+            kritik_uyari("GIRIS IPTAL", f"giris:v7d:{pair.name}", f"V7D {pair.name}: canli alim gerceklesmedi (broker fail)")
             return False
         if canli is not None and canli.fiyat > 0:
             eff_price = canli.fiyat  # sadece live: gercek fill fiyati baglayici
@@ -639,8 +649,11 @@ class V7DEngine:
         feed = get_feed()
         if feed is not None:  # hizli goz: havuzu 1s feed'ine dinamik ekle
             feed.add_pool(pos["pool_address"])
-        log.warning("V7D BUY %s $%.2f @ %.8g (h1 %.1f%%, liq $%.0f)",
-                    pair.name, usd, eff_price, pair.chg_h1, pair.liquidity_usd)
+        aday_paylastir.kaydet(pair.token_address, "v7d", pair.name)
+        log.warning("V7D BUY %s $%.2f @ %.8g (h1 %.1f%%, liq $%.0f, yas %s)",
+                    pair.name, usd, eff_price, pair.chg_h1, pair.liquidity_usd, yas_str(pair.pool_created_at))
+        notify("[V7D] ALIM: %s $%.2f @ %.8g (h1 %%%.1f, liq $%.0f)"
+               % (pair.name, usd, eff_price, pair.chg_h1, pair.liquidity_usd))
         return True
 
     # ---- Cikis: tp_2 (+%2.5 uzeri) / stop_felaket (-%15 her an) /
@@ -663,6 +676,8 @@ class V7DEngine:
             return "tp_2"
         if pnl_pct <= DISASTER_PCT:
             return "stop_felaket"
+        if STOP_PCT < 0 and pnl_pct <= STOP_PCT:
+            return "stop_6"
         if age >= GRACE_SEC and pnl_pct <= LATE_STOP_PCT:
             return "stop_gec"
         if age >= CEILING_SEC:
@@ -701,6 +716,7 @@ class V7DEngine:
                             "degerleme donuk (last %.8g); stoplar "
                             "tetiklenemiyor olabilir", pos["pair"],
                             taze_yas, price)
+                        kritik_uyari("KOR FIYAT", f"kor:v7d:{pos['pair']}", f"V7D {pos['pair']}: {taze_yas:.0f}s taze fiyat yok, stop tetiklenemez")
             else:
                 self._fiyat_tazelendi(pos, now)
             reason = self._eval_position(pos, price, now, liquidity_usd=liq)
@@ -739,7 +755,7 @@ class V7DEngine:
         eff_price = price * (1 - slip)
         karar_cikis = eff_price  # canli fill ezmeden onceki karar cikisi
         sat_bps = EXIT_SLIPPAGE_BPS.get(reason, 150)
-        deneme = STOP_RETRY_ADET if reason in ("stop_gec", "stop_felaket") else 1
+        deneme = STOP_RETRY_ADET if reason in ("stop_gec", "stop_felaket", "stop_6") else 1
         devam, canli = False, None
         for i in range(deneme):
             devam, canli = self._exec_fill("sat", pos["token_address"],
@@ -760,6 +776,7 @@ class V7DEngine:
             log.error("V7D SATIS ERTELENDI %s: canli satis gerceklesmedi, "
                       "%.0fs soguma sonrasi tekrar denenecek",
                       pos["pair"], SAT_COOLDOWN_SEC)
+            kritik_uyari("SATIS ERTELENDI", f"sat:v7d:{pos['pair']}", f"V7D {pos['pair']}: canli satis fail, retry cooldown")
             return
         if canli is not None and canli.fiyat > 0:  # sadece live baglayici
             eff_price = canli.fiyat
@@ -834,3 +851,5 @@ class V7DEngine:
             feed.remove_pool(pos["pool_address"])
         log.warning("V7D SELL %s pnl $%.2f (%.2f%%) — %s, hold %.0fs (mfe %.1f%% mae %.1f%%)",
                     pos["pair"], pnl, pnl_pct, reason, hold_sec, pos["mfe_pct"], pos["mae_pct"])
+        notify("[V7D] SATIM: %s pnl $%.2f (%%%.2f) — %s, hold %.0fdk"
+               % (pos["pair"], pnl, pnl_pct, reason, hold_sec / 60))
