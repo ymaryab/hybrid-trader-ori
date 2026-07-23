@@ -357,11 +357,11 @@ class R2Engine:
         log.warning(
             "R2 RUNNER basladi - sanal $%.2f · slot %d · giris liq>=$%.0f + "
             "h1 %.0f..%.0f + m5 %.0f..%.0f + yas>=%.0fdk · breakeven@%.0f taban+%.1f · "
-            "kilit +%.0f (1/4) · ratchet %g/%g/%g · felaket %.0f · erken stop %.0f "
+            "kilit +%.0f/+%.0f (1/4+1/4) · ratchet %g/%g/%g · felaket %.0f · erken stop %.0f "
             "(grace %.0fs) · tavan %.0fdk",
             self.balance, MAX_SLOTS, LIQ_MIN_USD, CHG_H1_MIN, CHG_H1_MAX,
             M5_MIN, M5_MAX, MIN_YAS_DK, BREAKEVEN_ARM_PCT, BREAKEVEN_FLOOR_PCT,
-            KILIT_PCT, TRAIL_T1, TRAIL_T2, TRAIL_T3, DISASTER_PCT,
+            KILIT1_PCT, KILIT2_PCT, TRAIL_T1, TRAIL_T2, TRAIL_T3, DISASTER_PCT,
             LATE_STOP_PCT, GRACE_SEC, CEILING_SEC / 60,
         )
         self._save()
