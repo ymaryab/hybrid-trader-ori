@@ -36,6 +36,11 @@ engine = Engine(settings, broker)
 _phantom_session: str | None = None
 
 app = FastAPI(title="Hybrid Trade")
+# 24 Tem: /api/filo ~1MB/tik; yavas tunel hattinda 4-10sn cekiyordu.
+# gzip ~10x kucultur, panel uzak baglantida da akici olur.
+from fastapi.middleware.gzip import GZipMiddleware  # noqa: E402
+
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 
 def _trades_path() -> Path:
