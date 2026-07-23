@@ -78,8 +78,71 @@ def _uyar(mesaj: str, kanal_key: str) -> None:
         log.warning("SENKRON telegram gonderilemedi", exc_info=True)
 
 
+KASA_ESIK_USD = float(os.getenv("SENKRON_KASA_ESIK", "3.0"))
+KASA_PERIOD_SEC = float(os.getenv("SENKRON_KASA_PERIOD", "600"))
+_kasa_son_ts = 0.0
+_kasa_son_fark: float | None = None
+
+
+def _sol_fiyat() -> float | None:
+    try:
+        r = urllib.request.urlopen(
+            "https://api.dexscreener.com/latest/dex/tokens/"
+            "So11111111111111111111111111111111111111112", timeout=8)
+        y = json.loads(r.read())
+        prs = [p for p in (y.get("pairs") or []) if p.get("priceUsd")]
+        if prs:
+            return float(max(prs, key=lambda x: float(
+                (x.get("liquidity") or {}).get("usd") or 0))["priceUsd"])
+    except Exception:
+        pass
+    return None
+
+
+def kasa_mutabakat(state: dict) -> None:
+    """24 Tem (onay): defter nakiti vs zincir SOL. Fark (ucretler + toz)
+    data/canli_kasa_mutabakat.jsonl'e yazilir; sicramada [CANLI] uyarisi
+    (telegram filtresinden gecer)."""
+    global _kasa_son_ts, _kasa_son_fark
+    if time.time() - _kasa_son_ts < KASA_PERIOD_SEC:
+        return
+    _kasa_son_ts = time.time()
+    try:
+        sol = _rpc("getBalance", [CUZDAN]).get("result", {}).get("value")
+        if sol is None:
+            return
+        sol = float(sol) / 1e9
+    except Exception:
+        return
+    fiyat = _sol_fiyat()
+    if not fiyat:
+        return
+    defter = float(state.get("balance") or 0.0)
+    zincir_usd = sol * fiyat
+    fark = defter - zincir_usd
+    kayit = {"ts": time.time(), "defter_usd": round(defter, 2),
+             "zincir_sol": round(sol, 6), "sol_fiyat": round(fiyat, 2),
+             "zincir_usd": round(zincir_usd, 2), "fark_usd": round(fark, 2)}
+    try:
+        with open(DATA / "canli_kasa_mutabakat.jsonl", "a") as f:
+            f.write(json.dumps(kayit) + "\n")
+    except OSError:
+        pass
+    if _kasa_son_fark is not None and fark - _kasa_son_fark >= KASA_ESIK_USD:
+        try:
+            from hibrit_trader.killswitch import notify
+            notify(f"[CANLI] KASA MUTABAKAT: defter-cuzdan nakit farki "
+                   f"{_kasa_son_fark:.2f}$ -> {fark:.2f}$ buyudu "
+                   f"(ucret/toz kacagi olabilir)")
+        except Exception:
+            pass
+    _kasa_son_fark = fark
+
+
 def check_once() -> None:
-    canli_motor = os.getenv("CANLI_MOTOR", "v7").strip().lower()
+    # 24 Tem: 10. motor mimarisi: canli pozisyonlar canli_state.json'da.
+    # (Eski CANLI_MOTOR env'i v7 varsayip YANLIS dosyayi izliyordu.)
+    canli_motor = os.getenv("CANLI_MOTOR", "canli").strip().lower()
     sp = DATA / f"{canli_motor}_state.json"
     if not sp.exists():
         return
@@ -122,6 +185,7 @@ def check_once() -> None:
     for key in list(_supheli):
         if key not in su_tur_supheli:
             _supheli.pop(key, None)
+    kasa_mutabakat(s)
 
 
 def run_forever() -> None:

@@ -2398,6 +2398,18 @@ function basBot(m,d){
   eqCharts["eq"+m.id]&&eqCharts["eq"+m.id].setLive(s.equity);
   return s;
 }
+function basCanlimKarti(c){
+  // 24 Tem (onay): 10. motor CANLI karti defter kasasi yerine CUZDAN
+  // gercegini gosterir: zincir SOL + pozisyon MTM. Defter/cuzdan nakit
+  // sapmasi (ucretler+toz) karti sisiremez.
+  const mtmEl=document.getElementById("mtm-canlim");
+  if(!mtmEl||!c)return;
+  const dp=c.mtm-c.baz;
+  mtmEl.innerHTML=`<b class="${cls(dp)}">$${f(c.mtm)}</b> <span class="slotbadge" style="background:#238636;color:#fff">cüzdan</span>`;
+  const sub=document.getElementById("sub-canlim");
+  if(sub)sub.innerHTML=`<span class="${cls(c.pnl_pct)}">${c.pnl_pct>0?"+":""}${f(c.pnl_pct)}%</span> · baz $${f(c.baz)} · zincir gerçeği`;
+  eqCharts["eqcanlim"]&&eqCharts["eqcanlim"].setLive(c.mtm);
+}
 function basCanli(c, aktif){
   // CANLI: /api/filo'daki canli blogu (cuzdan snapshot) → aktif canli motorun
   // kartinin mtm/sub/sol/foot alanlarina yazilir. basBot ilk yazar, basCanli ustune.
@@ -2769,7 +2781,7 @@ async function filoTick(){
   // rozet/buton icin kaynak motor (10. motor mimarisi): CANLI hangi kurali kopyaliyor
   const aktifKaynak=((d.canlim||{}).summary||{}).kaynak_motor||aktifMotor;
   basCanliMotor(aktifKaynak);       // buton state + rozet
-  if(d.canli)basCanli(d.canli, aktifMotor);  // aktif motor kartina canli veriler
+  if(d.canli)basCanli(d.canli, aktifMotor); basCanlimKarti(d.canli);  // aktif motor kartina canli veriler
   basCanliPoz(d.acik_pozlar||[]);   // 5 kaynak birlesik acik-poz tablosu
   basMotorTrades(d);                 // 18 Tem: her motor karti altina son 10 islem
   basSira(d, eqs);                   // 19 Tem: getiri yuzdesine gore 1-9 dinamik sira
