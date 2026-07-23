@@ -710,6 +710,37 @@ def _motor_ozet(data_dir: Path, prefix: str, now: float, limit: int,
     pnl_24h_usd = sum(float(t.get("pnl_usd") or 0) for t in trades_24h)
     sb = float(state.get("start_balance") or 1000.0)
     pnl_24h_pct = (pnl_24h_usd / sb * 100) if sb > 0 else 0.0
+    # 23 Tem (kullanici formulu): kayan 1 saatlik degisim.
+    # eq_simdi / eq_1saat_once - 1; 13:00'da 12:00'a, 13:01'de 12:01'e bakar.
+    # 1 saat onceki deger: equity ornek dosyasindan son ornek <= t0; yoksa
+    # gerceklesen kumulatif (start + pnl toplami, ts <= t0). Motor 1 saatten
+    # gencse baz start_balance'tir. CANLI'da equity.jsonl cuzdan snapshot'i
+    # oldugu icin kullanilmaz (gerceklesen kumulatif yeterli).
+    t0 = now - 3600
+    eq_now = _live_equity(state)
+    eq_once = None
+    if prefix != "canli":
+        ep = data_dir / f"{prefix}_equity.jsonl"
+        if ep.exists():
+            try:
+                for ln in ep.read_text().splitlines():
+                    if not ln.strip():
+                        continue
+                    try:
+                        d = json.loads(ln)
+                        ts_e = float(d["ts"])
+                    except Exception:
+                        continue
+                    if created_ts <= ts_e <= t0:
+                        eq_once = float(d["eq"])
+            except Exception:
+                pass
+    if eq_once is None:
+        eq_once = sb + sum(float(t.get("pnl_usd") or 0) for t in trades
+                           if created_ts <= float(t.get("ts") or 0) <= t0)
+    trades_1h = [t for t in trades
+                 if float(t.get("ts") or 0) >= max(t0, created_ts)]
+    pnl_1h_pct = ((eq_now / eq_once - 1) * 100) if eq_once and eq_once > 0 else 0.0
     summary = {
         "balance": round(float(state.get("balance") or 0.0), 2),
         "start_balance": state.get("start_balance"),
@@ -720,6 +751,8 @@ def _motor_ozet(data_dir: Path, prefix: str, now: float, limit: int,
         "trades_24h": len(trades_24h),
         "pnl_24h_usd": round(pnl_24h_usd, 2),
         "pnl_24h_pct": round(pnl_24h_pct, 2),
+        "trades_1h": len(trades_1h),
+        "pnl_1h_pct": round(pnl_1h_pct, 2),
         "wins": wins,
         "win_rate_pct": round(wins / len(trades) * 100, 1) if trades else None,
         "exit_reasons": reasons,
@@ -1698,7 +1731,7 @@ def _filo_kart(m: dict, canli_durum: str = "yok") -> str:
             f'<canvas class="spark" id="spark-{m["id"]}" height="36"></canvas>'
             f'<div class="kfoot" id="foot-{m["id"]}">-</div>'
             f'{swap_btn}'
-            f'<div class="pnl24" id="pnl24-{m["id"]}" title="Son 24 saat getiri">-</div>'
+            f'<div class="pnl24" id="pnl24-{m["id"]}" title="Son 1 saat getiri (kayan pencere: simdiki deger / 1 saat onceki deger - 1)">-</div>'
             f'<div class="pnl24sub" id="slotwin-{m["id"]}">-</div>'
             f'</div>'
             f'<div class="motor-poz" id="motorpoz-{m["id"]}">'
@@ -2333,9 +2366,9 @@ function basBot(m,d){
   const sw=document.getElementById("slotwin-"+m.id);
   if(sw)sw.innerHTML=`slot ${dolu} ${s.open_slots}/${m.slots}<br>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}`;
   document.getElementById("foot-"+m.id).innerHTML="";
-  // 19 Tem: sag ust 24h getiri gostergesi
-  const p24=Number(s.pnl_24h_pct||0);
-  const n24=Number(s.trades_24h||0);
+  // 23 Tem: sag ust KAYAN 1 SAAT getiri gostergesi (kullanici formulu)
+  const p24=Number(s.pnl_1h_pct||0);
+  const n24=Number(s.trades_1h||0);
   const p24el=document.getElementById("pnl24-"+m.id);
   if(p24el){
     if(n24===0){p24el.textContent="0"; p24el.className="pnl24 bos";}
@@ -2598,12 +2631,12 @@ function basTarama(d){
   e.className="badge"+(t==="normal"?" ok":(t==="kor"?" err":" bayat"));
 }
 function basSira(d, eqs){
-  // 19 Tem: motor kartlarini SON 24 SAAT getiri yuzdesine gore dinamik sirala.
-  // Isleme (24h icinde) girmemis motorlar sonda.
+  // 23 Tem: motor kartlarini KAYAN SON 1 SAAT getirisine gore dinamik sirala.
+  // Isleme (1h icinde) girmemis motorlar sonda.
   const arr=MOTORLAR.map(m=>{
     const s=d[m.id]&&d[m.id].summary||{};
-    const pct=Number(s.pnl_24h_pct||0);
-    const n=Number(s.trades_24h||0);
+    const pct=Number(s.pnl_1h_pct||0);
+    const n=Number(s.trades_1h||0);
     return {id:m.id, pct:pct, n:n};
   });
   arr.sort((a,b)=>{

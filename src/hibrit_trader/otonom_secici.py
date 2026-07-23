@@ -1,7 +1,7 @@
 """Otonom kaynak secici (23 Tem 2026, kullanici talebi).
 
-Panel ust menusundeki OTONOM dugmesi acikken calisir: son PENCERE_DK
-dakikada en cok KAZANDIRAN paper motoru bulur; canli kaynak farkliysa
+Panel ust menusundeki OTONOM dugmesi acikken calisir: son PENCERE_DK (vars. 60)
+dakikanin KAYAN degisiminde zirvede olan motoru bulur (eq_simdi/eq_once-1); canli kaynak farkliysa
 once acik canli pozisyonlari tasfiye eder (CANLI_TASFIYE dosyasi,
 canli motor "otonom_tasfiye" ile satar), duzlesince mevcut swap
 akisini tetikler (canli_swap.py: drop-in + servis restart).
@@ -36,10 +36,10 @@ log = logging.getLogger(__name__)
 
 DURUM_DOSYA = "OTONOM_MOD.json"
 KARAR_LOG = "otonom_secici.jsonl"
-VARSAYILAN_PENCERE_DK = 120
+VARSAYILAN_PENCERE_DK = 60
 
 KONTROL_SN = float(os.getenv("OTONOM_KONTROL_SN", "300"))
-MIN_ISLEM = int(os.getenv("OTONOM_MIN_ISLEM", "3"))
+MIN_ISLEM = int(os.getenv("OTONOM_MIN_ISLEM", "0"))
 COOLDOWN_SN = float(os.getenv("OTONOM_COOLDOWN_SN", "900"))
 TASFIYE_SN = float(os.getenv("OTONOM_TASFIYE_SN", "180"))
 
@@ -73,55 +73,92 @@ def _karar_logla(kayit: dict) -> None:
         f.write(json.dumps(kayit) + "\n")
 
 
+def kayan_degisim(motor: str, pencere_dk: float) -> dict:
+    """Kayan pencere degisimi (23 Tem kullanici formulu):
+    eq_simdi / eq_pencere_once - 1.
+
+    eq_simdi = start + gerceklesen pnl toplami (motor defterinden).
+    eq_once = equity ornek dosyasindan son ornek <= t0; yoksa gerceklesen
+    kumulatif (ts <= t0). Motor pencereden gencse baz start_balance.
+    Panel _motor_ozet ile ayni formul; pencere suresi burada ayarlanabilir.
+    """
+    d = _data_dir()
+    start = 1000.0
+    created = 0.0
+    try:
+        st = json.loads((d / f"{motor}_state.json").read_text())
+        start = float(st.get("start_balance") or 1000.0)
+        created = float(st.get("created_ts") or 0.0)
+    except (OSError, ValueError):
+        pass
+    t0 = time.time() - pencere_dk * 60
+    kum = start
+    kum_t0 = None
+    n = 0
+    try:
+        with open(d / f"{motor}_trades.jsonl") as f:
+            for ln in f:
+                if not ln.strip():
+                    continue
+                try:
+                    t = json.loads(ln)
+                except ValueError:
+                    continue
+                if t.get("type") or t.get("exit_reason") == "manuel_kapanis":
+                    continue
+                ts = float(t.get("ts") or 0)
+                if ts < created:
+                    continue
+                if ts > t0 and kum_t0 is None:
+                    kum_t0 = kum
+                kum += float(t.get("pnl_usd") or 0)
+                if ts >= max(t0, created):
+                    n += 1
+    except OSError:
+        pass
+    if kum_t0 is None:
+        kum_t0 = kum   # pencerede islem yok: degisim 0
+    eq_once = kum_t0
+    try:
+        for ln in (d / f"{motor}_equity.jsonl").read_text().splitlines():
+            if not ln.strip():
+                continue
+            try:
+                e = json.loads(ln)
+                ts_e = float(e["ts"])
+            except (ValueError, KeyError):
+                continue
+            if created <= ts_e <= t0:
+                eq_once = float(e["eq"])
+    except OSError:
+        pass
+    pct = (kum / eq_once - 1) * 100 if eq_once > 0 else 0.0
+    return {"pct": round(pct, 3), "islem": n}
+
+
 def pencere_skorlari(pencere_dk: float,
                      kaynaklar: list[str]) -> dict[str, dict]:
-    """Motor basina son pencere_dk dakikanin gerceklesen PnL'i.
-    Kismi kapanislar trade_id ile gruplanmaz: pencere toplami icin
-    satir toplami yeterli (ayni sonuc)."""
-    esik = time.time() - pencere_dk * 60
+    """Motor basina kayan pencere degisim yuzdesi."""
     out: dict[str, dict] = {}
     for m in kaynaklar:
-        yol = _data_dir() / f"{m}_trades.jsonl"
-        pnl = 0.0
-        n = 0
-        tids = set()
-        try:
-            with open(yol) as f:
-                for ln in f:
-                    if not ln.strip():
-                        continue
-                    try:
-                        t = json.loads(ln)
-                    except ValueError:
-                        continue
-                    if t.get("type") or t.get("exit_reason") == "manuel_kapanis":
-                        continue
-                    if float(t.get("ts") or 0) < esik:
-                        continue
-                    pnl += float(t.get("pnl_usd") or 0)
-                    tid = t.get("trade_id")
-                    if tid not in tids:
-                        tids.add(tid)
-                        n += 1
-        except OSError:
-            continue
-        out[m] = {"pnl": round(pnl, 2), "islem": n}
+        if (_data_dir() / f"{m}_trades.jsonl").exists() \
+                or (_data_dir() / f"{m}_state.json").exists():
+            out[m] = kayan_degisim(m, pencere_dk)
     return out
 
 
 def aday_sec(skorlar: dict[str, dict], mevcut: str,
              min_islem: int = MIN_ISLEM) -> str | None:
-    """En yuksek pencere PnL'li motor; pozitif PnL ve asgari islem sarti.
-    Mevcut kaynak en iyiyse veya kimse sarti gecemiyorsa None."""
+    """En yuksek kayan degisimli motor; pozitif degisim sarti.
+    ZIRVEDE OLANDA KAL: mevcut kaynak en yuksekse gecis yok."""
     uygun = {m: s for m, s in skorlar.items()
-             if s["islem"] >= min_islem and s["pnl"] > 0}
+             if s["islem"] >= min_islem and s["pct"] > 0}
     if not uygun:
         return None
-    aday = max(uygun, key=lambda m: uygun[m]["pnl"])
+    aday = max(uygun, key=lambda m: uygun[m]["pct"])
     if aday == mevcut:
         return None
-    # mevcut da uygunsa ve aday ondan iyi degilse gecis yok (esitlikte kal)
-    if mevcut in uygun and uygun[aday]["pnl"] <= uygun[mevcut]["pnl"]:
+    if mevcut in uygun and uygun[aday]["pct"] <= uygun[mevcut]["pct"]:
         return None
     return aday
 
@@ -169,8 +206,9 @@ def kontrol_dongusu() -> None:
             _karar_logla({"karar": "gecis_basla", "mevcut": mevcut,
                           "aday": aday, "skorlar": skorlar})
             notify(f"[CANLI] OTONOM GECIS: {mevcut} -> {aday} "
-                   f"(son {d['pencere_dk']}dk pnl {skorlar[aday]['pnl']}$, "
-                   f"{skorlar[aday]['islem']} islem); tasfiye basladi")
+                   f"(son {d['pencere_dk']}dk degisim "
+                   f"%{skorlar[aday]['pct']}, {skorlar[aday]['islem']} islem); "
+                   "tasfiye basladi")
             tasfiye = _data_dir() / TASFIYE_FILE
             tasfiye.write_text(f"otonom {mevcut}->{aday}")
             bas = time.time()
