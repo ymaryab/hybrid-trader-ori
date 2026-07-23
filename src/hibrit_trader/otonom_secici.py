@@ -123,18 +123,28 @@ def kayan_degisim(motor: str, pencere_dk: float) -> dict:
     """Kayan pencere degisimi: eq_simdi / eq_pencere_once - 1.
 
     Ham girdiler donulur (denetlenebilirlik): equity_now, equity_baseline,
-    baseline_ts, baseline_source (equity_ornek|gerceklesen|start).
-    eq_simdi = start + gerceklesen pnl (deterministik, defterden yeniden
-    uretilebilir; MTM bilerek DAHIL DEGIL: replay edilemez olurdu).
+    baseline_ts, baseline_source (equity_ornek|gerceklesen|start),
+    acik_poz_unreal.
+    eq_simdi = start + gerceklesen pnl + ACIK POZ GERCEKLESMEMIS K/Z
+    (24 Tem kullanici karari: acik pozisyonlar aninda yansisin). MTM
+    girdisi state.last_price'tan gelir ve karar olayina ham deger olarak
+    yazildigi icin replay logdan yapilir.
     """
     from hibrit_trader.jsonl_onbellek import equity_satirlari, islem_satirlari
     d = _data_dir()
     start = 1000.0
     created = 0.0
+    unreal = 0.0
     try:
         st = json.loads((d / f"{motor}_state.json").read_text())
         start = float(st.get("start_balance") or 1000.0)
         created = float(st.get("created_ts") or 0.0)
+        for pz in (st.get("positions") or []):
+            giris = float(pz.get("entry_price") or 0)
+            son = float(pz.get("last_price") or giris)
+            maliyet = float(pz.get("cost_usd") or 0)
+            if giris > 0 and maliyet > 0:
+                unreal += maliyet * (son / giris - 1)
     except (OSError, ValueError):
         pass
     t0 = time.time() - pencere_dk * 60
@@ -160,9 +170,12 @@ def kayan_degisim(motor: str, pencere_dk: float) -> dict:
             break
     if created > t0 and baz_kaynak == "gerceklesen" and kum_t0 is None:
         baz_kaynak = "start"               # motor pencereden genc
-    pct = (kum / baz - 1) * 100 if baz > 0 else 0.0
+    eq_now = kum + unreal
+    pct = (eq_now / baz - 1) * 100 if baz > 0 else 0.0
     return {"pct": round(pct, 3), "islem": n,
-            "equity_now": round(kum, 2), "equity_baseline": round(baz, 2),
+            "equity_now": round(eq_now, 2),
+            "acik_poz_unreal": round(unreal, 2),
+            "equity_baseline": round(baz, 2),
             "baseline_ts": round(baz_ts, 3), "baseline_source": baz_kaynak}
 
 

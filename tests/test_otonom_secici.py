@@ -146,3 +146,22 @@ def test_rejim_salteri(tmp_path):
     assert (tmp_path / "CANLI_DUR").exists()
     osec._salter_kaldir()
     assert not (tmp_path / "CANLI_DUR").exists()
+
+
+def test_kayan_degisim_acik_poz_mtm_dahil(tmp_path):
+    """24 Tem karari: acik pozisyonun gerceklesmemis K/Z'si aninda yansir."""
+    now = time.time()
+    _kur(tmp_path, "yz",
+         trades=[{"ts": now - 5 * 60, "trade_id": "A", "pnl_usd": 10.0}],
+         equity=[{"ts": now - 16 * 60, "eq": 1000.0}])
+    # acik pozisyon: 100$ maliyet, +%20 anlik -> +20$ unrealized
+    st = json.loads((tmp_path / "yz_state.json").read_text())
+    st["positions"] = [{"entry_price": 1.0, "last_price": 1.2,
+                        "cost_usd": 100.0}]
+    (tmp_path / "yz_state.json").write_text(json.dumps(st))
+    import hibrit_trader.jsonl_onbellek as jo
+    jo._ONBELLEK.clear()
+    s = osec.kayan_degisim("yz", 15)
+    assert s["acik_poz_unreal"] == 20.0
+    assert s["equity_now"] == 1030.0        # 1000 + 10 gerceklesen + 20 MTM
+    assert abs(s["pct"] - 3.0) < 1e-6       # 1030/1000-1
