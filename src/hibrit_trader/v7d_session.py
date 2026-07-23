@@ -72,7 +72,7 @@ TP_PCT = 2.0            # 16 Tem: 2.5->2.0 (v7/v7hizli ile ayni; TP nadir tetikl
 GRACE_SEC = 15 * 60     # ilk 15dk sabir
 LATE_STOP_PCT = -2.0    # 15dk sonrasi: -%2 alti SAT
 CEILING_SEC = 20 * 60   # 20dk tavan (SECICI biraz daha bekler; v7'de 15dk)
-DISASTER_PCT = -15.0    # HER AN -%15 (v7 ile ayni)
+DISASTER_PCT = -15.0    # KULLANILMIYOR (23 Tem: stop_6 tek katman; canli_session import uyumu icin duruyor)
 STOP_PCT = float(os.getenv("V7D_STOP_PCT", "-6.0"))  # 23 Tem kullanici karari: -6 goren HER AN satilir (stop_6)
 SOL_H1_MIN = float(os.getenv("V7D_SOL_H1_MIN", "0.35"))  # 16 Tem kullanici: 0.5 -> 0.35
 # h1 bant kacinma: 16 Tem kapatildi (LO=HI=0). Aday yagmurunu sikilastiran skip
@@ -367,11 +367,11 @@ class V7DEngine:
         log.warning(
             "V7D senaryo basladi (SECICI paper: dar bant + siki rejim) - sanal $%.2f · slot %d · "
             "giris liq>=$%.0f + h1 %.0f..%.0f (m5>0 zorunlu, skip %.0f..%.0f) · rejim>=%.2f · "
-            "cikis tp+%.1f%% uzeri / felaket %%%.0f / "
+            "cikis tp+%.1f%% uzeri / stop_6 %%%.0f (her an) / "
             "%dm sabir sonrasi stop%%%.0f / tavan %dm",
             self.balance, MAX_SLOTS, LIQ_MIN_USD, CHG_H1_MIN, CHG_H1_MAX,
             H1_SKIP_LO, H1_SKIP_HI, SOL_H1_MIN,
-            TP_PCT, DISASTER_PCT, GRACE_SEC // 60, LATE_STOP_PCT, CEILING_SEC // 60,
+            TP_PCT, STOP_PCT, GRACE_SEC // 60, LATE_STOP_PCT, CEILING_SEC // 60,
         )
         self._save()
         feed = get_feed()
@@ -674,8 +674,8 @@ class V7DEngine:
         age = now - pos["opened_ts"]
         if pnl_pct > TP_PCT:
             return "tp_2"
-        if pnl_pct <= DISASTER_PCT:
-            return "stop_felaket"
+        # stop_felaket KALDIRILDI (23 Tem kullanici karari): stop_6 her an
+        # aktif oldugu icin -15 kontrolu olu koddu, tek stop katmani kaldi
         if STOP_PCT < 0 and pnl_pct <= STOP_PCT:
             return "stop_6"
         if age >= GRACE_SEC and pnl_pct <= LATE_STOP_PCT:

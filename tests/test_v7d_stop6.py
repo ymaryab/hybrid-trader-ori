@@ -30,6 +30,6 @@ def test_stop6_siralamasi():
 
     assert eng._eval_position(poz(), 0.939, now) == "stop_6"      # -6.1: erken fazda da satar
     assert eng._eval_position(poz(), 0.941, now) is None          # -5.9: dokunmaz (grace icinde)
-    assert eng._eval_position(poz(), 0.84, now) == "stop_felaket" # -16: felaket onde
+    assert eng._eval_position(poz(), 0.84, now) == "stop_6"       # -16: felaket kalkti, stop_6 yakalar
     assert eng._eval_position(poz(yas_sn=v7d.GRACE_SEC + 1), 0.975, now) == "stop_gec"  # gec faz -2.5
     assert eng._eval_position(poz(), 1.025, now) == "tp_2"
