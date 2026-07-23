@@ -102,10 +102,11 @@ M5_MIN = float(os.getenv("R1_M5_MIN", "0.0"))                 # m5 > 0 zorunlu (
 
 # Trail-arm: TP kismi + runner trail
 KISMI_ORAN = float(os.getenv("R1_KISMI_ORAN", "0.5"))    # deprecated (v2)
-# 19 Tem 3-asama kismi cikis: 1/3 TP+10, 1/3 TP+25, 1/3 runner trail
+# 19 Tem 3-asama kismi cikis: 1/3 TP+10, 1/3 TP+17, 1/3 runner trail
+# (24 Tem kullanici karari: 2. asama 25 -> 17)
 KISMI_ORAN1 = float(os.getenv("R1_KISMI_ORAN1", str(1/3)))   # 1. asama: orjinalin 1/3
 KISMI_ORAN2 = float(os.getenv("R1_KISMI_ORAN2", "0.5"))      # 2. asama: kalan 2/3'un yarisi = 1/3 orjinal
-TP2_PCT = float(os.getenv("R1_TP2_PCT", "25.0"))             # 2. kismi TP esigi
+TP2_PCT = float(os.getenv("R1_TP2_PCT", "17.0"))             # 2. kismi TP esigi
 TRAIL_PCT = float(os.getenv("R1_TRAIL_PCT", "10.0"))     # tepeden %10 asagi (18 Tem)
 
 STATE_FILE = "r1_state.json"
