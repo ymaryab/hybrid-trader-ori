@@ -567,6 +567,37 @@ def _equity_append(data_dir: Path, prefix: str, equity: float) -> None:
         pass
 
 
+# 24 Tem: equity jsonl artimli onbellegi. Dosyalar append-only: bir kez
+# ayristir, sonraki isteklerde yalniz yeni baytlari oku. Panel acilisindaki
+# 4-5 sn'lik soguk /api/filo ve 1 sn'lik grafik cagrilarinin ilaci.
+_EQ_ONBELLEK: dict[str, dict] = {}
+
+
+def _equity_rows(yol: Path) -> list[tuple[float, float]]:
+    try:
+        st = yol.stat()
+    except OSError:
+        return []
+    c = _EQ_ONBELLEK.get(str(yol))
+    if c is None or st.st_size < c["ofs"]:      # kesilme: bastan
+        c = {"ofs": 0, "rows": []}
+        _EQ_ONBELLEK[str(yol)] = c
+    if st.st_size > c["ofs"]:
+        with open(yol, "rb") as f:
+            f.seek(c["ofs"])
+            ham = f.read()
+        kes = ham.rfind(b"\n")
+        if kes >= 0:
+            for ln in ham[:kes].splitlines():
+                try:
+                    d = json.loads(ln)
+                    c["rows"].append((float(d["ts"]), float(d["eq"])))
+                except Exception:
+                    continue
+            c["ofs"] += kes + 1
+    return c["rows"]
+
+
 def _equity_series(prefix: str, minutes: int, equity_jsonl: bool = True) -> dict:
     """Equity serisi: trades kumulatifi + panel orneklemleri + canli uc nokta.
 
@@ -609,19 +640,9 @@ def _equity_series(prefix: str, minutes: int, equity_jsonl: bool = True) -> dict
             except Exception:
                 continue
     if equity_jsonl:
-        ep = data_dir / f"{prefix}_equity.jsonl"
-        if ep.exists():
-            for ln in ep.read_text().splitlines():
-                if not ln.strip():
-                    continue
-                try:
-                    d = json.loads(ln)
-                    t = float(d["ts"])
-                    if t < created_ts:  # reset oncesi equity noktalarini atla
-                        continue
-                    points.append((t, float(d["eq"])))
-                except Exception:
-                    continue
+        for t, eq in _equity_rows(data_dir / f"{prefix}_equity.jsonl"):
+            if t >= created_ts:  # reset oncesi equity noktalarini atla
+                points.append((t, eq))
     # Baslangic capasi: created_ts anindan $start baz
     if created_ts > 0:
         points.append((created_ts, start_bal))
@@ -722,21 +743,11 @@ def _motor_ozet(data_dir: Path, prefix: str, now: float, limit: int,
     eq_now = _live_equity(state)
     eq_once = None
     if prefix != "canli":
-        ep = data_dir / f"{prefix}_equity.jsonl"
-        if ep.exists():
-            try:
-                for ln in ep.read_text().splitlines():
-                    if not ln.strip():
-                        continue
-                    try:
-                        d = json.loads(ln)
-                        ts_e = float(d["ts"])
-                    except Exception:
-                        continue
-                    if created_ts <= ts_e <= t0:
-                        eq_once = float(d["eq"])
-            except Exception:
-                pass
+        for ts_e, eq_e in reversed(_equity_rows(data_dir / f"{prefix}_equity.jsonl")):
+            if ts_e <= t0:
+                if ts_e >= created_ts:
+                    eq_once = eq_e
+                break
     if eq_once is None:
         eq_once = sb + sum(float(t.get("pnl_usd") or 0) for t in trades
                            if created_ts <= float(t.get("ts") or 0) <= t0)
