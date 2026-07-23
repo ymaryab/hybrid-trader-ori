@@ -710,13 +710,15 @@ def _motor_ozet(data_dir: Path, prefix: str, now: float, limit: int,
     pnl_24h_usd = sum(float(t.get("pnl_usd") or 0) for t in trades_24h)
     sb = float(state.get("start_balance") or 1000.0)
     pnl_24h_pct = (pnl_24h_usd / sb * 100) if sb > 0 else 0.0
-    # 23 Tem (kullanici formulu): kayan 1 saatlik degisim.
-    # eq_simdi / eq_1saat_once - 1; 13:00'da 12:00'a, 13:01'de 12:01'e bakar.
-    # 1 saat onceki deger: equity ornek dosyasindan son ornek <= t0; yoksa
-    # gerceklesen kumulatif (start + pnl toplami, ts <= t0). Motor 1 saatten
-    # gencse baz start_balance'tir. CANLI'da equity.jsonl cuzdan snapshot'i
-    # oldugu icin kullanilmaz (gerceklesen kumulatif yeterli).
-    t0 = now - 3600
+    # 23 Tem (kullanici formulu): kayan pencere degisimi; pencere suresi
+    # 23 Tem aksami kullanici karariyla 10 DAKIKA (PANEL_KAYAN_DK ile
+    # ayarlanir; otonom secicinin 60dk penceresi AYRIDIR, degismedi).
+    # eq_simdi / eq_pencere_once - 1. Pencere onceki deger: equity ornek
+    # dosyasindan son ornek <= t0; yoksa gerceklesen kumulatif. Motor
+    # pencereden gencse baz start_balance. CANLI'da equity.jsonl cuzdan
+    # snapshot'i oldugu icin kullanilmaz.
+    kayan_dk = float(os.getenv("PANEL_KAYAN_DK", "10"))
+    t0 = now - kayan_dk * 60
     eq_now = _live_equity(state)
     eq_once = None
     if prefix != "canli":
@@ -753,6 +755,7 @@ def _motor_ozet(data_dir: Path, prefix: str, now: float, limit: int,
         "pnl_24h_pct": round(pnl_24h_pct, 2),
         "trades_1h": len(trades_1h),
         "pnl_1h_pct": round(pnl_1h_pct, 2),
+        "kayan_dk": kayan_dk,
         "wins": wins,
         "win_rate_pct": round(wins / len(trades) * 100, 1) if trades else None,
         "exit_reasons": reasons,
@@ -1731,7 +1734,7 @@ def _filo_kart(m: dict, canli_durum: str = "yok") -> str:
             f'<canvas class="spark" id="spark-{m["id"]}" height="36"></canvas>'
             f'<div class="kfoot" id="foot-{m["id"]}">-</div>'
             f'{swap_btn}'
-            f'<div class="pnl24" id="pnl24-{m["id"]}" title="Son 1 saat getiri (kayan pencere: simdiki deger / 1 saat onceki deger - 1)">-</div>'
+            f'<div class="pnl24" id="pnl24-{m["id"]}" title="Son 10 dk getiri (kayan pencere: simdiki deger / 10 dk onceki deger - 1)">-</div>'
             f'<div class="pnl24sub" id="slotwin-{m["id"]}">-</div>'
             f'</div>'
             f'<div class="motor-poz" id="motorpoz-{m["id"]}">'
@@ -2366,7 +2369,7 @@ function basBot(m,d){
   const sw=document.getElementById("slotwin-"+m.id);
   if(sw)sw.innerHTML=`slot ${dolu} ${s.open_slots}/${m.slots}<br>win ${s.win_rate_pct==null?"-":s.win_rate_pct+"%"}`;
   document.getElementById("foot-"+m.id).innerHTML="";
-  // 23 Tem: sag ust KAYAN 1 SAAT getiri gostergesi (kullanici formulu)
+  // 23 Tem: sag ust KAYAN 10 DK getiri gostergesi (kullanici formulu)
   const p24=Number(s.pnl_1h_pct||0);
   const n24=Number(s.trades_1h||0);
   const p24el=document.getElementById("pnl24-"+m.id);
@@ -2631,8 +2634,8 @@ function basTarama(d){
   e.className="badge"+(t==="normal"?" ok":(t==="kor"?" err":" bayat"));
 }
 function basSira(d, eqs){
-  // 23 Tem: motor kartlarini KAYAN SON 1 SAAT getirisine gore dinamik sirala.
-  // Isleme (1h icinde) girmemis motorlar sonda.
+  // 23 Tem: motor kartlarini KAYAN SON 10 DK getirisine gore dinamik sirala.
+  // Isleme (pencere icinde) girmemis motorlar sonda.
   const arr=MOTORLAR.map(m=>{
     const s=d[m.id]&&d[m.id].summary||{};
     const pct=Number(s.pnl_1h_pct||0);
