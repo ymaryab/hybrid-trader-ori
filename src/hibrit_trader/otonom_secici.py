@@ -1,26 +1,31 @@
-"""Otonom kaynak secici (23 Tem 2026, kullanici talebi).
+"""Otonom kaynak secici v2 (23 Tem, P0 denetim duzeltmeleri).
 
-Panel ust menusundeki OTONOM dugmesi acikken calisir: son PENCERE_DK (vars. 60)
-dakikanin KAYAN degisiminde zirvede olan motoru bulur (eq_simdi/eq_once-1); canli kaynak farkliysa
-once acik canli pozisyonlari tasfiye eder (CANLI_TASFIYE dosyasi,
-canli motor "otonom_tasfiye" ile satar), duzlesince mevcut swap
-akisini tetikler (canli_swap.py: drop-in + servis restart).
+Mantik (kullanici speci + P0 duzeltmeleri):
+- STATE-TRIGGER: karar leader != current_live_engine uzerinden verilir
+  (lider degisti mi degil). Basarisiz gecis sonraki turda yeniden denenir.
+- Cift bayrak: user_enabled (yalniz kullanici degistirir) x system_enabled
+  (yalniz sistem: tum motorlar <=0 ise OFF, pozitif lider dogunca ON).
+  effective = user_enabled AND system_enabled. system OFF salter'e
+  DOKUNMAZ (secim durur, mevcut kaynak calismaya devam eder).
+- Gecis: tasfiye (CANLI_TASFIYE) -> duzlesme -> swap oncesi lider yeniden
+  dogrulanir -> niyet diske yazilir -> canli_swap.py (drop-in + restart).
+- MUTABAKAT: restart seciciyi oldurdugu icin SwitchCompleted/Failed
+  olayini restart sonrasi YENI surec, diskteki niyetle env'i
+  karsilastirarak yazar. switch_id ile Requested -> Completed zinciri
+  eksiksizdir.
+- Esitlik bozma (determinizm): ayni pct'de mevcut kaynak kazanir,
+  sonra alfabetik.
 
-Durum dosyasi: data/OTONOM_MOD.json {"acik", "pencere_dk", "son_gecis_ts"}
-  - restart'lara dayanir: dosya durdugu surece otonom mod acik kalir.
-Karar gunlugu: data/otonom_secici.jsonl (append-only, her karar yazilir).
+TUM olaylar Gozlem Katmani omurgasina yazilir (akis: "otonom", ayri log
+altyapisi YOK): AutonomEvaluated, AutonomSwitchRequested/Aborted/
+Completed/Failed, AutonomOn/Off, AutonomConfigChanged, AutonomUserToggle,
+SelectorBoot. Her olayda actor (user|system), git_sha ve config anlik
+goruntusu bulunur; Evaluated ham girdileri (equity_now, baseline,
+baseline_ts, baseline_source, tam siralama) tasir: karar fonksiyonu
+salt bu girdilerden yeniden oynatilabilir.
 
-Ayarlar (env):
-  OTONOM_KONTROL_SN      kontrol araligi (vars. 300)
-  OTONOM_MIN_ISLEM       pencere icinde asgari islem sayisi (vars. 3)
-  OTONOM_COOLDOWN_SN     iki gecis arasi asgari sure (vars. 900)
-  OTONOM_TASFIYE_SN      tasfiye duzlesme beklemesi (vars. 180)
-
-Guvenlik: LIVE_ONAY ve gunluk zarar limitleri AYNEN gecerli kalir;
-otonom mod bunlarin ustunde degil altinda calisir. Dugme ACILINCA
-salter de acilir (CANLI_DUR silinir: "alip satmaya baslasin").
-Dugme kapaninca yalniz otonom secim durur, mevcut kaynak calismaya
-devam eder (salter degismez).
+Bilincli ertelenenler (kullanici karari): histerezis, dead-band, esik
+optimizasyonu, secim metrigi degisikligi.
 """
 
 from __future__ import annotations
@@ -35,7 +40,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 DURUM_DOSYA = "OTONOM_MOD.json"
-KARAR_LOG = "otonom_secici.jsonl"
+NIYET_DOSYA = "OTONOM_GECIS_NIYET.json"
 VARSAYILAN_PENCERE_DK = 60
 
 KONTROL_SN = float(os.getenv("OTONOM_KONTROL_SN", "300"))
@@ -43,18 +48,56 @@ MIN_ISLEM = int(os.getenv("OTONOM_MIN_ISLEM", "0"))
 COOLDOWN_SN = float(os.getenv("OTONOM_COOLDOWN_SN", "900"))
 TASFIYE_SN = float(os.getenv("OTONOM_TASFIYE_SN", "180"))
 
+_yazici = None
+_git_sha_cache: str | None = None
+
 
 def _data_dir() -> Path:
     return Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
 
 
+def _git_sha() -> str:
+    global _git_sha_cache
+    if _git_sha_cache is None:
+        try:
+            _git_sha_cache = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=Path(__file__).resolve().parents[2],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.strip() or "bilinmiyor"
+        except Exception:
+            _git_sha_cache = "bilinmiyor"
+    return _git_sha_cache
+
+
+def config_anlik() -> dict:
+    return {"kontrol_sn": KONTROL_SN, "min_islem": MIN_ISLEM,
+            "cooldown_sn": COOLDOWN_SN, "tasfiye_sn": TASFIYE_SN}
+
+
+def olay_yaz(kind: str, payload: dict, actor: str = "system") -> dict:
+    """Otonom olayini Gozlem Katmani omurgasina yazar (akis: otonom)."""
+    global _yazici
+    if _yazici is None:
+        from hibrit_trader.gozlem.yazici import OlayYazici
+        kok = Path(os.getenv("GOZLEM_DATA_DIR", str(_data_dir() / "gozlem")))
+        kok.mkdir(parents=True, exist_ok=True)
+        _yazici = OlayYazici(kok)
+    tam = {"actor": actor, "git_sha": _git_sha(), **payload}
+    return _yazici.yaz("otonom", kind, tam, src="otonom")
+
+
+# ---------------------------------------------------------------- durum
+
 def durum_oku() -> dict:
     try:
         d = json.loads((_data_dir() / DURUM_DOSYA).read_text())
     except (OSError, ValueError):
-        return {"acik": False, "pencere_dk": VARSAYILAN_PENCERE_DK,
-                "son_gecis_ts": 0.0}
-    d.setdefault("acik", False)
+        d = {}
+    if "acik" in d and "user_enabled" not in d:   # eski format gocu
+        d["user_enabled"] = bool(d.pop("acik"))
+    d.setdefault("user_enabled", False)
+    d.setdefault("system_enabled", True)
     d.setdefault("pencere_dk", VARSAYILAN_PENCERE_DK)
     d.setdefault("son_gecis_ts", 0.0)
     return d
@@ -67,20 +110,15 @@ def durum_yaz(d: dict) -> None:
     os.replace(tmp, p)
 
 
-def _karar_logla(kayit: dict) -> None:
-    kayit["ts"] = time.time()
-    with open(_data_dir() / KARAR_LOG, "a") as f:
-        f.write(json.dumps(kayit) + "\n")
-
+# ---------------------------------------------------------------- skor
 
 def kayan_degisim(motor: str, pencere_dk: float) -> dict:
-    """Kayan pencere degisimi (23 Tem kullanici formulu):
-    eq_simdi / eq_pencere_once - 1.
+    """Kayan pencere degisimi: eq_simdi / eq_pencere_once - 1.
 
-    eq_simdi = start + gerceklesen pnl toplami (motor defterinden).
-    eq_once = equity ornek dosyasindan son ornek <= t0; yoksa gerceklesen
-    kumulatif (ts <= t0). Motor pencereden gencse baz start_balance.
-    Panel _motor_ozet ile ayni formul; pencere suresi burada ayarlanabilir.
+    Ham girdiler donulur (denetlenebilirlik): equity_now, equity_baseline,
+    baseline_ts, baseline_source (equity_ornek|gerceklesen|start).
+    eq_simdi = start + gerceklesen pnl (deterministik, defterden yeniden
+    uretilebilir; MTM bilerek DAHIL DEGIL: replay edilemez olurdu).
     """
     d = _data_dir()
     start = 1000.0
@@ -116,9 +154,10 @@ def kayan_degisim(motor: str, pencere_dk: float) -> dict:
                     n += 1
     except OSError:
         pass
-    if kum_t0 is None:
-        kum_t0 = kum   # pencerede islem yok: degisim 0
-    eq_once = kum_t0
+    if kum_t0 is None:                     # pencerede islem yok
+        baz, baz_ts, baz_kaynak = kum, t0, "gerceklesen"
+    else:
+        baz, baz_ts, baz_kaynak = kum_t0, t0, "gerceklesen"
     try:
         for ln in (d / f"{motor}_equity.jsonl").read_text().splitlines():
             if not ln.strip():
@@ -129,16 +168,19 @@ def kayan_degisim(motor: str, pencere_dk: float) -> dict:
             except (ValueError, KeyError):
                 continue
             if created <= ts_e <= t0:
-                eq_once = float(e["eq"])
+                baz, baz_ts, baz_kaynak = float(e["eq"]), ts_e, "equity_ornek"
     except OSError:
         pass
-    pct = (kum / eq_once - 1) * 100 if eq_once > 0 else 0.0
-    return {"pct": round(pct, 3), "islem": n}
+    if created > t0 and baz_kaynak == "gerceklesen" and kum_t0 is None:
+        baz_kaynak = "start"               # motor pencereden genc
+    pct = (kum / baz - 1) * 100 if baz > 0 else 0.0
+    return {"pct": round(pct, 3), "islem": n,
+            "equity_now": round(kum, 2), "equity_baseline": round(baz, 2),
+            "baseline_ts": round(baz_ts, 3), "baseline_source": baz_kaynak}
 
 
 def pencere_skorlari(pencere_dk: float,
                      kaynaklar: list[str]) -> dict[str, dict]:
-    """Motor basina kayan pencere degisim yuzdesi."""
     out: dict[str, dict] = {}
     for m in kaynaklar:
         if (_data_dir() / f"{m}_trades.jsonl").exists() \
@@ -147,20 +189,55 @@ def pencere_skorlari(pencere_dk: float,
     return out
 
 
+def lider_bul(skorlar: dict[str, dict], mevcut: str) -> str | None:
+    """Deterministik lider: en yuksek pct; esitlikte mevcut, sonra alfabetik."""
+    if not skorlar:
+        return None
+    return min(skorlar,
+               key=lambda m: (-skorlar[m]["pct"], 0 if m == mevcut else 1, m))
+
+
 def aday_sec(skorlar: dict[str, dict], mevcut: str,
              min_islem: int = MIN_ISLEM) -> str | None:
-    """En yuksek kayan degisimli motor; pozitif degisim sarti.
-    ZIRVEDE OLANDA KAL: mevcut kaynak en yuksekse gecis yok."""
+    """STATE-TRIGGER: pozitif ve mevcut kaynaktan farkli lider varsa aday.
+    ZIRVEDE OLANDA KAL: mevcut lider ise gecis yok."""
     uygun = {m: s for m, s in skorlar.items()
              if s["islem"] >= min_islem and s["pct"] > 0}
     if not uygun:
         return None
-    aday = max(uygun, key=lambda m: uygun[m]["pct"])
-    if aday == mevcut:
+    lider = lider_bul(uygun, mevcut)
+    if lider is None or lider == mevcut:
         return None
-    if mevcut in uygun and uygun[aday]["pct"] <= uygun[mevcut]["pct"]:
+    if mevcut in uygun and uygun[lider]["pct"] <= uygun[mevcut]["pct"]:
         return None
-    return aday
+    return lider
+
+
+# ------------------------------------------------------------ mutabakat
+
+def gecis_mutabakati(mevcut: str) -> dict | None:
+    """Restart sonrasi: diskteki gecis niyetini env ile karsilastir,
+    SwitchCompleted/Failed olayini yaz, niyeti sil. P0 madde 3."""
+    yol = _data_dir() / NIYET_DOSYA
+    try:
+        niyet = json.loads(yol.read_text())
+    except (OSError, ValueError):
+        return None
+    basari = (mevcut == niyet.get("to"))
+    kind = "AutonomSwitchCompleted" if basari else "AutonomSwitchFailed"
+    payload = {
+        "switch_id": niyet.get("switch_id"),
+        "eval_id": niyet.get("eval_id"),
+        "from": niyet.get("from"), "to": niyet.get("to"),
+        "duration_sec": round(time.time() - float(niyet.get("bas_ts") or 0), 1),
+        "positions_closed": niyet.get("positions_closed"),
+        "tasfiye_sure_sec": niyet.get("tasfiye_sure_sec"),
+        "env_kaynak": mevcut,
+        "success": basari,
+    }
+    olay_yaz(kind, payload)
+    yol.unlink(missing_ok=True)
+    return payload
 
 
 def _canli_acik_poz() -> int:
@@ -180,37 +257,93 @@ def _swap_tetikle(motor: str) -> None:
         stdout=log_f, stderr=log_f, start_new_session=True)
 
 
+# ----------------------------------------------------------------- ana
+
 def kontrol_dongusu() -> None:
-    """Panel icinde daemon thread. Her turda: mod acik mi, aday var mi,
-    cooldown gecti mi; gecis = tasfiye -> duzlesme -> swap (restart)."""
+    """Panel icinde daemon thread. Boot'ta mutabakat + SelectorBoot;
+    her turda degerlendir, olayla, gerekirse gecis."""
     from hibrit_trader.canli_session import DESTEKLENEN_KAYNAKLAR, TASFIYE_FILE
     from hibrit_trader.killswitch import notify
     kaynaklar = sorted(DESTEKLENEN_KAYNAKLAR)
+    mevcut = os.getenv("CANLI_KAYNAK_MOTOR", "r1").strip().lower()
+    mut = gecis_mutabakati(mevcut)
+    d = durum_oku()
+    olay_yaz("SelectorBoot", {
+        "current_live_engine": mevcut, "durum": d,
+        "mutabakat": None if mut is None else mut.get("switch_id"),
+        "config": config_anlik(), "kaynaklar": kaynaklar})
     while True:
         time.sleep(KONTROL_SN)
         try:
             d = durum_oku()
-            if not d["acik"]:
+            if not d["user_enabled"]:
                 continue
             mevcut = os.getenv("CANLI_KAYNAK_MOTOR", "r1").strip().lower()
             skorlar = pencere_skorlari(float(d["pencere_dk"]), kaynaklar)
-            aday = aday_sec(skorlar, mevcut)
+            lider = lider_bul(skorlar, mevcut)
+            lider_pct = skorlar[lider]["pct"] if lider else 0.0
+            eval_id = f"ev-{int(time.time() * 1000)}"
+            # kural 3-4: system_enabled (saltere dokunmaz, yalniz secim)
+            if all(s["pct"] <= 0 for s in skorlar.values()):
+                if d["system_enabled"]:
+                    d["system_enabled"] = False
+                    durum_yaz(d)
+                    olay_yaz("AutonomOff", {
+                        "reason": "ALL_MOTORS_NON_POSITIVE",
+                        "eval_id": eval_id, "ranking": skorlar,
+                        "leader": lider, "leader_change_pct": lider_pct,
+                        "config": config_anlik()})
+                    notify("[CANLI] OTONOM BEKLEMEDE: tum motorlar <=0, "
+                           "secim durdu (kaynak sabit)")
+            elif not d["system_enabled"] and lider is not None and lider_pct > 0:
+                d["system_enabled"] = True
+                durum_yaz(d)
+                olay_yaz("AutonomOn", {
+                    "reason": "POSITIVE_LEADER_FOUND", "eval_id": eval_id,
+                    "ranking": skorlar, "selected_motor": lider,
+                    "selected_change_pct": lider_pct,
+                    "config": config_anlik()})
+                notify(f"[CANLI] OTONOM DEVAM: pozitif lider {lider} "
+                       f"(%{lider_pct})")
+            aday = None
+            cooldown_kalan = max(
+                0.0, COOLDOWN_SN - (time.time() - float(d["son_gecis_ts"])))
+            if d["user_enabled"] and d["system_enabled"]:
+                aday = aday_sec(skorlar, mevcut)
             if aday is None:
-                _karar_logla({"karar": "kal", "mevcut": mevcut,
-                              "skorlar": skorlar})
+                karar = ("kal" if d["system_enabled"] else "sistem_kapali")
+            elif cooldown_kalan > 0:
+                karar = "cooldown"
+            else:
+                karar = "gecis"
+            switch_id = (f"sw-{int(time.time() * 1000)}"
+                         if karar == "gecis" else None)
+            olay_yaz("AutonomEvaluated", {
+                "eval_id": eval_id, "switch_id": switch_id,
+                "window_min": d["pencere_dk"],
+                "current_live_engine": mevcut,
+                "leader_engine": lider, "leader_change_pct": lider_pct,
+                "ranking": skorlar,
+                "state": {"user_enabled": d["user_enabled"],
+                          "system_enabled": d["system_enabled"],
+                          "effective": d["user_enabled"] and d["system_enabled"]},
+                "decision": karar, "aday": aday,
+                "cooldown_remaining_sec": round(cooldown_kalan, 1),
+                "config": config_anlik()})
+            if karar != "gecis":
                 continue
-            if time.time() - float(d["son_gecis_ts"]) < COOLDOWN_SN:
-                _karar_logla({"karar": "cooldown", "mevcut": mevcut,
-                              "aday": aday, "skorlar": skorlar})
-                continue
-            _karar_logla({"karar": "gecis_basla", "mevcut": mevcut,
-                          "aday": aday, "skorlar": skorlar})
+            # ---- gecis prosedueru ----
+            acik = _canli_acik_poz()
+            olay_yaz("AutonomSwitchRequested", {
+                "switch_id": switch_id, "eval_id": eval_id,
+                "from": mevcut, "to": aday, "reason": "lider_degisti",
+                "leader_change_pct": lider_pct,
+                "cooldown_remaining_sec": 0.0,
+                "open_positions": acik, "config": config_anlik()})
             notify(f"[CANLI] OTONOM GECIS: {mevcut} -> {aday} "
-                   f"(son {d['pencere_dk']}dk degisim "
-                   f"%{skorlar[aday]['pct']}, {skorlar[aday]['islem']} islem); "
-                   "tasfiye basladi")
+                   f"(%{lider_pct}); tasfiye basladi ({acik} poz)")
             tasfiye = _data_dir() / TASFIYE_FILE
-            tasfiye.write_text(f"otonom {mevcut}->{aday}")
+            tasfiye.write_text(f"otonom {switch_id} {mevcut}->{aday}")
             bas = time.time()
             duz = False
             while time.time() - bas < TASFIYE_SN:
@@ -218,22 +351,38 @@ def kontrol_dongusu() -> None:
                 if _canli_acik_poz() == 0:
                     duz = True
                     break
-            if not duz:
-                tasfiye.unlink(missing_ok=True)
-                _karar_logla({"karar": "tasfiye_zaman_asimi",
-                              "aday": aday, "acik_poz": _canli_acik_poz()})
-                notify("[CANLI] OTONOM: tasfiye zaman asimi, gecis iptal "
-                       "(sonraki turda tekrar denenir)")
-                continue
             tasfiye.unlink(missing_ok=True)
+            kalan = _canli_acik_poz()
+            if not duz:
+                olay_yaz("AutonomSwitchAborted", {
+                    "switch_id": switch_id, "reason": "timeout",
+                    "asama": "tasfiye", "acik_kalan_poz": kalan,
+                    "kapatilan_poz": max(0, acik - max(kalan, 0))})
+                notify("[CANLI] OTONOM: tasfiye zaman asimi, gecis iptal")
+                continue
+            # swap oncesi son dogrulama: lider hala ayni mi (yaris kosulu)
+            son_skor = pencere_skorlari(float(d["pencere_dk"]), kaynaklar)
+            son_aday = aday_sec(son_skor, mevcut)
+            if son_aday != aday:
+                olay_yaz("AutonomSwitchAborted", {
+                    "switch_id": switch_id, "reason": "leader_changed",
+                    "asama": "son_dogrulama", "eski_aday": aday,
+                    "yeni_aday": son_aday, "ranking": son_skor})
+                notify("[CANLI] OTONOM: lider degisti, gecis iptal")
+                continue
             d["son_gecis_ts"] = time.time()
-            d["son_gecis"] = {"kimden": mevcut, "kime": aday,
-                              "skor": skorlar.get(aday)}
             durum_yaz(d)
-            _karar_logla({"karar": "swap_tetiklendi", "aday": aday})
+            niyet = {"switch_id": switch_id, "eval_id": eval_id,
+                     "from": mevcut, "to": aday, "bas_ts": bas,
+                     "tasfiye_sure_sec": round(time.time() - bas, 1),
+                     "positions_closed": acik}
+            yol = _data_dir() / NIYET_DOSYA
+            tmp = yol.with_suffix(".tmp")
+            tmp.write_text(json.dumps(niyet))
+            os.replace(tmp, yol)
             notify(f"[CANLI] OTONOM: duzlesti, kaynak {aday} oluyor "
                    "(servis restart)")
             _swap_tetikle(aday)
-            return   # restart geliyor; thread yeni sureçte yeniden dogar
+            return   # restart geliyor; mutabakati yeni surec yapar
         except Exception:
             log.exception("otonom secici tur hatasi")

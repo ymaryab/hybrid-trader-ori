@@ -2669,13 +2669,14 @@ function basCanliOnay(d){
 function basOtonom(d){
   const b=document.getElementById("otonomBtn");
   if(!b)return;
-  const o=d.otonom||{acik:false};
-  b.textContent=o.acik?("🤖 OTONOM AÇIK · "+(o.pencere_dk||120)+"dk"):"🤖 otonom kapalı";
-  b.className="badge"+(o.acik?" ok":"");
-  b.style.background=o.acik?"#1f6feb":"";
-  b.style.color=o.acik?"#fff":"";
-  b.dataset.acik=o.acik?"1":"0";
-  b.dataset.dk=o.pencere_dk||120;
+  const o=d.otonom||{};
+  const u=!!o.user_enabled, sys=o.system_enabled!==false;
+  if(!u){b.textContent="🤖 otonom kapalı"; b.style.background=""; b.style.color="";}
+  else if(sys){b.textContent="🤖 OTONOM AÇIK · "+(o.pencere_dk||60)+"dk"; b.style.background="#1f6feb"; b.style.color="#fff";}
+  else{b.textContent="🤖 OTONOM BEKLEMEDE · hepsi ≤0"; b.style.background="#9e6a03"; b.style.color="#fff";}
+  b.className="badge"+(u?" ok":"");
+  b.dataset.acik=u?"1":"0";
+  b.dataset.dk=o.pencere_dk||60;
 }
 function basCanliSalter(d){
   const b=document.getElementById("canliSalterBtn");
@@ -2930,33 +2931,41 @@ def api_canli_onay_kapat() -> dict:
 
 @app.post("/api/otonom")
 def api_otonom_ac(dk: int = Query(0, ge=0)) -> dict:
-    """Otonom kaynak secimi ACIK: pencere kazananina otomatik gecis.
-    Salteri de acar (CANLI_DUR silinir: alip satmaya baslasin)."""
-    from hibrit_trader.otonom_secici import VARSAYILAN_PENCERE_DK, durum_oku, durum_yaz
+    """user_enabled ACIK (P0: kullanici/sistem bayragi ayri). Salteri de
+    acar (CANLI_DUR silinir: alip satmaya baslasin). Olaylar omurgaya."""
+    from hibrit_trader.otonom_secici import durum_oku, durum_yaz, olay_yaz
     d = durum_oku()
-    d["acik"] = True
+    eski_dk = d.get("pencere_dk")
+    d["user_enabled"] = True
     if dk > 0:
         d["pencere_dk"] = dk
-    elif not d.get("pencere_dk"):
-        d["pencere_dk"] = VARSAYILAN_PENCERE_DK
     durum_yaz(d)
+    if dk > 0 and dk != eski_dk:
+        olay_yaz("AutonomConfigChanged",
+                 {"alan": "pencere_dk", "eski": eski_dk, "yeni": dk},
+                 actor="user")
     pause = Path(os.getenv("MOMENTUM_DATA_DIR", "data")) / "CANLI_DUR"
     if pause.exists():
         pause.unlink()
-    notify(f"[CANLI] OTONOM MOD ACIK: pencere {d['pencere_dk']}dk, "
-           "salter acildi, kazanan motora otomatik gecis aktif")
+    olay_yaz("AutonomUserToggle",
+             {"user_enabled": True, "pencere_dk": d["pencere_dk"],
+              "salter_acildi": True}, actor="user")
+    notify(f"[CANLI] OTONOM MOD ACIK (kullanici): pencere "
+           f"{d['pencere_dk']}dk, salter acildi")
     return {"otonom": d}
 
 
 @app.delete("/api/otonom")
 def api_otonom_kapat() -> dict:
-    """Otonom secim durur; mevcut kaynak calismaya devam eder,
-    saltere DOKUNMAZ."""
-    from hibrit_trader.otonom_secici import durum_oku, durum_yaz
+    """user_enabled KAPALI: secim durur; mevcut kaynak calismaya devam
+    eder, saltere DOKUNMAZ."""
+    from hibrit_trader.otonom_secici import durum_oku, durum_yaz, olay_yaz
     d = durum_oku()
-    d["acik"] = False
+    d["user_enabled"] = False
     durum_yaz(d)
-    notify("[CANLI] OTONOM MOD KAPALI: kaynak sabit, salter degismedi")
+    olay_yaz("AutonomUserToggle", {"user_enabled": False}, actor="user")
+    notify("[CANLI] OTONOM MOD KAPALI (kullanici): kaynak sabit, "
+           "salter degismedi")
     return {"otonom": d}
 
 

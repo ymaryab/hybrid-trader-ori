@@ -21,7 +21,11 @@ _MANIFEST_KILIT = threading.Lock()
 ZARF_V = 1
 # aninda fsync gerektiren olay tipleri (kayip kabul edilemez)
 FSYNC_KINDS = {"DecisionContext", "EngineEntryFilled", "EngineExitFilled",
-               "CanliFill", "LiquidityRemoved", "GapDetected"}
+               "CanliFill", "LiquidityRemoved", "GapDetected",
+               "AutonomSwitchRequested", "AutonomSwitchAborted",
+               "AutonomSwitchCompleted", "AutonomSwitchFailed",
+               "AutonomOn", "AutonomOff", "SelectorBoot",
+               "AutonomUserToggle", "AutonomConfigChanged"}
 
 
 class SegmentYazici:

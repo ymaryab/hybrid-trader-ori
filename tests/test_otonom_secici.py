@@ -1,4 +1,4 @@
-"""Otonom kaynak secici: kayan pencere degisimi, zirvede-kal, tasfiye."""
+"""Otonom secici v2: state-trigger, cift bayrak, mutabakat, olay omurgasi."""
 
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ import hibrit_trader.otonom_secici as osec
 @pytest.fixture(autouse=True)
 def ortam(tmp_path, monkeypatch):
     monkeypatch.setenv("MOMENTUM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("GOZLEM_DATA_DIR", str(tmp_path / "gozlem"))
+    monkeypatch.setattr(osec, "_yazici", None)   # yazici singleton sifirla
     yield tmp_path
 
 
@@ -30,45 +32,86 @@ def _kur(d: Path, motor: str, start=1000.0, created=0.0,
                 f.write(json.dumps(e) + "\n")
 
 
-def test_kayan_degisim_kullanici_ornegi(tmp_path):
-    """13:00'da 1010 olan motor 12:00'da 1000 idi -> +%1."""
+def _olaylar(tmp_path):
+    out = []
+    for yol in sorted((tmp_path / "gozlem").rglob("*.otonom.jsonl")):
+        for ln in yol.read_text().splitlines():
+            if ln.strip():
+                out.append(json.loads(ln))
+    return out
+
+
+def test_kayan_degisim_ham_girdiler(tmp_path):
+    """Kullanici ornegi (+%1) ve denetlenebilirlik alanlari."""
     now = time.time()
     _kur(tmp_path, "yz",
          trades=[{"ts": now - 90 * 60, "trade_id": "A", "pnl_usd": 0.0},
                  {"ts": now - 30 * 60, "trade_id": "B", "pnl_usd": 10.0}],
          equity=[{"ts": now - 61 * 60, "eq": 1000.0}])
     s = osec.kayan_degisim("yz", 60)
-    assert abs(s["pct"] - 1.0) < 1e-6      # 1010/1000-1
-    assert s["islem"] == 1                  # pencere icinde 1 islem
+    assert abs(s["pct"] - 1.0) < 1e-6
+    assert s["equity_now"] == 1010.0
+    assert s["equity_baseline"] == 1000.0
+    assert s["baseline_source"] == "equity_ornek"
+    assert abs(s["baseline_ts"] - (now - 61 * 60)) < 2
 
 
-def test_kayan_degisim_islemsiz_sifir(tmp_path):
-    now = time.time()
-    _kur(tmp_path, "yz",
-         trades=[{"ts": now - 120 * 60, "trade_id": "A", "pnl_usd": 50.0}],
-         equity=[{"ts": now - 61 * 60, "eq": 1050.0}])
-    s = osec.kayan_degisim("yz", 60)
-    assert s["pct"] == 0.0 and s["islem"] == 0   # son saatte hareket yok
+def test_lider_esitlik_bozma_deterministik():
+    sk = {"a": {"pct": 2.0, "islem": 1}, "b": {"pct": 2.0, "islem": 1},
+          "c": {"pct": 1.0, "islem": 1}}
+    assert osec.lider_bul(sk, "b") == "b"   # esitlikte mevcut kazanir
+    assert osec.lider_bul(sk, "c") == "a"   # sonra alfabetik
+    assert osec.aday_sec(sk, "b", min_islem=0) is None  # mevcut lider: kal
 
 
-def test_aday_sec_zirvede_kal():
-    sk = {"yz": {"pct": 2.5, "islem": 4},
-          "r1": {"pct": 1.0, "islem": 2},
-          "r2": {"pct": -3.0, "islem": 5}}     # negatif: elenir
-    assert osec.aday_sec(sk, "r1", min_islem=0) == "yz"     # zirveye gec
-    assert osec.aday_sec(sk, "yz", min_islem=0) is None     # ZIRVEDE KAL
-    hepsi_neg = {"yz": {"pct": -1.0, "islem": 9}}
-    assert osec.aday_sec(hepsi_neg, "r1", min_islem=0) is None
-    assert osec.aday_sec({}, "r1") is None
+def test_aday_sec_state_trigger():
+    """Lider onceki turla ayni olsa bile mevcut != lider ise aday cikar."""
+    sk = {"yz": {"pct": 3.0, "islem": 2}, "r1": {"pct": 0.5, "islem": 1}}
+    assert osec.aday_sec(sk, "r1", min_islem=0) == "yz"
+    assert osec.aday_sec(sk, "r1", min_islem=0) == "yz"  # tekrarda da ayni
+    assert osec.aday_sec(sk, "yz", min_islem=0) is None
 
 
-def test_durum_dosyasi_varsayilan_60dk(tmp_path):
+def test_durum_gocu_ve_cift_bayrak(tmp_path):
+    (tmp_path / osec.DURUM_DOSYA).write_text(json.dumps(
+        {"acik": True, "pencere_dk": 45}))
     d = osec.durum_oku()
-    assert d["acik"] is False and d["pencere_dk"] == 60
-    d["acik"] = True
-    d["pencere_dk"] = 45
+    assert d["user_enabled"] is True          # eski format gocu
+    assert d["system_enabled"] is True
+    assert d["pencere_dk"] == 45
+    d["system_enabled"] = False
     osec.durum_yaz(d)
-    assert osec.durum_oku()["pencere_dk"] == 45
+    d2 = osec.durum_oku()
+    assert d2["user_enabled"] and not d2["system_enabled"]
+
+
+def test_mutabakat_completed_ve_failed(tmp_path):
+    niyet = {"switch_id": "sw-1", "eval_id": "ev-1", "from": "r1",
+             "to": "yz", "bas_ts": time.time() - 30,
+             "positions_closed": 2, "tasfiye_sure_sec": 12.5}
+    (tmp_path / osec.NIYET_DOSYA).write_text(json.dumps(niyet))
+    m = osec.gecis_mutabakati("yz")           # env yeni kaynaga esit
+    assert m["success"] is True
+    assert not (tmp_path / osec.NIYET_DOSYA).exists()
+    (tmp_path / osec.NIYET_DOSYA).write_text(json.dumps(niyet))
+    m2 = osec.gecis_mutabakati("r1")          # env degismemis: FAILED
+    assert m2["success"] is False
+    evs = _olaylar(tmp_path)
+    kinds = [e["kind"] for e in evs]
+    assert kinds == ["AutonomSwitchCompleted", "AutonomSwitchFailed"]
+    p = evs[0]["payload"]
+    assert p["switch_id"] == "sw-1" and p["actor"] == "system"
+    assert p["git_sha"] and p["positions_closed"] == 2
+
+
+def test_olay_omurgaya_yazilir_zarfli(tmp_path):
+    ev = osec.olay_yaz("AutonomConfigChanged",
+                       {"alan": "pencere_dk", "eski": 60, "yeni": 30},
+                       actor="user")
+    assert ev["seq"] == 1 and ev["kind"] == "AutonomConfigChanged"
+    evs = _olaylar(tmp_path)
+    assert evs[0]["payload"]["actor"] == "user"
+    assert evs[0]["payload"]["git_sha"]
 
 
 def test_tasfiye_kancasi(tmp_path):
