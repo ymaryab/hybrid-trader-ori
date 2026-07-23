@@ -15,6 +15,9 @@ from .kaynak_rpc import http_get_json, http_rpc
 
 DEXS = "https://api.dexscreener.com/latest/dex/pairs/solana/"
 SOL_MINT = "So11111111111111111111111111111111111111112"
+# 24 Tem (429 baskisi karari): kadans 5s -> 15s; DexScreener kotasi
+# tarayici/fast_price ile paylasildigi icin feed hizina oncelik verildi
+SNAPSHOT_SN = float(os.getenv("GOZLEM_SNAPSHOT_SN", "15"))
 
 
 class Anlik:
@@ -44,7 +47,7 @@ class Anlik:
                     self.bus.yayinla_kayipli(
                         "anlik", "Snapshot", pair, token=tok, src="dexs")
             gecen = time.monotonic() - bas
-            await asyncio.sleep(max(0.5, 5.0 - gecen))
+            await asyncio.sleep(max(0.5, SNAPSHOT_SN - gecen))
 
     async def mctx_dongusu(self):
         while True:

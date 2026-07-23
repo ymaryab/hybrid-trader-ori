@@ -29,12 +29,15 @@ def ctx_id_uret(engine: str, trade_id: str) -> str:
 
 
 class KararUretici:
+    ACIL_DEVRE_SN = 30.0   # 24 Tem: 429 baskisinda kota israfini onler
+
     def __init__(self, bus, onbellek, snap_getir=None):
         """snap_getir: async (token) -> ham pair payload | None"""
         self.bus = bus
         self.onbellek = onbellek
         self.snap_getir = snap_getir
         self._uretilen: set[str] = set()
+        self._acil_son_hata = 0.0
 
     async def olay_isle(self, ev: dict, akis: str) -> None:
         kind = ev.get("kind")
@@ -58,11 +61,14 @@ class KararUretici:
         acil = False
         bayat = (snap is None
                  or ev.get("ts_ms", 0) - snap.get("ts_ms", 0) > SNAP_BAYAT_MS)
-        if bayat and self.snap_getir is not None and tok:
+        import time as _t
+        devre_acik = _t.time() - self._acil_son_hata < self.ACIL_DEVRE_SN
+        if bayat and self.snap_getir is not None and tok and not devre_acik:
             try:
                 taze = await self.snap_getir(tok)
             except Exception as e:  # noqa: BLE001
                 taze = None
+                self._acil_son_hata = _t.time()   # devre 30sn acilir
                 self.bus.yazici.yaz(
                     "sistem", "GapDetected",
                     {"src": "acil_cekim", "neden": str(e)[:200]},
