@@ -1741,7 +1741,7 @@ def _filo_kart(m: dict, canli_durum: str = "yok") -> str:
             f'<div class="kart" id="kart-{m["id"]}" title="{m["desc"]}">'
             f'<div class="khead"><span class="sira" id="sira-{m["id"]}">-</span>'
             f'<b style="color:{m["renk"]}">{m["ad"]}</b>'
-            f'<span class="rozet">{m["rozet"]}</span>'
+            f'<span class="rozet" id="rozet-{m["id"]}">{m["rozet"]}</span>'
             f'<span class="rozet" id="canli-roz-{m["id"]}" '
             f'style="display:none;background:#da3633;color:#fff">🔴 CANLI</span></div>'
             f'<div class="mtmbig" id="mtm-{m["id"]}">yükleniyor…</div>'
@@ -2781,6 +2781,8 @@ async function filoTick(){
   // rozet/buton icin kaynak motor (10. motor mimarisi): CANLI hangi kurali kopyaliyor
   const aktifKaynak=((d.canlim||{}).summary||{}).kaynak_motor||aktifMotor;
   basCanliMotor(aktifKaynak);       // buton state + rozet
+  const rc=document.getElementById("rozet-canlim");
+  if(rc)rc.textContent="10. motor · kaynak "+String(aktifKaynak||"?").toUpperCase();
   if(d.canli)basCanli(d.canli, aktifMotor); basCanlimKarti(d.canli);  // aktif motor kartina canli veriler
   basCanliPoz(d.acik_pozlar||[]);   // 5 kaynak birlesik acik-poz tablosu
   basMotorTrades(d);                 // 18 Tem: her motor karti altina son 10 islem
