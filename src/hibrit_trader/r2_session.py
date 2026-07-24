@@ -131,6 +131,12 @@ SONDA_ORAN = float(os.getenv("R2_SONDA_ORAN", str(1/3)))
 SONDA_TEYIT_PCT = float(os.getenv("R2_SONDA_TEYIT", "2.0"))
 SONDA_KES_PCT = float(os.getenv("R2_SONDA_KES", "-2.0"))
 
+
+# 24 Tem kullanici karari: zaman tavanina son KAR_PENCERE_DK kala
+# pozisyon ARTIYA degdigi an satilir (timeout_karla): son duzlukte
+# yesili gorup timeout'ta geri vermek yok
+TIMEOUT_KAR_DK = float(os.getenv("MOM_TIMEOUT_KAR_DK", "10"))
+
 STATE_FILE = "r2_state.json"
 TRADES_FILE = "r2_trades.jsonl"
 
@@ -687,6 +693,12 @@ class R2Engine:
             return "erken_zayif"
         # 2) Tavan HER pozisyona uygulanir (runner dahil; 21 Tem Jimhood dersi:
         #    runner dali tavani atliyordu, 5 saat kosup felakete dustu)
+        if (pnl_pct > 0 and CEILING_SEC > TIMEOUT_KAR_DK * 60
+                and age >= CEILING_SEC - TIMEOUT_KAR_DK * 60):
+            return "timeout_karla"
+        if (pnl_pct > 0 and CEILING_SEC > TIMEOUT_KAR_DK * 60
+                and age >= CEILING_SEC - TIMEOUT_KAR_DK * 60):
+            return "timeout_karla"
         if age >= CEILING_SEC:
             return "timeout_180"
         mfe = float(pos.get("mfe_pct") or 0.0)

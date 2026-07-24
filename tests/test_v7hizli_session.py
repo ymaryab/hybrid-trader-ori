@@ -32,4 +32,4 @@ def test_tp2_ve_60dk_kosulsuz_cikis():
     assert eng._eval_position(poz(yas_dk=59), 0.85, now) is None     # -15: kapak alti, stop yok
     assert eng._eval_position(poz(yas_dk=5), 0.79, now) == "stop_felaket"  # -21: kuyruk kapagi
     assert eng._eval_position(poz(yas_dk=61), 0.9, now) == "timeout_60"
-    assert eng._eval_position(poz(yas_dk=61), 1.01, now) == "timeout_60"
+    assert eng._eval_position(poz(yas_dk=61), 1.01, now) == "timeout_karla"  # 24 Tem: artida son-duzluk cikisi

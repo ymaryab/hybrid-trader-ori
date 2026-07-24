@@ -31,4 +31,4 @@ def test_tp2_ve_20dk_kosulsuz_cikis():
     assert eng._eval_position(poz(), 1.03, now) == "tp_2"
     assert eng._eval_position(poz(yas_dk=19), 0.7, now) is None
     assert eng._eval_position(poz(yas_dk=21), 0.7, now) == "timeout_20"
-    assert eng._eval_position(poz(yas_dk=21), 1.01, now) == "timeout_20"
+    assert eng._eval_position(poz(yas_dk=21), 1.01, now) == "timeout_karla"  # 24 Tem: artida son-duzluk cikisi

@@ -116,6 +116,12 @@ ERKEN_BE_AKTIF = os.getenv("R1_ERKEN_BE", "1") == "1"         # +5 gordu: taban 
 ERKEN_BE_ARM = float(os.getenv("R1_ERKEN_BE_ARM", "5.0"))
 ERKEN_BE_TABAN = float(os.getenv("R1_ERKEN_BE_TABAN", "0.0"))
 
+
+# 24 Tem kullanici karari: zaman tavanina son KAR_PENCERE_DK kala
+# pozisyon ARTIYA degdigi an satilir (timeout_karla): son duzlukte
+# yesili gorup timeout'ta geri vermek yok
+TIMEOUT_KAR_DK = float(os.getenv("MOM_TIMEOUT_KAR_DK", "10"))
+
 STATE_FILE = "r1_state.json"
 TRADES_FILE = "r1_trades.jsonl"
 
@@ -665,6 +671,9 @@ class R1Engine:
         if age >= GRACE_SEC and pnl_pct <= LATE_STOP_PCT:
             return "stop_gec"
         # 5) 120dk tavan
+        if (pnl_pct > 0 and CEILING_SEC > TIMEOUT_KAR_DK * 60
+                and age >= CEILING_SEC - TIMEOUT_KAR_DK * 60):
+            return "timeout_karla"
         if age >= CEILING_SEC:
             return "timeout_120"
         return None

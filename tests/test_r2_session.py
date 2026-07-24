@@ -81,7 +81,7 @@ def test_grace_ve_timeout():
     # guc gostermis (mfe>=1) pozisyonda grace-sonrasi stop_gec hala gecerli
     p = _poz(now, yas_sec=16*60); p["mfe_pct"] = 1.5
     assert eng._eval_position(p, 0.94, now) == "stop_gec"
-    assert eng._eval_position(_poz(now, yas_sec=181*60), 1.005, now) == "timeout_180"
+    assert eng._eval_position(_poz(now, yas_sec=181*60), 1.005, now) == "timeout_karla"  # 24 Tem
 
 
 def test_giris_filtreleri(monkeypatch):
@@ -134,7 +134,12 @@ def test_tavan_runner_icin_de_calisir():
     eng = _eng(); now = time.time()
     p = _poz(now, mfe=100.0, yas_sec=181 * 60)
     p["runner_peak"] = 2.0
-    assert eng._eval_position(p, 1.9, now) == "timeout_180"
+    # 24 Tem: artida tavana gelen pozisyon timeout_karla ile cikar (ayni an, ayni fiyat)
+    assert eng._eval_position(p, 1.9, now) == "timeout_karla"
+    # eksideki pozisyon icin tavan etiketi degismedi
+    p2 = _poz(now, mfe=100.0, yas_sec=181 * 60)
+    p2["runner_peak"] = 2.0
+    assert eng._eval_position(p2, 0.9, now) == "timeout_180"
 
 
 def test_sol_eksi_rejim_kapisi(monkeypatch):

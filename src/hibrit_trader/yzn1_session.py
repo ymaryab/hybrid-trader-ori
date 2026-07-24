@@ -85,6 +85,12 @@ SAT_COOLDOWN_SEC = 20.0
 KOR_FIYAT_SEC = 120.0
 KOR_ALARM_ARALIK_SEC = 60.0
 
+
+# 24 Tem kullanici karari: zaman tavanina son KAR_PENCERE_DK kala
+# pozisyon ARTIYA degdigi an satilir (timeout_karla): son duzlukte
+# yesili gorup timeout'ta geri vermek yok
+TIMEOUT_KAR_DK = float(os.getenv("MOM_TIMEOUT_KAR_DK", "10"))
+
 STATE_FILE = "yzn1_state.json"
 TRADES_FILE = "yzn1_trades.jsonl"
 
@@ -594,6 +600,9 @@ class YZN1Engine:
             return "tp_2"
         if FELAKET_PCT < 0 and pnl_pct <= FELAKET_PCT:
             return "stop_felaket"
+        if (TIMEOUT_MIN > 0 and pnl_pct > 0 and TIMEOUT_MIN > TIMEOUT_KAR_DK
+                and (now - pos["opened_ts"]) >= (TIMEOUT_MIN - TIMEOUT_KAR_DK) * 60):
+            return "timeout_karla"
         if TIMEOUT_MIN > 0 and (now - pos["opened_ts"]) >= TIMEOUT_MIN * 60:
             return "timeout_60"
         return None

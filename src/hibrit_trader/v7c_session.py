@@ -1,30 +1,19 @@
-"""V7C senaryo motoru: V7 iskeleti, major/likit evren + majore uygun h1 bandi 2..10.
+"""V7C paper motoru — TP=+%2 tek cikis (V7C klonu, 16 Tem: V6 yerine listelendi).
 
-Amac: evren farkinin etkisini olcmek. V7 memecoin taramasinda avlanirken V7C
-ayni cikis/rejim/boyut kurallariyla major evrende avlanir; giris bandi major
-oynakligina gore 2..10'a cekildi, baska hicbir kural degismez.
+Kural seti (kullanici, 2026-07-15):
+  GIRIS : rejim SOL_h1>=0.35 · momentum 10<=chg_h1<=50 · liq>=$100k
+          taze fiyat<=+%2 · safety + kasa dagilim + bos slot (max 5)
+          cooldown normal 15dk / stop 60dk (stop yok, ama tutarlilik icin sabit)
+  CIKIS : SADECE tp_2 (giristen +%2 gorulunce sat)
+          stop YOK, zaman asimi YOK, felaket YOK
+          Satis slippage: normal 150 bps, stop_felaket 1000 bps (tutarlilik icin sabit)
+
+MOD: SABIT PAPER. BROKER_MODE ne olursa olsun exec paper. Canli para tasimaz.
+V7C_ENABLED=0 ile kapatilir.
 
 Diger motorlara SIFIR dokunus. Sadece su dosyalara yazar:
-  data/v7c_state.json     (sanal bakiye + acik pozisyonlar)
-  data/v7c_trades.jsonl   (her sanal kapanista kayit)
-  data/v7c_universe.json  (major evren, gunde bir tazelenir)
-
-EVREN: M1 altyapisi yeniden kullanilir. SEED_TOKENS gunde bir
-DexScreener'dan dogrulanir (Jupiter hakem + tutarli havuz + hafif honeypot),
-en likit havuzu >= V7C_MIN_LIQ_USD (varsayilan $3M) olanlar evrene girer.
-
-KURALLAR (v7 iskeletinde iki fark: evren + h1 bandi):
-  GIRIS : h1 bandi 2..10 (major oynakligina uygun; memecoin bandi 10..50
-          majorlerde neredeyse hic tetiklenmiyordu), likidite esigi, safety
-          check, taze teyit, kasaya oranli boyut (balance/empty), 5 slot,
-          baslangic $1000.
-  REJIM : sol_h1 < 0.5 iken giris yok (fail-closed, paylasimli cache).
-  CIKIS : tp +%2 / -%10 felaket freni (her an) / 30dk sabir sonrasi -%2 stop /
-          60dk tavan.
-
-MOD: SABIT PAPER. BROKER_MODE zincirinden BAGIMSIZ; global mod live olsa
-bile V7C paper kalir (exec katmani dogrudan PaperExecBroker).
-V7C_ENABLED=0 ile kapatilir.
+  data/v7c_state.json   (sanal bakiye + acik pozisyonlar)
+  data/v7c_trades.jsonl (her sanal kapanista kayit)
 """
 
 from __future__ import annotations
@@ -92,6 +81,12 @@ SAT_COOLDOWN_SEC = 20.0
 KOR_FIYAT_SEC = 120.0
 KOR_ALARM_ARALIK_SEC = 60.0
 
+
+# 24 Tem kullanici karari: zaman tavanina son KAR_PENCERE_DK kala
+# pozisyon ARTIYA degdigi an satilir (timeout_karla): son duzlukte
+# yesili gorup timeout'ta geri vermek yok
+TIMEOUT_KAR_DK = float(os.getenv("MOM_TIMEOUT_KAR_DK", "10"))
+
 STATE_FILE = "v7c_state.json"
 TRADES_FILE = "v7c_trades.jsonl"
 
@@ -113,17 +108,24 @@ class V7CEngine:
         self._day_key: str = ""
         self._day_realized: float = 0.0
         self._limit_logged = False
+        self._day_limit_usd: float | None = None
+        self._limit_belirsiz_logged = False
+        self._yuklenen_gun_limiti: tuple | None = None
         self._huni = HuniSayac("V7C")
-        self._universe: list[dict] = []
-        self._universe_ts: float = 0.0
         self._lock_fh = None
-        # SABIT PAPER: BROKER_MODE ne olursa olsun exec katmani paper kalir.
-        self._exec = PaperExecBroker()
+        self._son_exec_neden: str | None = None
+        self._belirsiz_aday: dict | None = None
+        # 16 Tem: CANLI_MOTOR env swap altyapisi. Default paper; CANLI_MOTOR=v7c
+        # secilirse make_exec_broker (live/dryrun) devreye girer.
+        self._exec, self._exec_arizali = init_motor_exec("v7c")
         self._load()
-        self._load_universe()
         self._restore_day_realized()
+        if (self._yuklenen_gun_limiti
+                and self._yuklenen_gun_limiti[0] == self._day_key
+                and self._yuklenen_gun_limiti[1]):
+            self._day_limit_usd = float(self._yuklenen_gun_limiti[1])
 
-    # ---- Dosya isleri (v7 ile ayni: atomik save, aninda persist) ----------------
+    # ---- Dosya isleri ---------------------------------------------------------
     def _path(self, name: str) -> Path:
         return _data_dir() / name
 
@@ -141,6 +143,8 @@ class V7CEngine:
                 pos for pos in (data.get("positions") or [])
                 if isinstance(pos, dict) and "entry_price" in pos and "pool_address" in pos
             ]
+            self._yuklenen_gun_limiti = (data.get("day_limit_key"),
+                                         data.get("day_limit_usd"))
         except Exception:
             backup = p.with_name(f"{p.name}.corrupt-{int(time.time())}")
             try:
@@ -158,6 +162,9 @@ class V7CEngine:
             "realized_pnl": round(self.realized_pnl, 4),
             "created_ts": round(self.created_ts, 3),
             "positions": self.positions,
+            "day_limit_key": self._day_key or None,
+            "day_limit_usd": (round(self._day_limit_usd, 4)
+                              if self._day_limit_usd is not None else None),
             "updated_at": _now_iso(),
         }, ensure_ascii=False, indent=2)
         tmp = p.with_name(p.name + ".tmp")
@@ -171,13 +178,14 @@ class V7CEngine:
         with p.open("a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
 
-    # ---- Gun ici realized PnL sayaci (v7 ile ayni) -------------------------------
+    # ---- Gun ici realized PnL sayaci -----------------------------------------
     def _day_realized_add(self, pnl: float, now: float) -> None:
         key = time.strftime("%Y-%m-%d", time.gmtime(now))
         if key != self._day_key:
             self._day_key = key
             self._day_realized = 0.0
             self._limit_logged = False
+            self._day_limit_usd = None
         self._day_realized += pnl
 
     def _restore_day_realized(self) -> None:
@@ -202,6 +210,8 @@ class V7CEngine:
             log.debug("V7C gun ici pnl geri yuklenemedi", exc_info=True)
 
     def _entries_blocked(self) -> str | None:
+        if self._exec_arizali:
+            return "exec_arizali"
         if kill_is_active():
             if not self._kill_logged:
                 self._kill_logged = True
@@ -210,37 +220,85 @@ class V7CEngine:
         if self._kill_logged:
             self._kill_logged = False
             log.warning("V7C: kill-switch kalkti, girisler serbest")
-        if DAILY_LOSS_LIMIT_USD > 0:
+        if DAILY_LOSS_LIMIT_USD > 0 or self._pct_limit_aktif():
             key = time.strftime("%Y-%m-%d", time.gmtime())
             if key != self._day_key:
                 self._day_key = key
                 self._day_realized = 0.0
                 self._limit_logged = False
-            if self._day_realized <= -DAILY_LOSS_LIMIT_USD:
+                self._day_limit_usd = None
+            limit, kesin = self._gun_limiti()
+            if limit is None and not kesin:
+                if not self._limit_belirsiz_logged:
+                    self._limit_belirsiz_logged = True
+                    log.critical("V7C: gun limiti hesaplanamadi, yeni giris kapali (fail-closed)")
+                return "daily_limit_belirsiz"
+            if self._limit_belirsiz_logged:
+                self._limit_belirsiz_logged = False
+                log.warning("V7C: gun limiti hesaplandi, belirsizlik kalkti")
+            if limit is not None and self._day_realized <= -limit:
                 if not self._limit_logged:
                     self._limit_logged = True
                     log.critical(
                         "V7C: gunluk zarar limiti asildi ($%.2f <= -$%.2f), "
-                        "bugun (UTC) yeni giris yok", self._day_realized, DAILY_LOSS_LIMIT_USD,
+                        "bugun yeni giris yok", self._day_realized, limit,
                     )
                 return "daily_loss_limit"
         return None
 
-    def _exec_fill(self, yon: str, token_address: str, *, usd: float = 0.0,
-                   amount_token: float = 0.0, ref_fiyat: float = 0.0):
-        """Paper exec: muhasebe paper kalir, devam True. Mod sabit paper oldugu
-        icin live dallanmasi hicbir zaman calismaz (bilincli)."""
+    def _pct_limit_aktif(self) -> bool:
+        return DAILY_LOSS_LIMIT_PCT > 0 and getattr(self._exec, "mode", "paper") == "live"
+
+    def _canli_mtm(self) -> float | None:
         try:
-            self._exec.execute(ExecOrder(
-                engine="V7C", yon=yon, token_address=token_address,
-                usd=usd, amount_token=amount_token, ref_fiyat=ref_fiyat))
+            from hibrit_trader import canli_gosterge
+            snap = canli_gosterge.son()
+            if snap and float(snap.get("mtm") or 0.0) > 0:
+                return float(snap["mtm"])
+        except Exception:
+            log.debug("V7C canli MTM okunamadi", exc_info=True)
+        return None
+
+    def _gun_limiti(self) -> tuple[float | None, bool]:
+        if self._day_limit_usd is not None:
+            return self._day_limit_usd, True
+        usd = DAILY_LOSS_LIMIT_USD if DAILY_LOSS_LIMIT_USD > 0 else None
+        if not self._pct_limit_aktif():
+            self._day_limit_usd = usd
+            return usd, True
+        mtm = self._canli_mtm()
+        if mtm is None:
+            return usd, False
+        limit = mtm * DAILY_LOSS_LIMIT_PCT / 100.0
+        if usd is not None:
+            limit = min(limit, usd)
+        self._day_limit_usd = limit
+        self._save()
+        log.warning("V7C gun limiti sabitlendi: MTM $%.2f x %%%g = $%.2f",
+                    mtm, DAILY_LOSS_LIMIT_PCT, limit)
+        return limit, True
+
+    def _exec_fill(self, yon: str, token_address: str, *, usd: float = 0.0,
+                   amount_token: float = 0.0, ref_fiyat: float = 0.0,
+                   slippage_bps: int = 50, acilis_ts: float | None = None):
+        self._son_exec_neden = None
+        try:
+            fill = self._exec.execute(ExecOrder(
+                engine="V7", yon=yon, token_address=token_address,
+                usd=usd, amount_token=amount_token, ref_fiyat=ref_fiyat,
+                slippage_bps=slippage_bps, acilis_ts=acilis_ts))
         except Exception as e:
             log.error("V7C yurutme hatasi (%s %s): %s", yon, token_address[:8], e)
-        return True, None
+            fill = None
+        if self._exec.mode != "live":
+            return True, None
+        if fill is None or not fill.ok:
+            self._son_exec_neden = fill.neden if fill is not None else "exec_hata"
+            return False, None
+        return True, fill
 
     def _acquire_lock(self) -> bool:
         import fcntl
-
         p = self._path("v7c_engine.lock")
         p.parent.mkdir(parents=True, exist_ok=True)
         fh = p.open("w")
@@ -255,126 +313,108 @@ class V7CEngine:
         self._lock_fh = fh
         return True
 
-    # ---- Evren: M1 deseni, esik V7C_MIN_LIQ_USD ----------------------------------
-    def _load_universe(self) -> None:
-        p = self._path(UNIVERSE_FILE)
-        if not p.exists():
-            return
-        try:
-            data = json.loads(p.read_text())
-            self._universe = list(data.get("tokens") or [])
-            self._universe_ts = float(data.get("updated_ts") or 0.0)
-        except Exception:
-            log.warning("v7c universe dosyasi okunamadi, tazelenecek")
-
-    def _refresh_universe(self, client: httpx.Client) -> None:
-        tokens: list[dict] = []
-        for sym, addr in SEED_TOKENS.items():
-            try:
-                r = client.get(f"{API['dexscreener']}/latest/dex/tokens/{addr}")
-                r.raise_for_status()
-                pairs = [
-                    p for p in (r.json().get("pairs") or [])
-                    if p.get("chainId") == "solana"
-                    and (p.get("baseToken") or {}).get("address") == addr
-                ]
-                if not pairs:
-                    continue
-                ref = jupiter_referans_fiyat(addr)
-                if ref is None:
-                    log.warning("V7C EVREN: %s icin Jupiter hakem yok (fail-closed), disarida", sym)
-                    continue
-                best = _best_sane_pool(pairs, ref_fiyat=ref)
-                if best is None:
-                    log.warning("V7C EVREN: %s icin fiyati tutarli havuz yok, disarida", sym)
-                    continue
-                liq = float((best.get("liquidity") or {}).get("usd") or 0)
-                if liq < LIQ_MIN_USD:
-                    continue
-                if not _light_honeypot_ok(client, addr):
-                    log.warning("V7C EVREN: %s hafif honeypot kontrolunden gecemedi, disarida", sym)
-                    continue
-                tokens.append({
-                    "symbol": sym,
-                    "token_address": addr,
-                    "pool_address": str(best.get("pairAddress") or ""),
-                    "liq_usd": round(liq, 0),
-                    "ref_fiyat": ref,
-                })
-            except Exception:
-                log.debug("v7c universe: %s dogrulanamadi", sym, exc_info=True)
-            time.sleep(0.4)
-        if not tokens:
-            log.warning("V7C EVREN: tazeleme bos dondu, eski evren korunuyor (n=%d)",
-                        len(self._universe))
-            self._universe_ts = time.time()
-            return
-        self._universe = tokens
-        self._universe_ts = time.time()
-        p = self._path(UNIVERSE_FILE)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps({
-            "updated_ts": round(self._universe_ts, 3),
-            "updated_at": _now_iso(),
-            "liq_min_usd": LIQ_MIN_USD,
-            "tokens": tokens,
-        }, ensure_ascii=False, indent=2)
-        tmp = p.with_name(p.name + ".tmp")
-        tmp.write_text(payload)
-        os.replace(tmp, p)
-        log.warning("V7C EVREN tazelendi: %d token (%s)", len(tokens),
-                    ", ".join(t["symbol"] for t in tokens))
-
-    def _scan_universe(self, client: httpx.Client) -> list:
-        """Evren havuzlarini TEK istekle cek (M1 deseni, 30 havuz siniri)."""
-        if time.time() - self._universe_ts > UNIVERSE_REFRESH_SEC:
-            self._refresh_universe(client)
-        if not self._universe:
-            return []
-        pools = ",".join(t["pool_address"] for t in self._universe[:30] if t.get("pool_address"))
-        if not pools:
-            return []
-        r = client.get(f"{API['dexscreener']}/latest/dex/pairs/solana/{pools}")
-        r.raise_for_status()
-        data = r.json()
-        items = data.get("pairs") or ([data["pair"]] if data.get("pair") else [])
-        out = []
-        for item in items:
-            pr = pair_from_dexscreener(item)
-            if pr is not None:
-                out.append(pr)
-        return out
-
-    # ---- Ana dongu (11/16 faz kaydirma: diger motorlarla API carpismasin) --------
+    # ---- Ana dongu -----------------------------------------------------------
     def run_forever(self) -> None:
         if not self._acquire_lock():
             return
         log.warning(
-            "V7C senaryo basladi (v7 kurallari, major evren) - sanal $%.2f · slot %d · "
-            "evren+giris liq>=$%.0f · h1 %.0f..%.0f · rejim sol_h1>=%.1f · "
-            "cikis tp+%.0f%% uzeri / %dm sabir sonrasi stop%%%.0f / tavan %dm · PAPER sabit",
-            self.balance, MAX_SLOTS, LIQ_MIN_USD, CHG_H1_MIN, CHG_H1_MAX, SOL_H1_MIN,
-            TP_PCT, GRACE_SEC // 60, LATE_STOP_PCT, CEILING_SEC // 60,
+            "V7C paper basladi (TP=+%%%.1f tek cikis, stop yok) - sanal $%.2f · "
+            "slot %d · giris liq>=$%.0f + h1 %.0f..%.0f · rejim>=%.2f",
+            TP_PCT, self.balance, MAX_SLOTS, LIQ_MIN_USD, CHG_H1_MIN, CHG_H1_MAX, SOL_H1_MIN,
         )
         self._save()
-        time.sleep(SCAN_INTERVAL_SEC * 11 / 16)
+        feed = get_feed()
+        if feed is not None:
+            for pos in self.positions:
+                feed.add_pool(pos["pool_address"])
+        # v7d 7/8 kullaniyor, v7 1/1, momentum 5/8, v6 farkli. v7c faz: 6/8.
+        time.sleep(SCAN_INTERVAL_SEC * 6 / 8)
         while True:
             try:
                 self.tick()
             except Exception:
                 log.exception("v7c tick hatasi")
-            time.sleep(SCAN_INTERVAL_SEC)
+            deadline = time.time() + SCAN_INTERVAL_SEC
+            while True:
+                kalan = deadline - time.time()
+                if kalan <= 0:
+                    break
+                time.sleep(min(EXIT_INTERVAL_SEC, kalan))
+                try:
+                    self.fast_exit_tick()
+                except Exception:
+                    log.exception("v7c hizli cikis hatasi")
 
     def tick(self) -> None:
+        self._belirsiz_takip()
         with httpx.Client(timeout=10.0) as client:
             self._manage_exits(client)
             self._enter(client)
         self._save()
 
+    # ---- R2-alim: belirsiz alim mutabakati -----------------------------------
+    def _belirsiz_takip(self) -> None:
+        if self._belirsiz_aday is None:
+            return
+        sorgu = getattr(self._exec, "belirsiz_sonuc", None)
+        if sorgu is None:
+            self._belirsiz_aday = None
+            return
+        durum, detay = sorgu("V7")
+        if durum == "bekliyor":
+            return
+        aday = self._belirsiz_aday
+        self._belirsiz_aday = None
+        if durum == "gerceklesti" and detay and detay.get("fiyat", 0) > 0:
+            self._belirsiz_pozisyon_ac(aday, detay)
+        elif durum == "yok":
+            log.warning("V7C BELIRSIZ SONUC %s: tx zincirde yok, iptal", aday["pair"])
+        else:
+            log.critical("V7C BELIRSIZ SONUC %s: cozulemedi (%s)", aday["pair"], durum)
+
+    def _belirsiz_pozisyon_ac(self, aday: dict, detay: dict) -> None:
+        usd = aday["usd"]
+        entry = detay["fiyat"]
+        gas = GAS_COST_USD.get(aday["chain"], 0.1)
+        now = aday["ts"]
+        pos = {
+            "trade_id": new_trade_id(aday["pool_address"], now),
+            "pair": aday["pair"],
+            "chain": aday["chain"],
+            "token_address": aday["token_address"],
+            "pool_address": aday["pool_address"],
+            "entry_price": entry,
+            "karar_fiyat": aday["karar_fiyat"],
+            "amount_token": usd / entry,
+            "cost_usd": round(usd, 4),
+            "opened_ts": now,
+            "opened_at": _now_iso(),
+            "chg_m5": aday["chg_m5"],
+            "chg_h1": aday["chg_h1"],
+            "liq_entry": aday["liq_entry"],
+            "sol_chg_h1": aday["sol_chg_h1"],
+            "entry_price_source": aday["entry_price_source"],
+            "entry_fresh_fark_pct": aday["entry_fresh_fark_pct"],
+            "entry_slip_pct": aday["entry_slip_pct"],
+            "mfe_pct": 0.0,
+            "mae_pct": 0.0,
+            "last_price": entry,
+            "tx_al": detay["tx_id"],
+            "canli_miktar": detay["miktar_token"],
+            "belirsiz_mutabakat": True,
+        }
+        self.balance -= (usd + gas)
+        self.positions.append(pos)
+        self._save()
+        feed = get_feed()
+        if feed is not None:
+            feed.add_pool(pos["pool_address"])
+        log.warning("V7C BUY (mutabakat) %s $%.2f @ %.8g", aday["pair"], usd, entry)
+
     def _sol_chg_h1(self, client: httpx.Client) -> float | None:
         return sol_chg_h1(client)
 
-    # ---- Giris (v7 ile birebir; tek fark: aday kaynagi major evren) ---------------
+    # ---- Giris ---------------------------------------------------------------
     def _enter(self, client: httpx.Client) -> None:
         empty = MAX_SLOTS - len(self.positions)
         if empty <= 0 or self.balance <= 1.0:
@@ -382,7 +422,7 @@ class V7CEngine:
         if self._entries_blocked():
             return
         try:
-            pairs = self._scan_universe(client)
+            pairs = scan_all(self.settings.scan_chains)
         except Exception as e:
             log.warning("V7C giris tick atlandi, tarama hatasi: %r", e)
             return
@@ -399,10 +439,15 @@ class V7CEngine:
                 continue
             if self._cooldown_until.get(pr.token_address, 0.0) > now:
                 continue
+            # Aday paylastir: baska motor 15dk icinde ayni token'i aldi mi?
+            _izin, _red_nedeni = aday_paylastir.iddia_et(pr.token_address, "v7c", pr.name)
+            if not _izin:
+                continue
             if pr.liquidity_usd < LIQ_MIN_USD:
                 continue
             liq_ok += 1
-            if not (CHG_H1_MIN <= getattr(pr, "chg_h1", 0.0) <= CHG_H1_MAX):
+            h1 = getattr(pr, "chg_h1", 0.0)
+            if not (CHG_H1_MIN <= h1 <= CHG_H1_MAX):
                 continue
             cands.append(pr)
         cands.sort(key=lambda pr: pr.chg_h1, reverse=True)
@@ -419,7 +464,8 @@ class V7CEngine:
         if sol_h1 < SOL_H1_MIN:
             if not self._regime_logged:
                 self._regime_logged = True
-                log.warning("V7C REJIM: sol_chg_h1 %.2f%% < %.2f%%, giris yok", sol_h1, SOL_H1_MIN)
+                log.warning("V7C REJIM: sol_chg_h1 %.2f%% < %.2f%%, giris yok",
+                            sol_h1, SOL_H1_MIN)
             rejim_reject_kaydet(cands, "V7C", sol_h1)
             return
         if self._regime_logged:
@@ -436,7 +482,8 @@ class V7CEngine:
             time.sleep(0.2 if self._aggressive else 1.5)
             if not report.ok:
                 safety_reject_kaydet(
-                    pair, "V7C", report.kapi or "safety_red", "; ".join(report.reasons[:2])
+                    pair, "V7C", report.kapi or "safety_red",
+                    "; ".join(report.reasons[:2])
                 )
                 continue
             if self._open_position(pair, budget_each, sol_h1, client=client):
@@ -494,6 +541,7 @@ class V7CEngine:
             "token_address": pair.token_address,
             "pool_address": pair.pool_address,
             "entry_price": eff_price,
+            "karar_fiyat": karar_fiyat,
             "amount_token": amount_token,
             "cost_usd": round(usd, 4),
             "opened_ts": now,
@@ -544,6 +592,9 @@ class V7CEngine:
             pos["mae_pct"] = round(pnl_pct, 4)
         if pnl_pct > TP_PCT:
             return "tp_2"
+        if (TIMEOUT_MIN > 0 and pnl_pct > 0 and TIMEOUT_MIN > TIMEOUT_KAR_DK
+                and (now - pos["opened_ts"]) >= (TIMEOUT_MIN - TIMEOUT_KAR_DK) * 60):
+            return "timeout_karla"
         if TIMEOUT_MIN > 0 and (now - pos["opened_ts"]) >= TIMEOUT_MIN * 60:
             return "timeout_30"
         return None
@@ -671,14 +722,24 @@ class V7CEngine:
             "hold_sec": hold_sec,
             "exit_reason": reason,
             "friction_pct": round(pos.get("entry_slip_pct", 0.0) + slip * 100, 4),
+            "price_source": price_src,
+            "tetik_gecikme_sec": tetik_gecikme,
             "opened_at": pos["opened_at"],
             "closed_at": _now_iso(),
         }
+        if canli is not None and canli.tx_id:
+            row["signature"] = canli.tx_id
+        if pos.get("tx_al"):
+            row["signature_al"] = pos["tx_al"]
+        cm = float(pos.get("canli_miktar") or 0.0)
+        if cm > 0 and canli is not None and canli.tx_id:
+            row["canli_miktar"] = cm
+            row["canli_pnl_usd"] = round((eff_price - pos["entry_price"]) * cm, 4)
         self._append_trade(row)
         self.balance += proceeds
         self.realized_pnl += pnl
         self._day_realized_add(pnl, now)
-        cd = COOLDOWN_LOSS_SEC if reason == "stop_gec" else COOLDOWN_EXIT_SEC
+        cd = COOLDOWN_LOSS_SEC if reason in ("stop_gec", "stop_felaket") else COOLDOWN_EXIT_SEC
         if pos.get("token_address"):
             self._cooldown_until[pos["token_address"]] = now + cd
         try:
@@ -686,5 +747,10 @@ class V7CEngine:
         except ValueError:
             pass
         self._save()
-        log.warning("V7C SELL %s pnl $%.2f (%.2f%%) - %s, hold %.0fs (mfe %.1f%% mae %.1f%%)",
+        feed = get_feed()
+        if feed is not None:
+            feed.remove_pool(pos["pool_address"])
+        log.warning("V7C SELL %s pnl $%.2f (%.2f%%) — %s, hold %.0fs (mfe %.1f%% mae %.1f%%)",
                     pos["pair"], pnl, pnl_pct, reason, hold_sec, pos["mfe_pct"], pos["mae_pct"])
+        notify("[V7C] SATIM: %s pnl $%.2f (%%%.2f) — %s, hold %.0fdk"
+               % (pos["pair"], pnl, pnl_pct, reason, hold_sec / 60))

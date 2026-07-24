@@ -102,6 +102,12 @@ SAT_COOLDOWN_SEC = 20.0  # ertelenen satis sonrasi soguma; yoksa 1s kadans Jupit
 KOR_FIYAT_SEC = 120.0
 KOR_ALARM_ARALIK_SEC = 60.0
 
+
+# 24 Tem kullanici karari: zaman tavanina son KAR_PENCERE_DK kala
+# pozisyon ARTIYA degdigi an satilir (timeout_karla): son duzlukte
+# yesili gorup timeout'ta geri vermek yok
+TIMEOUT_KAR_DK = float(os.getenv("MOM_TIMEOUT_KAR_DK", "10"))
+
 STATE_FILE = "v7d_state.json"
 TRADES_FILE = "v7d_trades.jsonl"
 
@@ -680,6 +686,9 @@ class V7DEngine:
             return "stop_6"
         if age >= GRACE_SEC and pnl_pct <= LATE_STOP_PCT:
             return "stop_gec"
+        if (pnl_pct > 0 and CEILING_SEC > TIMEOUT_KAR_DK * 60
+                and age >= CEILING_SEC - TIMEOUT_KAR_DK * 60):
+            return "timeout_karla"
         if age >= CEILING_SEC:
             return "timeout_20"
         return None
