@@ -23,12 +23,17 @@ hiçbir motor güçlü değilken canlı alımı tamamen durdurmak.
 ## 3. Uygunluk (kim yarışabilir)
 - Pozitiflik eşiği: skor >= +%1 (OTONOM_POZITIF_ESIK). Altında kalan
   motor "negatif" sayılır, lider olamaz.
+- Pencerede en az 1 kapanmış işlem (OTONOM_MIN_ISLEM=1) ve kasa >=
+  $150 (OTONOM_MIN_KASA_USD) şartı: salt MTM kıpırtısıyla veya cüce
+  kasayla liderlik olmaz (24 Tem R1 vakası).
 
 ## 4. Lider seçimi
 - STATE-TRIGGER: karar her turda "lider != mevcut kaynak" üzerinden;
   başarısız geçiş sonraki turda kendiliğinden yeniden denenir.
 - Fark belirginse (> OTONOM_MARJ_PUAN = 1 puan) en yüksek skor kazanır.
-- Fark marj İÇİNDEyse EĞİM kazanır (son iki turun skor farkı).
+- Fark marj İÇİNDEyse EĞİM kazanır (son iki turun skor farkı);
+  eğim önceliği YALNIZ eğimi pozitif olanlara tanınır (sıfır/negatif
+  eğim "yükselen" değildir), yükselen yoksa seviye kazanır (24 Tem fix).
 - VETO: mevcut motor uygunken, sönen (eğim<0) lidere marj içinden
   geçilmez.
 - ZİRVEDE OLANDA KAL: mevcut kaynak lider ise hiçbir şey yapılmaz.

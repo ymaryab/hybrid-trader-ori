@@ -203,3 +203,21 @@ def test_tasfiye_dogal_fazda_zayif_kagit_aninda(tmp_path):
     except AttributeError:
         r = "kaynaga_devredildi"   # delegasyona ulasti = tasfiye kesmedi
     assert r != "otonom_tasfiye"
+
+
+def test_zombi_ve_cuce_kasa_koruma(monkeypatch):
+    """24 Tem sabah fixi: sifir egimli zombi egim kazanamaz; islemsiz ve
+    cuce kasali motor liderlige aday olamaz (R1 05:57 vakasi)."""
+    monkeypatch.setattr(osec, "MIN_KASA_USD", 150.0)
+    sk = {"yzn1": {"pct": 1.32, "islem": 3, "equity_now": 400.0},
+          "v7hizli": {"pct": 1.05, "islem": 2, "equity_now": 630.0},
+          "r1": {"pct": 1.03, "islem": 0, "equity_now": 72.0}}
+    eg = {"yzn1": -0.498, "v7hizli": -0.495, "r1": 0.0}
+    # r1: islem=0 VE kasa<150: elenir; kimse pozitif egimli degil ->
+    # seviye lideri yzn1 secilir (eski hata: r1 seciliyordu)
+    assert osec.aday_sec(sk, "v7ht", min_islem=1, egimler=eg) == "yzn1"
+    # pozitif egimli varsa o kazanir (kullanici ornegi korunuyor)
+    sk2 = {"a": {"pct": 1.7, "islem": 2, "equity_now": 500.0},
+           "b": {"pct": 1.5, "islem": 2, "equity_now": 500.0}}
+    assert osec.aday_sec(sk2, "x", min_islem=1,
+                         egimler={"a": -0.1, "b": 0.3}) == "b"

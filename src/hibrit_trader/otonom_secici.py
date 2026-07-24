@@ -46,7 +46,7 @@ NIYET_DOSYA = "OTONOM_GECIS_NIYET.json"
 VARSAYILAN_PENCERE_DK = 60
 
 KONTROL_SN = float(os.getenv("OTONOM_KONTROL_SN", "300"))
-MIN_ISLEM = int(os.getenv("OTONOM_MIN_ISLEM", "0"))
+MIN_ISLEM = int(os.getenv("OTONOM_MIN_ISLEM", "1"))
 COOLDOWN_SN = float(os.getenv("OTONOM_COOLDOWN_SN", "900"))
 TASFIYE_SN = float(os.getenv("OTONOM_TASFIYE_SN", "180"))
 DOGAL_SN = float(os.getenv("OTONOM_DOGAL_SN", "600"))   # hibrit dogal faz
@@ -57,6 +57,9 @@ POZITIF_ESIK = float(os.getenv("OTONOM_POZITIF_ESIK", "1.0"))
 # ICINDEyse egim (son iki tur pct farki) karar verir; sonen lidere
 # marj icinden gecilmez (veto). Marj disinda seviye kazanir.
 MARJ_PUAN = float(os.getenv("OTONOM_MARJ_PUAN", "1.0"))
+# 24 Tem sabah (kullanici sikayeti: cuce-kasa/zombi liderligi): kasasi
+# bu esigin altindaki motor liderlige aday olamaz
+MIN_KASA_USD = float(os.getenv("OTONOM_MIN_KASA_USD", "150"))
 
 _yazici = None
 _git_sha_cache: str | None = None
@@ -218,7 +221,8 @@ def aday_sec(skorlar: dict[str, dict], mevcut: str,
     if marj is None:
         marj = MARJ_PUAN
     uygun = {m: s for m, s in skorlar.items()
-             if s["islem"] >= min_islem and s["pct"] >= esik}
+             if s["islem"] >= min_islem and s["pct"] >= esik
+             and s.get("equity_now", MIN_KASA_USD) >= MIN_KASA_USD}
     if not uygun:
         return None
     en_yuksek = max(s["pct"] for s in uygun.values())
@@ -228,12 +232,16 @@ def aday_sec(skorlar: dict[str, dict], mevcut: str,
         if egimler is None or egimler.get(m) is None:
             return None
         return egimler[m]
-    # deterministik sira: egim (varsa) > seviye > mevcut > alfabetik
-    aday = min(marj_ici, key=lambda m: (
-        -(_egim(m) if _egim(m) is not None else -1e9),
-        -marj_ici[m]["pct"], 0 if m == mevcut else 1, m))
-    # marj icinde herkesin egimi yoksa seviye lideri sec
-    if all(_egim(m) is None for m in marj_ici):
+    # 24 Tem fix: egim onceligi YALNIZ pozitif egimlilere (sifir/negatif
+    # egim "yukselen" degildir; zombi-sabit motor egim kazanamaz)
+    yukselen = {m: s for m, s in marj_ici.items()
+                if (_egim(m) or 0) > 0}
+    if yukselen:
+        # marj icinde YUKSELEN varsa: en dik egim, esitlikte seviye
+        aday = min(yukselen, key=lambda m: (
+            -_egim(m), -yukselen[m]["pct"], 0 if m == mevcut else 1, m))
+    else:
+        # kimse yukselmiyorsa SEVIYE kazanir (egim kiyasi yapilmaz)
         aday = lider_bul(marj_ici, mevcut)
     if aday is None or aday == mevcut:
         return None
