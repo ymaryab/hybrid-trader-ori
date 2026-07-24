@@ -86,7 +86,8 @@ hiçbir motor güçlü değilken canlı alımı tamamen durdurmak.
 | OTONOM_COOLDOWN_SN | 900 | geçişler arası asgari süre |
 | OTONOM_DOGAL_SN | 600 | umutlu kağıda doğal çıkış süresi |
 | OTONOM_TASFIYE_SN | 180 | zorlama penceresi |
-| OTONOM_MIN_ISLEM | 0 | pencere içi asgari işlem |
+| OTONOM_MIN_ISLEM | 1 | pencere içi asgari işlem |
+| OTONOM_MIN_KASA_USD | 150 | liderlik için asgari kasa |
 | CANLI_TASFIYE_ZAYIF_PCT / _MFE | -1 / 1 | zayıf kağıt tanımı |
 
 ## 10. Bilinen sınırlar ve bekleyen onaylar
