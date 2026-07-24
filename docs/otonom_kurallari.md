@@ -50,7 +50,7 @@ hiçbir motor güçlü değilken canlı alımı tamamen durdurmak.
    İPTAL (bayat lidere geçilmez).
 6. Swap: drop-in + servis restart; defter sıfırlanmaz, kural_degisim
    satırı düşer. Restart sonrası mutabakat SwitchCompleted/Failed yazar.
-- Cooldown: iki geçiş arası en az OTONOM_COOLDOWN_SN = 900 sn.
+- Cooldown: iki geçiş arası en az OTONOM_COOLDOWN_SN = 1200 sn (20 dk; 24 Tem).
 
 ## 6. Rejim anahtarı (sistem bayrağı)
 - TÜM motorlar %1 eşiğinin altındaysa: BEKLEMEDE + ŞALTER İNER
@@ -83,7 +83,7 @@ hiçbir motor güçlü değilken canlı alımı tamamen durdurmak.
 | OTONOM_POZITIF_ESIK | 1.5 | uygunluk eşiği (%) |
 | OTONOM_MARJ_PUAN | 1.0 | eğim kuralı marjı |
 | OTONOM_KONTROL_SN | 300 | değerlendirme aralığı |
-| OTONOM_COOLDOWN_SN | 900 | geçişler arası asgari süre |
+| OTONOM_COOLDOWN_SN | 1200 | geçişler arası asgari süre |
 | OTONOM_DOGAL_SN | 600 | umutlu kağıda doğal çıkış süresi |
 | OTONOM_TASFIYE_SN | 180 | zorlama penceresi |
 | OTONOM_MIN_ISLEM | 1 | pencere içi asgari işlem |

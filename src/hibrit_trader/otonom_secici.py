@@ -47,7 +47,7 @@ VARSAYILAN_PENCERE_DK = 60
 
 KONTROL_SN = float(os.getenv("OTONOM_KONTROL_SN", "300"))
 MIN_ISLEM = int(os.getenv("OTONOM_MIN_ISLEM", "1"))
-COOLDOWN_SN = float(os.getenv("OTONOM_COOLDOWN_SN", "900"))
+COOLDOWN_SN = float(os.getenv("OTONOM_COOLDOWN_SN", "1200"))  # 24 Tem kullanici karari: 15dk -> 20dk
 TASFIYE_SN = float(os.getenv("OTONOM_TASFIYE_SN", "180"))
 DOGAL_SN = float(os.getenv("OTONOM_DOGAL_SN", "600"))   # hibrit dogal faz
 # 23 Tem kullanici karari: saatlik artisi bu esigin ALTINDA kalan motor
