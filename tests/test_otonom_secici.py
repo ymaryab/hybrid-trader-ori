@@ -221,3 +221,27 @@ def test_zombi_ve_cuce_kasa_koruma(monkeypatch):
            "b": {"pct": 1.5, "islem": 2, "equity_now": 500.0}}
     assert osec.aday_sec(sk2, "x", min_islem=1, esik=1.0,
                          egimler={"a": -0.1, "b": 0.3}) == "b"
+
+
+def test_firsat_sarti(tmp_path):
+    """24 Tem: taze girisi olmayan motora gecis atlanir."""
+    import hibrit_trader.jsonl_onbellek as jo
+    jo._ONBELLEK.clear()
+    now = time.time()
+    _kur(tmp_path, "r2",
+         trades=[{"ts": now - 300, "trade_id": "P-%d" % (now - 400),
+                  "pnl_usd": 2.0}])
+    var, yas = osec.firsat_var("r2", dk=10)
+    assert var and yas < 600                    # 400 sn once giris: taze
+    jo._ONBELLEK.clear()
+    _kur(tmp_path, "yz",
+         trades=[{"ts": now - 3000, "trade_id": "E-%d" % (now - 3100),
+                  "pnl_usd": 1.0}])
+    var, yas = osec.firsat_var("yz", dk=10)
+    assert not var and yas > 600                # 52 dk once: bayat
+    # acik pozisyon da firsat sayilir
+    st = json.loads((tmp_path / "yz_state.json").read_text())
+    st["positions"] = [{"opened_ts": now - 120}]
+    (tmp_path / "yz_state.json").write_text(json.dumps(st))
+    var, yas = osec.firsat_var("yz", dk=10)
+    assert var

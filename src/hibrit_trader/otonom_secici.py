@@ -60,6 +60,10 @@ MARJ_PUAN = float(os.getenv("OTONOM_MARJ_PUAN", "1.0"))
 # 24 Tem sabah (kullanici sikayeti: cuce-kasa/zombi liderligi): kasasi
 # bu esigin altindaki motor liderlige aday olamaz
 MIN_KASA_USD = float(os.getenv("OTONOM_MIN_KASA_USD", "150"))
+# 24 Tem (kullanici onayi, "firsat sarti"): aday motorun paper'inda son
+# FIRSAT_DK icinde YENI giris yoksa gecis atlanir (firsat_yok): MTM'le
+# lider gorunen ama masaya kagit koymayan motora bosa tasinilmaz
+FIRSAT_DK = float(os.getenv("OTONOM_FIRSAT_DK", "10"))
 
 _yazici = None
 _git_sha_cache: str | None = None
@@ -290,6 +294,36 @@ def _salter_kaldir() -> None:
     (_data_dir() / "CANLI_DUR").unlink(missing_ok=True)
 
 
+def firsat_var(motor: str, dk: float | None = None) -> tuple[bool, float]:
+    """Aday motorun son YENI girisinden bu yana gecen sure <= dk mi?
+    Kaynak: state acik pozisyonlarin opened_ts'i + defterin son
+    girisleri (trade_id epoch'u). Doner: (var_mi, son_giris_yasi_sn)."""
+    if dk is None:
+        dk = FIRSAT_DK
+    d = _data_dir()
+    son = 0.0
+    try:
+        st = json.loads((d / f"{motor}_state.json").read_text())
+        for p in (st.get("positions") or []):
+            son = max(son, float(p.get("opened_ts") or 0))
+    except (OSError, ValueError):
+        pass
+    try:
+        from hibrit_trader.jsonl_onbellek import islem_satirlari
+        for ts, _pnl, gecerli, tid in islem_satirlari(
+                d / f"{motor}_trades.jsonl")[-50:]:
+            if not gecerli:
+                continue
+            try:
+                son = max(son, float(str(tid).rsplit("-", 1)[-1]))
+            except ValueError:
+                continue
+    except Exception:
+        pass
+    yas = time.time() - son if son > 0 else 1e9
+    return (yas <= dk * 60, yas)
+
+
 def _canli_acik_poz() -> int:
     try:
         st = json.loads((_data_dir() / "canli_state.json").read_text())
@@ -378,10 +412,15 @@ def kontrol_dongusu() -> None:
                 0.0, COOLDOWN_SN - (time.time() - float(d["son_gecis_ts"])))
             if d["user_enabled"] and d["system_enabled"]:
                 aday = aday_sec(skorlar, mevcut, egimler=egimler)
+            firsat_ok, firsat_yas = (True, None)
+            if aday is not None:
+                firsat_ok, firsat_yas = firsat_var(aday)
             if aday is None:
                 karar = ("kal" if d["system_enabled"] else "sistem_kapali")
             elif cooldown_kalan > 0:
                 karar = "cooldown"
+            elif not firsat_ok:
+                karar = "firsat_yok"
             else:
                 karar = "gecis"
             switch_id = (f"sw-{int(time.time() * 1000)}"
@@ -396,6 +435,8 @@ def kontrol_dongusu() -> None:
                           "system_enabled": d["system_enabled"],
                           "effective": d["user_enabled"] and d["system_enabled"]},
                 "decision": karar, "aday": aday,
+                "aday_son_giris_yasi_sn": (None if firsat_yas is None
+                                           else round(firsat_yas, 1)),
                 "cooldown_remaining_sec": round(cooldown_kalan, 1),
                 "config": config_anlik()})
             if karar != "gecis":

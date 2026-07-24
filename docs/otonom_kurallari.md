@@ -39,6 +39,13 @@ hiçbir motor güçlü değilken canlı alımı tamamen durdurmak.
 - ZİRVEDE OLANDA KAL: mevcut kaynak lider ise hiçbir şey yapılmaz.
 - Eşitlik bozma deterministik: önce mevcut, sonra alfabetik.
 
+## 4.5 Fırsat şartı (24 Tem)
+- Aday motorun paper'ında son OTONOM_FIRSAT_DK (10 dk) içinde YENİ
+  giriş yoksa geçiş ATLANIR (karar: firsat_yok) ve mevcutta kalınır.
+  Gerekçe: canlı, kaynağın açık pozisyonunu kopyalamaz; masaya taze
+  kağıt koymayan lidere taşınmak boşa tasfiyedir. Lider taze giriş
+  açtığı anda sonraki turda geçiş tetiklenir.
+
 ## 5. Geçiş prosedürü (hibrit tasfiye)
 1. Karar anında canlıya YENİ ALIM kilitlenir.
 2. ZAYIF kağıt (pnl <= -1 VEYA hiç +1 görmemiş) ANINDA satılır:
@@ -88,6 +95,7 @@ hiçbir motor güçlü değilken canlı alımı tamamen durdurmak.
 | OTONOM_TASFIYE_SN | 180 | zorlama penceresi |
 | OTONOM_MIN_ISLEM | 1 | pencere içi asgari işlem |
 | OTONOM_MIN_KASA_USD | 150 | liderlik için asgari kasa |
+| OTONOM_FIRSAT_DK | 10 | adayda taze giriş şartı |
 | CANLI_TASFIYE_ZAYIF_PCT / _MFE | -1 / 1 | zayıf kağıt tanımı |
 
 ## 10. Bilinen sınırlar ve bekleyen onaylar
