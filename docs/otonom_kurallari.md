@@ -40,7 +40,9 @@ hiçbir motor güçlü değilken canlı alımı tamamen durdurmak.
 - Eşitlik bozma deterministik: önce mevcut, sonra alfabetik.
 
 ## 4.5 Fırsat şartı (24 Tem)
-- Aday motorun paper'ında son OTONOM_FIRSAT_DK (10 dk) içinde YENİ
+- YALNIZ R1/R2 adaylığında (OTONOM_FIRSAT_MOTORLAR; kağıt-bazlı
+  runner motorlar): aday motorun paper'ında son OTONOM_FIRSAT_DK
+  (10 dk) içinde YENİ
   giriş yoksa geçiş ATLANIR (karar: firsat_yok) ve mevcutta kalınır.
   Gerekçe: canlı, kaynağın açık pozisyonunu kopyalamaz; masaya taze
   kağıt koymayan lidere taşınmak boşa tasfiyedir. Lider taze giriş

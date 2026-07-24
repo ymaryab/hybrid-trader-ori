@@ -64,6 +64,8 @@ MIN_KASA_USD = float(os.getenv("OTONOM_MIN_KASA_USD", "150"))
 # FIRSAT_DK icinde YENI giris yoksa gecis atlanir (firsat_yok): MTM'le
 # lider gorunen ama masaya kagit koymayan motora bosa tasinilmaz
 FIRSAT_DK = float(os.getenv("OTONOM_FIRSAT_DK", "10"))
+# kullanici netlestirmesi: sart YALNIZ kagit-bazli runner motorlara
+FIRSAT_MOTORLAR = set(os.getenv("OTONOM_FIRSAT_MOTORLAR", "r1,r2").split(","))
 
 _yazici = None
 _git_sha_cache: str | None = None
@@ -413,7 +415,7 @@ def kontrol_dongusu() -> None:
             if d["user_enabled"] and d["system_enabled"]:
                 aday = aday_sec(skorlar, mevcut, egimler=egimler)
             firsat_ok, firsat_yas = (True, None)
-            if aday is not None:
+            if aday is not None and aday in FIRSAT_MOTORLAR:
                 firsat_ok, firsat_yas = firsat_var(aday)
             if aday is None:
                 karar = ("kal" if d["system_enabled"] else "sistem_kapali")
