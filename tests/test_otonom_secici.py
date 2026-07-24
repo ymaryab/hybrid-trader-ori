@@ -72,11 +72,11 @@ def test_aday_sec_state_trigger():
     assert osec.aday_sec(sk, "yz", min_islem=0) is None
 
 
-def test_pozitif_esik_yuzde1(monkeypatch):
-    """23 Tem karari: %1 altindaki artis negatif sayilir."""
-    sk = {"yz": {"pct": 0.9, "islem": 5}, "r1": {"pct": 0.4, "islem": 3}}
-    assert osec.aday_sec(sk, "r1", min_islem=0) is None      # 0.9 < esik 1.0
-    sk["yz"]["pct"] = 1.0
+def test_pozitif_esik(monkeypatch):
+    """Esik altindaki artis negatif sayilir (24 Tem: vars. 1.5)."""
+    sk = {"yz": {"pct": 1.4, "islem": 5}, "r1": {"pct": 0.4, "islem": 3}}
+    assert osec.aday_sec(sk, "r1", min_islem=0) is None      # 1.4 < esik 1.5
+    sk["yz"]["pct"] = 1.5
     assert osec.aday_sec(sk, "r1", min_islem=0) == "yz"      # tam esik: gecer
     assert osec.aday_sec(sk, "r1", min_islem=0, esik=2.0) is None
 
@@ -215,9 +215,9 @@ def test_zombi_ve_cuce_kasa_koruma(monkeypatch):
     eg = {"yzn1": -0.498, "v7hizli": -0.495, "r1": 0.0}
     # r1: islem=0 VE kasa<150: elenir; kimse pozitif egimli degil ->
     # seviye lideri yzn1 secilir (eski hata: r1 seciliyordu)
-    assert osec.aday_sec(sk, "v7ht", min_islem=1, egimler=eg) == "yzn1"
+    assert osec.aday_sec(sk, "v7ht", min_islem=1, egimler=eg, esik=1.0) == "yzn1"
     # pozitif egimli varsa o kazanir (kullanici ornegi korunuyor)
     sk2 = {"a": {"pct": 1.7, "islem": 2, "equity_now": 500.0},
            "b": {"pct": 1.5, "islem": 2, "equity_now": 500.0}}
-    assert osec.aday_sec(sk2, "x", min_islem=1,
+    assert osec.aday_sec(sk2, "x", min_islem=1, esik=1.0,
                          egimler={"a": -0.1, "b": 0.3}) == "b"

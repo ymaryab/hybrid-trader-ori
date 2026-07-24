@@ -52,7 +52,7 @@ TASFIYE_SN = float(os.getenv("OTONOM_TASFIYE_SN", "180"))
 DOGAL_SN = float(os.getenv("OTONOM_DOGAL_SN", "600"))   # hibrit dogal faz
 # 23 Tem kullanici karari: saatlik artisi bu esigin ALTINDA kalan motor
 # "negatif" sayilir; hepsi altindaysa sistem beklemeye gecer + SALTER INER
-POZITIF_ESIK = float(os.getenv("OTONOM_POZITIF_ESIK", "1.0"))
+POZITIF_ESIK = float(os.getenv("OTONOM_POZITIF_ESIK", "1.5"))  # 24 Tem: pencere 30dk ile birlikte 1.0->1.5
 # 24 Tem kullanici karari (egim kurali): liderlik farki bu marjin
 # ICINDEyse egim (son iki tur pct farki) karar verir; sonen lidere
 # marj icinden gecilmez (veto). Marj disinda seviye kazanir.
@@ -315,7 +315,9 @@ def kontrol_dongusu() -> None:
     from hibrit_trader.canli_session import DESTEKLENEN_KAYNAKLAR, TASFIYE_FILE
     from hibrit_trader.killswitch import notify
     kaynaklar = sorted(DESTEKLENEN_KAYNAKLAR)
-    onceki_skorlar: dict[str, float] = {}
+    # 24 Tem: egim bakisi 2 tur (10dk): 30dk pencerede ardisik turlar
+    # verinin cogunu paylasir, 1-turluk fark mikroskobik kalirdi
+    gecmis_skorlar: dict[str, list] = {}
     mevcut = os.getenv("CANLI_KAYNAK_MOTOR", "r1").strip().lower()
     mut = gecis_mutabakati(mevcut)
     d = durum_oku()
@@ -331,12 +333,13 @@ def kontrol_dongusu() -> None:
                 continue
             mevcut = os.getenv("CANLI_KAYNAK_MOTOR", "r1").strip().lower()
             skorlar = pencere_skorlari(float(d["pencere_dk"]), kaynaklar)
-            egimler = {m: (round(skorlar[m]["pct"] - onceki_skorlar[m], 3)
-                           if m in onceki_skorlar else None)
+            egimler = {m: (round(skorlar[m]["pct"] - gecmis_skorlar[m][0], 3)
+                           if len(gecmis_skorlar.get(m, [])) >= 2 else None)
                        for m in skorlar}
             for m in skorlar:
                 skorlar[m]["egim"] = egimler[m]
-            onceki_skorlar = {m: skorlar[m]["pct"] for m in skorlar}
+                gecmis_skorlar.setdefault(m, []).append(skorlar[m]["pct"])
+                gecmis_skorlar[m] = gecmis_skorlar[m][-2:]
             lider = lider_bul(skorlar, mevcut)
             lider_pct = skorlar[lider]["pct"] if lider else 0.0
             eval_id = f"ev-{int(time.time() * 1000)}"
@@ -439,8 +442,8 @@ def kontrol_dongusu() -> None:
                 continue
             # swap oncesi son dogrulama: lider hala ayni mi (yaris kosulu)
             son_skor = pencere_skorlari(float(d["pencere_dk"]), kaynaklar)
-            son_egim = {m: (round(son_skor[m]["pct"] - onceki_skorlar.get(m, son_skor[m]["pct"]), 3)
-                            if m in onceki_skorlar else None)
+            son_egim = {m: (round(son_skor[m]["pct"] - gecmis_skorlar[m][0], 3)
+                            if len(gecmis_skorlar.get(m, [])) >= 2 else None)
                         for m in son_skor}
             son_aday = aday_sec(son_skor, mevcut, egimler=son_egim)
             if son_aday != aday:

@@ -743,9 +743,9 @@ def _motor_ozet(data_dir: Path, prefix: str, now: float, limit: int,
     from hibrit_trader.otonom_secici import kayan_degisim as _kayan
     try:
         kayan_dk = float(_oto_durum().get("pencere_dk")
-                         or os.getenv("PANEL_KAYAN_DK", "15"))
+                         or os.getenv("PANEL_KAYAN_DK", "30"))
     except Exception:
-        kayan_dk = float(os.getenv("PANEL_KAYAN_DK", "15"))
+        kayan_dk = float(os.getenv("PANEL_KAYAN_DK", "30"))
     if prefix == "canli":
         t0 = now - kayan_dk * 60
         trades_1h = [t for t in trades
@@ -1750,7 +1750,7 @@ def _filo_kart(m: dict, canli_durum: str = "yok") -> str:
             f'<canvas class="spark" id="spark-{m["id"]}" height="36"></canvas>'
             f'<div class="kfoot" id="foot-{m["id"]}">-</div>'
             f'{swap_btn}'
-            f'<div class="pnl24" id="pnl24-{m["id"]}" title="Son 15 dk getiri (kayan pencere: simdiki deger / 15 dk onceki deger - 1)">-</div>'
+            f'<div class="pnl24" id="pnl24-{m["id"]}" title="Kayan pencere getirisi (otonom penceresiyle ayni, su an 30 dk; ACIK pozisyonlarin anlik +/- MTM etkisi DAHIL)">-</div>'
             f'<div class="pnl24sub" id="slotwin-{m["id"]}">-</div>'
             f'</div>'
             f'<div class="motor-poz" id="motorpoz-{m["id"]}">'

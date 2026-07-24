@@ -11,7 +11,7 @@ Canlı kasayı, kayan pencerede en güçlü YÜKSELİŞTEKİ motora bağlı tutm
 hiçbir motor güçlü değilken canlı alımı tamamen durdurmak.
 
 ## 2. Ölçüt (skor)
-- Kayan pencere: varsayılan 15 dk (buton açılışında değiştirilebilir).
+- Kayan pencere: varsayılan 30 dk (24 Tem; buton açılışında değiştirilebilir).
 - skor = eq_şimdi / eq_pencere_önce - 1
 - eq_şimdi = start + GERÇEKLEŞEN K/Z + AÇIK POZİSYON ANLIK K/Z (MTM,
   state.last_price'tan; "satılmasa bile satılmış gibi").
@@ -21,7 +21,7 @@ hiçbir motor güçlü değilken canlı alımı tamamen durdurmak.
 - Panel kart rozetleri AYNI fonksiyondan beslenir (tek gerçek kaynak).
 
 ## 3. Uygunluk (kim yarışabilir)
-- Pozitiflik eşiği: skor >= +%1 (OTONOM_POZITIF_ESIK). Altında kalan
+- Pozitiflik eşiği: skor >= +%1.5 (OTONOM_POZITIF_ESIK; 24 Tem, 30dk pencereye kalibre). Altında kalan
   motor "negatif" sayılır, lider olamaz.
 - Pencerede en az 1 kapanmış işlem (OTONOM_MIN_ISLEM=1) ve kasa >=
   $150 (OTONOM_MIN_KASA_USD) şartı: salt MTM kıpırtısıyla veya cüce
@@ -31,7 +31,7 @@ hiçbir motor güçlü değilken canlı alımı tamamen durdurmak.
 - STATE-TRIGGER: karar her turda "lider != mevcut kaynak" üzerinden;
   başarısız geçiş sonraki turda kendiliğinden yeniden denenir.
 - Fark belirginse (> OTONOM_MARJ_PUAN = 1 puan) en yüksek skor kazanır.
-- Fark marj İÇİNDEyse EĞİM kazanır (son iki turun skor farkı);
+- Fark marj İÇİNDEyse EĞİM kazanır (2 TUR = 10 dk önceki skora göre fark; 24 Tem);
   eğim önceliği YALNIZ eğimi pozitif olanlara tanınır (sıfır/negatif
   eğim "yükselen" değildir), yükselen yoksa seviye kazanır (24 Tem fix).
 - VETO: mevcut motor uygunken, sönen (eğim<0) lidere marj içinden
@@ -79,8 +79,8 @@ hiçbir motor güçlü değilken canlı alımı tamamen durdurmak.
 ## 9. Parametreler (env)
 | parametre | varsayılan | anlam |
 |---|---|---|
-| pencere_dk (OTONOM_MOD.json) | 15 | kayan pencere |
-| OTONOM_POZITIF_ESIK | 1.0 | uygunluk eşiği (%) |
+| pencere_dk (OTONOM_MOD.json) | 30 | kayan pencere |
+| OTONOM_POZITIF_ESIK | 1.5 | uygunluk eşiği (%) |
 | OTONOM_MARJ_PUAN | 1.0 | eğim kuralı marjı |
 | OTONOM_KONTROL_SN | 300 | değerlendirme aralığı |
 | OTONOM_COOLDOWN_SN | 900 | geçişler arası asgari süre |
