@@ -110,6 +110,13 @@ RUNNER_ARM_PCT = float(os.getenv("R2_RUNNER_ARM_PCT", "25"))  # trail bu tepeden
 # asamasinda vuruyor; tepe aninda ceyrek kasada olsun, gap kalan yariyi vursun.
 KILIT1_PCT = float(os.getenv("R2_KILIT1_PCT", "25"))          # 1. kilit: orijinalin 1/4
 KILIT2_PCT = float(os.getenv("R2_KILIT2_PCT", "40"))          # 2. kilit: orijinalin 1/4 daha
+# 24 Tem erken koruma (kullanici onayi):
+ERKEN_GUC_AKTIF = os.getenv("R2_ERKEN_GUC", "1") == "1"
+ERKEN_GUC_MFE = float(os.getenv("R2_ERKEN_GUC_MFE", "1.0"))
+ERKEN_GUC_PCT = float(os.getenv("R2_ERKEN_GUC_PCT", "-2.0"))
+ERKEN_BE_AKTIF = os.getenv("R2_ERKEN_BE", "1") == "1"
+ERKEN_BE_ARM = float(os.getenv("R2_ERKEN_BE_ARM", "5.0"))
+ERKEN_BE_TABAN = float(os.getenv("R2_ERKEN_BE_TABAN", "0.0"))
 KILIT_ORAN = float(os.getenv("R2_KILIT_ORAN", "0.25"))
 # kalan uzerinden oranlar: 1. kilit 1/4; 2. kilit kalan 3/4 un 1/3 u = orijinal 1/4
 KISMI_ORAN_HARITASI = {"tp_kilit_25": KILIT_ORAN,
@@ -669,6 +676,15 @@ class R2Engine:
         # 1) Felaket freni (her an) -%15 alti
         if pnl_pct <= DISASTER_PCT:
             return "stop_felaket"
+        # 1.5) Erken koruma (24 Tem kullanici onayi; sayac R2: +228$/+83$).
+        # Runner trail ve kilitlere dokunmaz: yalniz zayif/erken faz.
+        if ERKEN_BE_AKTIF and pos["mfe_pct"] >= ERKEN_BE_ARM \
+                and pnl_pct <= ERKEN_BE_TABAN \
+                and pos["mfe_pct"] < RUNNER_ARM_PCT:
+            return "erken_breakeven"
+        if ERKEN_GUC_AKTIF and pos["mfe_pct"] < ERKEN_GUC_MFE \
+                and pnl_pct <= ERKEN_GUC_PCT:
+            return "erken_zayif"
         # 2) Tavan HER pozisyona uygulanir (runner dahil; 21 Tem Jimhood dersi:
         #    runner dali tavani atliyordu, 5 saat kosup felakete dustu)
         if age >= CEILING_SEC:

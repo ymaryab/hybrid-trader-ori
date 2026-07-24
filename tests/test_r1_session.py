@@ -110,3 +110,24 @@ def test_sol_eksi_rejim_kapisi(monkeypatch):
     monkeypatch.setattr(r1.R1Engine, "_sol_chg_h1", lambda self, c: 0.5)
     eng._enter(None)
     assert acilan == ["ADAY"]
+
+
+def test_erken_koruma_katmanlari():
+    from types import SimpleNamespace
+    import hibrit_trader.r1_session as r1m
+    motor = r1m.R1Engine(SimpleNamespace(scan_chains=("solana",)))
+    """24 Tem: erken_zayif (+1 gormemis & -2) ve erken_breakeven (+5 -> taban 0).
+    Runner moduna ve kilitlere dokunmaz."""
+    import time
+    now = time.time()
+    poz = {"pair": "T / SOL", "entry_price": 1.0, "last_price": 1.0,
+           "opened_ts": now - 60, "mfe_pct": 0.0, "mae_pct": 0.0}
+    assert motor._eval_position(dict(poz), 0.975, now) == "erken_zayif"    # mfe 0, -2.5
+    p2 = dict(poz, mfe_pct=1.5)
+    assert motor._eval_position(p2, 0.975, now) is None                    # guc gosterdi: kesme
+    p3 = dict(poz, mfe_pct=6.0)
+    assert motor._eval_position(p3, 0.999, now) == "erken_breakeven"       # +5 gordu, 0 alti
+    p4 = dict(poz, mfe_pct=6.0)
+    assert motor._eval_position(p4, 1.02, now) is None                     # hala artida: dokunma
+    p5 = dict(poz, mfe_pct=6.0, runner_mode=True, runner_peak=1.1)
+    assert motor._eval_position(p5, 1.05, now) is None                     # runner: trail yonetir

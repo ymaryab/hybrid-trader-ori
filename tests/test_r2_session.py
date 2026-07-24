@@ -76,7 +76,11 @@ def test_iki_asamali_kar_kilidi():
 
 def test_grace_ve_timeout():
     eng = _eng(); now = time.time()
-    assert eng._eval_position(_poz(now, yas_sec=16*60), 0.94, now) == "stop_gec"
+    # 24 Tem: guc gostermemis -6, artik stop_gec'i beklemeden erken kesilir
+    assert eng._eval_position(_poz(now, yas_sec=16*60), 0.94, now) == "erken_zayif"
+    # guc gostermis (mfe>=1) pozisyonda grace-sonrasi stop_gec hala gecerli
+    p = _poz(now, yas_sec=16*60); p["mfe_pct"] = 1.5
+    assert eng._eval_position(p, 0.94, now) == "stop_gec"
     assert eng._eval_position(_poz(now, yas_sec=181*60), 1.005, now) == "timeout_180"
 
 

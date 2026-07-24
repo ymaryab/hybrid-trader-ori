@@ -108,6 +108,13 @@ KISMI_ORAN1 = float(os.getenv("R1_KISMI_ORAN1", str(1/3)))   # 1. asama: orjinal
 KISMI_ORAN2 = float(os.getenv("R1_KISMI_ORAN2", "0.5"))      # 2. asama: kalan 2/3'un yarisi = 1/3 orjinal
 TP2_PCT = float(os.getenv("R1_TP2_PCT", "17.0"))             # 2. kismi TP esigi
 TRAIL_PCT = float(os.getenv("R1_TRAIL_PCT", "10.0"))     # tepeden %10 asagi (18 Tem)
+# 24 Tem erken koruma katmanlari (kullanici onayi; 7g sayac: +950$/+692$):
+ERKEN_GUC_AKTIF = os.getenv("R1_ERKEN_GUC", "1") == "1"       # hic +1 gormemis & -2: kes
+ERKEN_GUC_MFE = float(os.getenv("R1_ERKEN_GUC_MFE", "1.0"))
+ERKEN_GUC_PCT = float(os.getenv("R1_ERKEN_GUC_PCT", "-2.0"))
+ERKEN_BE_AKTIF = os.getenv("R1_ERKEN_BE", "1") == "1"         # +5 gordu: taban 0
+ERKEN_BE_ARM = float(os.getenv("R1_ERKEN_BE_ARM", "5.0"))
+ERKEN_BE_TABAN = float(os.getenv("R1_ERKEN_BE_TABAN", "0.0"))
 
 STATE_FILE = "r1_state.json"
 TRADES_FILE = "r1_trades.jsonl"
@@ -639,7 +646,16 @@ class R1Engine:
             if price <= peak * (1 - TRAIL_PCT / 100.0):
                 return "runner_trail"
             return None
-        # 3) 3-asama kismi cikis: 1/3 TP+10 · 1/3 TP+25 · 1/3 runner trail
+        # 2.5) Erken koruma (24 Tem): runner-DISI fazda, trail/kilitlere
+        # dokunmadan. erken_breakeven: +ARM gormus pozisyon TABAN'a dusmesin.
+        # erken_zayif: hic guc gostermemis (+MFE alti) pozisyon -2'de kesilir.
+        if ERKEN_BE_AKTIF and pos["mfe_pct"] >= ERKEN_BE_ARM \
+                and pnl_pct <= ERKEN_BE_TABAN:
+            return "erken_breakeven"
+        if ERKEN_GUC_AKTIF and pos["mfe_pct"] < ERKEN_GUC_MFE \
+                and pnl_pct <= ERKEN_GUC_PCT:
+            return "erken_zayif"
+        # 3) 3-asama kismi cikis: 1/3 TP+10 · 1/3 TP+17 · 1/3 runner trail
         asama = int(pos.get("kismi_asama") or 0)
         if asama < 2 and pnl_pct >= TP2_PCT:
             return "tp_partial_2"
