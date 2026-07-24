@@ -181,3 +181,25 @@ def test_egim_kurali(monkeypatch):
     assert osec.aday_sec(sk, "v7", min_islem=0, egimler=eg) is None
     # egim verisi yoksa (ilk tur) eski davranis: seviye lideri
     assert osec.aday_sec(sk, "r9", min_islem=0, egimler=None) == "v7t"
+
+
+def test_tasfiye_dogal_fazda_zayif_kagit_aninda(tmp_path):
+    """24 Tem: dogal fazda zayif kagit beklemez; umutlu kagit bekler."""
+    import hibrit_trader.canli_session as cs
+    (tmp_path / cs.TASFIYE_FILE).write_text(json.dumps(
+        {"zorla_ts": time.time() + 600}))
+    assert cs.tasfiye_talebi_var() and not cs.tasfiye_zorla_aktif()
+    class Sahte:  # yalniz _eval_position'in tasfiye dalini test ediyoruz
+        _eval_position = cs.CanliEngine._eval_position
+    e = Sahte()
+    now = time.time()
+    zayif = {"entry_price": 1.0, "mfe_pct": 0.5}
+    assert e._eval_position(zayif, 0.99, now) == "otonom_tasfiye"   # ekside+gucsuz
+    umutlu = {"entry_price": 1.0, "mfe_pct": 4.0, "mae_pct": 0.0,
+              "last_price": 1.0, "opened_ts": now - 60, "pair": "T / SOL"}
+    # +2'de, guc gostermis: dogal faza birakilir (kaynak kurali calisir)
+    try:
+        r = e._eval_position(umutlu, 1.02, now)
+    except AttributeError:
+        r = "kaynaga_devredildi"   # delegasyona ulasti = tasfiye kesmedi
+    assert r != "otonom_tasfiye"

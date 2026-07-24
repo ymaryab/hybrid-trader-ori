@@ -141,6 +141,10 @@ def canli_pause_aktif() -> bool:
 
 
 TASFIYE_FILE = "CANLI_TASFIYE"
+# 24 Tem: hibrit tasfiyenin dogal fazi yalniz umutlu kagida taninir;
+# bu esiklerin altindaki/zayif kagit gecis aninda satilir
+TASFIYE_ZAYIF_PCT = float(os.getenv("CANLI_TASFIYE_ZAYIF_PCT", "-1.0"))
+TASFIYE_ZAYIF_MFE = float(os.getenv("CANLI_TASFIYE_ZAYIF_MFE", "1.0"))
 
 
 def tasfiye_talebi_var() -> bool:
@@ -665,8 +669,17 @@ class CanliEngine:
     # ---- Cikis karari: kaynak motorun _eval_position'ina DELEGE (21 Tem) ----
     def _eval_position(self, pos: dict, price: float, now: float,
                        liquidity_usd: float | None = None) -> str | None:
-        if tasfiye_zorla_aktif():
-            return "otonom_tasfiye"
+        if tasfiye_talebi_var():
+            if tasfiye_zorla_aktif():
+                return "otonom_tasfiye"
+            # 24 Tem kullanici karari: dogal faz yalniz UMUTLU kagida.
+            # Zayif kagit (ekside veya hic guc gostermemis) gecisi
+            # bekletmez, aninda satilir: firsat penceresi kacmasin.
+            entry = float(pos.get("entry_price") or 0)
+            pnl_pct = (price / entry - 1) * 100 if entry > 0 else 0.0
+            if (pnl_pct <= TASFIYE_ZAYIF_PCT
+                    or float(pos.get("mfe_pct") or 0) < TASFIYE_ZAYIF_MFE):
+                return "otonom_tasfiye"
         return _KaynakEngine._eval_position(self, pos, price, now,
                                             liquidity_usd=liquidity_usd)
 

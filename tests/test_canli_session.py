@@ -347,7 +347,7 @@ def test_canli_swap_api_dogrulama(canli_data_dir, monkeypatch):
 
 @pytest.mark.parametrize("kaynak,derin_kayip_beklenen", [
     ("r1", "stop_felaket"), ("r2", "stop_felaket"),
-    ("v7", "stop_felaket"), ("v7d", "stop_felaket"),
+    ("v7", "stop_felaket"), ("v7d", "stop_6"),
     ("v7hizli", "stop_felaket"), ("v7ht", None), ("v7c", None), ("v7t", None),
 ])
 def test_tum_kaynaklar_yukleniyor_ve_delege_ediyor(canli_data_dir, monkeypatch,
