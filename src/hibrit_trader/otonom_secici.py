@@ -53,6 +53,10 @@ DOGAL_SN = float(os.getenv("OTONOM_DOGAL_SN", "600"))   # hibrit dogal faz
 # 23 Tem kullanici karari: saatlik artisi bu esigin ALTINDA kalan motor
 # "negatif" sayilir; hepsi altindaysa sistem beklemeye gecer + SALTER INER
 POZITIF_ESIK = float(os.getenv("OTONOM_POZITIF_ESIK", "1.0"))
+# 24 Tem kullanici karari (egim kurali): liderlik farki bu marjin
+# ICINDEyse egim (son iki tur pct farki) karar verir; sonen lidere
+# marj icinden gecilmez (veto). Marj disinda seviye kazanir.
+MARJ_PUAN = float(os.getenv("OTONOM_MARJ_PUAN", "1.0"))
 
 _yazici = None
 _git_sha_cache: str | None = None
@@ -79,7 +83,8 @@ def _git_sha() -> str:
 def config_anlik() -> dict:
     return {"kontrol_sn": KONTROL_SN, "min_islem": MIN_ISLEM,
             "cooldown_sn": COOLDOWN_SN, "tasfiye_sn": TASFIYE_SN,
-            "dogal_sn": DOGAL_SN, "pozitif_esik": POZITIF_ESIK}
+            "dogal_sn": DOGAL_SN, "pozitif_esik": POZITIF_ESIK,
+            "marj_puan": MARJ_PUAN}
 
 
 def olay_yaz(kind: str, payload: dict, actor: str = "system") -> dict:
@@ -199,21 +204,45 @@ def lider_bul(skorlar: dict[str, dict], mevcut: str) -> str | None:
 
 def aday_sec(skorlar: dict[str, dict], mevcut: str,
              min_islem: int = MIN_ISLEM,
-             esik: float | None = None) -> str | None:
-    """STATE-TRIGGER: esigi (vars. POZITIF_ESIK=+1) asan ve mevcut
-    kaynaktan farkli lider varsa aday. ZIRVEDE OLANDA KAL."""
+             esik: float | None = None,
+             egimler: dict[str, float] | None = None,
+             marj: float | None = None) -> str | None:
+    """STATE-TRIGGER + EGIM KURALI (24 Tem):
+    1) Fark belirginse (marj disinda) en yuksek seviye kazanir.
+    2) Zirvenin marj icindeki adaylari arasinda EGIM kazanir
+       (son iki tur pct farki; egim verisi yoksa seviye).
+    3) Veto: mevcut uygunken, SONEN (egim<0) bir adaya marj icinden
+       gecilmez. ZIRVEDE OLANDA KAL korunur."""
     if esik is None:
         esik = POZITIF_ESIK
+    if marj is None:
+        marj = MARJ_PUAN
     uygun = {m: s for m, s in skorlar.items()
              if s["islem"] >= min_islem and s["pct"] >= esik}
     if not uygun:
         return None
-    lider = lider_bul(uygun, mevcut)
-    if lider is None or lider == mevcut:
+    en_yuksek = max(s["pct"] for s in uygun.values())
+    marj_ici = {m: s for m, s in uygun.items()
+                if s["pct"] >= en_yuksek - marj}
+    def _egim(m):
+        if egimler is None or egimler.get(m) is None:
+            return None
+        return egimler[m]
+    # deterministik sira: egim (varsa) > seviye > mevcut > alfabetik
+    aday = min(marj_ici, key=lambda m: (
+        -(_egim(m) if _egim(m) is not None else -1e9),
+        -marj_ici[m]["pct"], 0 if m == mevcut else 1, m))
+    # marj icinde herkesin egimi yoksa seviye lideri sec
+    if all(_egim(m) is None for m in marj_ici):
+        aday = lider_bul(marj_ici, mevcut)
+    if aday is None or aday == mevcut:
         return None
-    if mevcut in uygun and uygun[lider]["pct"] <= uygun[mevcut]["pct"]:
+    if mevcut in uygun and uygun[aday]["pct"] <= uygun[mevcut]["pct"]             and (_egim(aday) is None or _egim(aday) <= (_egim(mevcut) or 0)):
         return None
-    return lider
+    if (mevcut in uygun and _egim(aday) is not None and _egim(aday) < 0
+            and uygun[aday]["pct"] - uygun[mevcut]["pct"] <= marj):
+        return None   # veto: sonen lidere marj icinden gecme
+    return aday
 
 
 # ------------------------------------------------------------ mutabakat
@@ -278,6 +307,7 @@ def kontrol_dongusu() -> None:
     from hibrit_trader.canli_session import DESTEKLENEN_KAYNAKLAR, TASFIYE_FILE
     from hibrit_trader.killswitch import notify
     kaynaklar = sorted(DESTEKLENEN_KAYNAKLAR)
+    onceki_skorlar: dict[str, float] = {}
     mevcut = os.getenv("CANLI_KAYNAK_MOTOR", "r1").strip().lower()
     mut = gecis_mutabakati(mevcut)
     d = durum_oku()
@@ -293,6 +323,12 @@ def kontrol_dongusu() -> None:
                 continue
             mevcut = os.getenv("CANLI_KAYNAK_MOTOR", "r1").strip().lower()
             skorlar = pencere_skorlari(float(d["pencere_dk"]), kaynaklar)
+            egimler = {m: (round(skorlar[m]["pct"] - onceki_skorlar[m], 3)
+                           if m in onceki_skorlar else None)
+                       for m in skorlar}
+            for m in skorlar:
+                skorlar[m]["egim"] = egimler[m]
+            onceki_skorlar = {m: skorlar[m]["pct"] for m in skorlar}
             lider = lider_bul(skorlar, mevcut)
             lider_pct = skorlar[lider]["pct"] if lider else 0.0
             eval_id = f"ev-{int(time.time() * 1000)}"
@@ -330,7 +366,7 @@ def kontrol_dongusu() -> None:
             cooldown_kalan = max(
                 0.0, COOLDOWN_SN - (time.time() - float(d["son_gecis_ts"])))
             if d["user_enabled"] and d["system_enabled"]:
-                aday = aday_sec(skorlar, mevcut)
+                aday = aday_sec(skorlar, mevcut, egimler=egimler)
             if aday is None:
                 karar = ("kal" if d["system_enabled"] else "sistem_kapali")
             elif cooldown_kalan > 0:
@@ -395,7 +431,10 @@ def kontrol_dongusu() -> None:
                 continue
             # swap oncesi son dogrulama: lider hala ayni mi (yaris kosulu)
             son_skor = pencere_skorlari(float(d["pencere_dk"]), kaynaklar)
-            son_aday = aday_sec(son_skor, mevcut)
+            son_egim = {m: (round(son_skor[m]["pct"] - onceki_skorlar.get(m, son_skor[m]["pct"]), 3)
+                            if m in onceki_skorlar else None)
+                        for m in son_skor}
+            son_aday = aday_sec(son_skor, mevcut, egimler=son_egim)
             if son_aday != aday:
                 olay_yaz("AutonomSwitchAborted", {
                     "switch_id": switch_id, "reason": "leader_changed",

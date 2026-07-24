@@ -165,3 +165,19 @@ def test_kayan_degisim_acik_poz_mtm_dahil(tmp_path):
     assert s["acik_poz_unreal"] == 20.0
     assert s["equity_now"] == 1030.0        # 1000 + 10 gerceklesen + 20 MTM
     assert abs(s["pct"] - 3.0) < 1e-6       # 1030/1000-1
+
+
+def test_egim_kurali(monkeypatch):
+    """24 Tem: marj icinde egim kazanir; marj disinda seviye; veto."""
+    monkeypatch.setattr(osec, "MARJ_PUAN", 1.0)
+    sk = {"v7t": {"pct": 1.7, "islem": 3}, "v7": {"pct": 1.5, "islem": 3}}
+    eg = {"v7t": -0.1, "v7": 0.3}
+    # kullanici ornegi: fark 0.2 (marj ici), v7 yukselen -> v7 secilir
+    assert osec.aday_sec(sk, "r9", min_islem=0, egimler=eg) == "v7"
+    # fark belirgin: seviye kazanir (v7t 3.0 vs v7 1.5)
+    sk2 = {"v7t": {"pct": 3.0, "islem": 3}, "v7": {"pct": 1.5, "islem": 3}}
+    assert osec.aday_sec(sk2, "r9", min_islem=0, egimler=eg) == "v7t"
+    # veto: mevcut v7 uygunken sonen v7t'ye marj icinden gecilmez
+    assert osec.aday_sec(sk, "v7", min_islem=0, egimler=eg) is None
+    # egim verisi yoksa (ilk tur) eski davranis: seviye lideri
+    assert osec.aday_sec(sk, "r9", min_islem=0, egimler=None) == "v7t"
