@@ -20,13 +20,17 @@ PROGRAMLAR = {
     "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8": "raydium",
 }
 
-# etiket -> (aranan log imzasi, uretilecek olay tipi)
+# etiket -> (aranan log imzasi, uretilecek olay tipi, eslesme modu)
+# mod "son": satir SONU tam eslesme (25 Tem fixi: "Instruction: Create"
+# alt-dizesi "Instruction: CreateTokenAccount" iceren ALIM tx'lerini de
+# yakaliyordu -> sahte LaunchObserved, sayim ~%60 sisikti; tx-fallback
+# teshisiyle bulundu). mod "icinde": alt-dize (raydium log formati argumanli).
 IMZALAR = {
-    "pumpfun": [("Instruction: Create", "LaunchObserved"),
-                ("Instruction: Migrate", "GraduationObserved")],
-    "pumpswap": [("Instruction: CreatePool", "PoolCreated")],
-    "raydium": [("initialize2", "PoolCreated"),
-                ("Instruction: Initialize2", "PoolCreated")],
+    "pumpfun": [("Instruction: Create", "LaunchObserved", "son"),
+                ("Instruction: Migrate", "GraduationObserved", "son")],
+    "pumpswap": [("Instruction: CreatePool", "PoolCreated", "son")],
+    "raydium": [("initialize2", "PoolCreated", "icinde"),
+                ("Instruction: Initialize2", "PoolCreated", "son")],
 }
 
 
@@ -55,8 +59,10 @@ class SayimR2:
         if val.get("err") is not None:
             return
         metin = "\n".join(logs)
-        for imza, kind in IMZALAR.get(etiket, []):
-            if imza in metin:
+        for imza, kind, mod in IMZALAR.get(etiket, []):
+            eslesme = (any(ln.rstrip().endswith(imza) for ln in logs)
+                       if mod == "son" else imza in metin)
+            if eslesme:
                 slot = ((params.get("result") or {}).get("context")
                         or {}).get("slot")
                 await self.bus.yayinla(
