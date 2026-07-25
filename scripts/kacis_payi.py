@@ -48,14 +48,22 @@ def islem_analiz(t: dict, yol) -> dict | None:
     dusus = 100 * (min(p for _, p in sonra) / cikis_f - 1)
     gercek_pnl = float(t.get("pnl_pct") or 0)
     gecikmeli = {}
+    aykiri = 0
     for d in GECIKMELER:
         ilk = next((p for ts, p in sonra if ts >= cikis_ts + d), None)
-        if ilk is not None:
-            gecikmeli[str(int(d))] = round(
-                100 * (ilk / giris_f - 1) - gercek_pnl, 3)
+        if ilk is None:
+            continue
+        # veri ayikligi: cikistan <=2dk sonra 5x+ fiyat = kaynak
+        # sicramasi (cift havuz / DexScreener aykirisi), olcume girmez
+        if ilk / cikis_f > 5.0:
+            aykiri += 1
+            continue
+        gecikmeli[str(int(d))] = round(
+            100 * (ilk / giris_f - 1) - gercek_pnl, 3)
     return {"token": (t.get("token_address") or "")[:8],
             "pnl": gercek_pnl, "dusus_pct": round(dusus, 2),
-            "rug_kacisi": dusus <= RUG_ESIK, "gecikme_delta": gecikmeli}
+            "rug_kacisi": dusus <= RUG_ESIK, "gecikme_delta": gecikmeli,
+            "aykiri_n": aykiri}
 
 
 def main() -> None:
@@ -94,6 +102,7 @@ def main() -> None:
     if analizler:
         ruglar = [x for x in analizler if x["rug_kacisi"]]
         rapor.update({
+            "veri_aykiri_n": sum(x["aykiri_n"] for x in analizler),
             "rug_kacisi_n": len(ruglar),
             "rug_kacisi_orani": round(len(ruglar) / len(analizler), 3),
             "medyan_cikis_sonrasi_dusus": round(median(
