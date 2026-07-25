@@ -37,7 +37,18 @@ class KararUretici:
         self.onbellek = onbellek
         self.snap_getir = snap_getir
         self._uretilen: set[str] = set()
+        self._uretilen_sira: list[str] = []   # FIFO tavan (RSS budamasi)
         self._acil_son_hata = 0.0
+
+    URETILEN_TAVAN = 20000
+
+    def _uretilen_ekle(self, cid: str) -> None:
+        self._uretilen.add(cid)
+        self._uretilen_sira.append(cid)
+        if len(self._uretilen_sira) > self.URETILEN_TAVAN:
+            atilan = self._uretilen_sira[:-self.URETILEN_TAVAN]
+            self._uretilen_sira = self._uretilen_sira[-self.URETILEN_TAVAN:]
+            self._uretilen.difference_update(atilan)
 
     async def olay_isle(self, ev: dict, akis: str) -> None:
         kind = ev.get("kind")
@@ -55,7 +66,7 @@ class KararUretici:
         cid = ctx_id_uret(eng, tid)
         if cid in self._uretilen:
             return
-        self._uretilen.add(cid)
+        self._uretilen_ekle(cid)
         tok = ev.get("token")
         snap = self.onbellek.son_snapshot.get(tok)
         acil = False

@@ -27,6 +27,16 @@ class DurumOnbellek:
         elif k == "MarketContext":
             self.son_mctx = ev
 
+    def buda(self, tokenler: set[str]) -> int:
+        """RSS budamasi (25 Tem P0): izlenmeyen tokenlerin snapshot'lari
+        atilir. Snapshot yalniz izlenenler icin uretilir; demote sonrasi
+        kayit zaten bayatlar, ctx bayat/acil_cekim bayraklari gercegi
+        soyler. Atilan adet doner (ObserverHealth'e raporlanir)."""
+        atil = [t for t in self.son_snapshot if t not in tokenler]
+        for t in atil:
+            self.son_snapshot.pop(t, None)
+        return len(atil)
+
 
 class Sayaclar:
     """Sansursuz sayim: saklanmayan ham mesajlar bile SAYILIR."""

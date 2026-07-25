@@ -91,6 +91,7 @@ class IzlenenKume:
                         {"pool": pa, **eski[pa]},
                         token=eski[pa]["token"], src="izlenen")
                 self.onbellek.izlenen = yeni
+                self.onbellek.buda({m["token"] for m in yeni.values()})
                 if self.swap_abone is not None:
                     self.swap_abone.abonelik_ayarla(
                         {pa: "r0" for pa in yeni})

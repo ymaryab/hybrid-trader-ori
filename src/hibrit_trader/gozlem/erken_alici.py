@@ -172,6 +172,10 @@ class ErkenAlici:
         sayac = 0
         while True:
             await asyncio.sleep(max(5.0, backoff))
+            simdi = time.time()                   # RSS budamasi (25 Tem)
+            for c, ts in list(self._negatif.items()):
+                if simdi - ts >= 3600:
+                    self._negatif.pop(c, None)
             aday = None
             for pool, meta in sorted(self.onbellek.izlenen.items()):
                 if pool not in self._olculen and meta.get("token"):

@@ -25,8 +25,11 @@ from .swap_r0 import SwapR0
 from .yazici import OlayYazici
 
 
-async def saglik(bus, sayac):
-    """5 dakikada bir oz-olcum: RSS, CPU, kuyruk, sayaclar."""
+async def saglik(bus, sayac, nesne_sayimi=None):
+    """5 dakikada bir oz-olcum: RSS, CPU, kuyruk, sayaclar.
+
+    nesne_sayimi (25 Tem P0): RAM'de buyuyebilen yapilarin adetleri;
+    RSS egimi teshisi bu satirlardan kanitla yapilir (tahmin degil)."""
     while True:
         await asyncio.sleep(300)
         rss = 0
@@ -38,13 +41,17 @@ async def saglik(bus, sayac):
         except OSError:
             pass
         t = os.times()
-        await bus.yayinla(
-            "sistem", "ObserverHealth",
-            {"rss_kb": rss, "cpu_user_s": round(t.user, 1),
-             "cpu_sys_s": round(t.system, 1),
-             "kuyruk": bus.q.qsize(),
-             "dusen_snapshot": sayac.dusen_snapshot,
-             "kind_sayi": dict(sayac.kind_sayi)}, src="saglik")
+        payload = {"rss_kb": rss, "cpu_user_s": round(t.user, 1),
+                   "cpu_sys_s": round(t.system, 1),
+                   "kuyruk": bus.q.qsize(),
+                   "dusen_snapshot": sayac.dusen_snapshot,
+                   "kind_sayi": dict(sayac.kind_sayi)}
+        if nesne_sayimi is not None:
+            try:
+                payload["nesneler"] = nesne_sayimi()
+            except Exception:  # noqa: BLE001
+                pass
+        await bus.yayinla("sistem", "ObserverHealth", payload, src="saglik")
 
 
 async def calistir():
@@ -109,7 +116,18 @@ async def calistir():
         asyncio.create_task(konsantrasyon.calis(), name="konsantrasyon"),
         asyncio.create_task(lp_kilit.calis(), name="lp_kilit"),
         asyncio.create_task(erken_alici.calis(), name="erken_alici"),
-        asyncio.create_task(saglik(bus, sayac), name="saglik"),
+        asyncio.create_task(saglik(bus, sayac, nesne_sayimi=lambda: {
+            "son_snapshot": len(onbellek.son_snapshot),
+            "izlenen": len(onbellek.izlenen),
+            "ctx_uretilen": len(bus.karar._uretilen),
+            "musluk_girisler": len(musluk.girisler),
+            "musluk_ofset": len(musluk.ofset),
+            "swap_pencere": len(swap._pencere),
+            "kons_arz": len(konsantrasyon._arz),
+            "alici_cache": len(erken_alici._cache),
+            "alici_negatif": len(erken_alici._negatif),
+            "alici_olculen": len(erken_alici._olculen),
+            "lp_olculen": len(lp_kilit._olculen)}), name="saglik"),
     ]
 
     dur = asyncio.Event()

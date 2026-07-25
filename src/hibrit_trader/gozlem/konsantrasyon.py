@@ -116,3 +116,6 @@ class Konsantrasyon:
             for mint in list(son_olcum):
                 if mint not in tokenler:
                     son_olcum.pop(mint, None)
+            for mint in list(self._arz):          # RSS budamasi (25 Tem)
+                if mint not in tokenler:
+                    self._arz.pop(mint, None)
