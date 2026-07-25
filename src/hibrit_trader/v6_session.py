@@ -53,6 +53,7 @@ from hibrit_trader.entry_fresh import (
 )
 from hibrit_trader.fast_price import get_feed
 from hibrit_trader.killswitch import is_active as kill_is_active
+from hibrit_trader.killswitch import notify
 from hibrit_trader.live_sim import fetch_pool_snapshot
 from hibrit_trader.momentum_session import (
     SCAN_INTERVAL_SEC,
@@ -78,7 +79,7 @@ GRACE_SEC = 30 * 60     # ilk 30dk aşağıda stop yok (sabır)
 LATE_STOP_PCT = -2.0    # 30dk sonrası: girişin -%2 altı SAT
 CEILING_SEC = 60 * 60   # 60dk tavan
 # rejim eşiği 0.5: sol_h1 0..0.5 bandı kanıtlı kaybettiren (41 işlem -$136)
-SOL_H1_MIN = float(os.getenv("V6_SOL_H1_MIN", "0.5"))
+SOL_H1_MIN = float(os.getenv("V6_SOL_H1_MIN", "0.35"))  # 16 Tem kullanici: 0.5 -> 0.35
 COOLDOWN_LOSS_SEC = float(os.getenv("MOM_COOLDOWN_STOP_MIN", "60")) * 60
 COOLDOWN_EXIT_SEC = float(os.getenv("MOM_COOLDOWN_EXIT_MIN", "15")) * 60
 # Hizli goz: 30s tam tick arasinda fast feed'ten 2s kadansli cikis kontrolu
@@ -337,6 +338,8 @@ class V6Engine:
             feed.add_pool(pos["pool_address"])
         log.warning("V6 BUY %s $%.2f @ %.8g (h1 %.1f%%, liq $%.0f)",
                     pair.name, usd, eff_price, pair.chg_h1, pair.liquidity_usd)
+        notify("[V6] ALIM: %s $%.2f @ %.8g (h1 %%%.1f, liq $%.0f)"
+               % (pair.name, usd, eff_price, pair.chg_h1, pair.liquidity_usd))
         return True
 
     # ---- Çıkış: tp_2 / stop_gec (30dk sonrası -%2) / timeout_60 (gölge birebir) --

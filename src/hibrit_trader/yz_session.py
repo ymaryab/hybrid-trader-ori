@@ -5,7 +5,7 @@ Uc parca, ucu de olculmus:
           Canli kanit: 58/68 gercek islem, kazanan basina +%3.03.
   GIYOTIN: 60dk kosulsuz cikis (kazancin %87si ilk saatte; cuval imkansiz).
   KAPAK : gracesiz -%20 felaket (tam pencere zararinin tamami 4 kuyruk
-          olayindan; kapak tarihsel +25\$ kurtarir, feda ~1\$).
+          olayindan; kapak tarihsel +25 USD kurtarir, feda ~1 USD).
 MOD: SABIT PAPER (canliya alinmasi kullanici karari; delegasyonla birebir).
 Dosyalar: data/yz_state.json, data/yz_trades.jsonl, data/yz_engine.lock
 """

@@ -242,6 +242,38 @@ def sol_h1_son_olcum() -> tuple[float | None, float]:
     return val, ts
 
 
+def btc_macro_gate(client, motor_ad: str) -> tuple[bool, str]:
+    """BTC m15 makro gate — 18 Tem, 5 motora ortak.
+
+    BTC son 15 dakikada BTC_MIN_M15'ten (default -1.0) kotu ise giris kapali.
+    Return: (gate_gec_mi, log_mesaj). Veri yoksa fail-open (gecer).
+    """
+    try:
+        from hibrit_trader.giyotin_btc_macro import fetch_btc_m15_pct
+        btc = fetch_btc_m15_pct(client=client)
+    except Exception as e:
+        log.debug("%s BTC macro fetch hatasi: %r", motor_ad, e)
+        return True, ""
+    if btc is None:
+        return True, ""  # veri yok, fail-open
+    esik = float(os.getenv("BTC_MIN_M15", "-1.0"))
+    if btc < esik:
+        return False, f"{motor_ad} BTC MACRO: btc_m15 {btc:+.2f}%% < {esik:+.2f}%%, giris yok"
+    return True, ""
+
+
+def yas_str(pool_created_at: float | None) -> str:
+    """Kagit yasi kompakt: <1sa dk, <24sa saat, >1g gun. 19 Tem: BUY log gozlemi."""
+    if not pool_created_at:
+        return "?"
+    saat = (time.time() - float(pool_created_at)) / 3600.0
+    if saat < 1:
+        return f"{saat*60:.0f}dk"
+    if saat < 24:
+        return f"{saat:.1f}sa"
+    return f"{saat/24:.1f}g"
+
+
 def _data_dir() -> Path:
     # İzolasyon/test için override edilebilir; gerçek çalışmada "data".
     return Path(os.getenv("MOMENTUM_DATA_DIR", "data"))

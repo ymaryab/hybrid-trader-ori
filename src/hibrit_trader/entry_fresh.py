@@ -141,6 +141,11 @@ def _reject_kacti(pair, motor: str, scan_price: float, taze: float, fark: float)
         log.debug("taze_fiyat_kacti kaydi hatasi", exc_info=True)
 
 
+# 19 Tem: safety red sebep agregasyonu (havuz genisletme diagnostigi)
+_SAFETY_RED_SAYAC: "dict[str, int]" = {}
+_SAFETY_RED_LOCK = threading.Lock()
+
+
 def safety_reject_kaydet(pair, motor: str, neden: str, detay: str = "") -> None:
     """Guvenlik kontrolu girisi engelledi: motor etiketli gorunur reject kaydi.
 
@@ -165,6 +170,15 @@ def safety_reject_kaydet(pair, motor: str, neden: str, detay: str = "") -> None:
         })
     except Exception:
         log.debug("safety reject kaydi hatasi", exc_info=True)
+    # Agregasyon: en cok eleyen sebebi periyodik logla (her 50 redde ozet)
+    key = f"{neden}:{detay[:30]}" if detay else neden
+    with _SAFETY_RED_LOCK:
+        _SAFETY_RED_SAYAC[key] = _SAFETY_RED_SAYAC.get(key, 0) + 1
+        toplam = sum(_SAFETY_RED_SAYAC.values())
+        if toplam % 50 == 0:
+            top5 = sorted(_SAFETY_RED_SAYAC.items(), key=lambda x: -x[1])[:5]
+            ozet = " · ".join(f"{k}={v}" for k, v in top5)
+            log.warning("SAFETY RED ozet (birikim=%d): %s", toplam, ozet)
 
 
 def rejim_reject_kaydet(cands, motor: str, sol_h1: float | None) -> None:

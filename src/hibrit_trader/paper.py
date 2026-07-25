@@ -60,6 +60,14 @@ class Position:
     obs_trough_price: float = 0.0     # en düşük fiyat
     obs_trough_ts_ms: int = 0         # dip epoch ms
     early_ticks: list = field(default_factory=list)  # ilk ~5 tick: [[saniye, fiyat], ...]
+    # ---- Giyotin/SV1 icin ek runtime alanlari (16 Tem port) ----
+    mfe_pct: float = 0.0
+    giyotin_hard_stop_pct: float | None = None
+    giyotin_phase: str = ""
+    giyotin_runner_armed: bool = False
+    giyotin_runner_peak_pnl: float = 0.0
+    giyotin_trail_peak_usd: float = 0.0
+    giyotin_volatile_entry: bool = False
 
 
 @dataclass

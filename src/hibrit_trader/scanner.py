@@ -58,6 +58,12 @@ class Pair:
     txns_h24: int = 0
     boost_score: int = 0
     discovery_source: str = ""
+    # 16 Tem: Giyotin/SV1 port icin ek alanlar (default 0 uyumlu)
+    buyers_h1: int = 0
+    sellers_h1: int = 0
+    makers_h24: int = 0
+    chg_h4: float = 0.0
+    chg_h6: float = 0.0
 
 
 def _f(value, default: float = 0.0) -> float:
@@ -227,7 +233,11 @@ def scan_all(chains: tuple[str, ...] | None = None) -> list[Pair]:
                 pump = fetch_pump_fun_pairs(client, chains=tuple(chains))
             except Exception as e:
                 log.warning("Pump.fun feed atlandı: %s", e)
-    return merge_pairs(gecko, ds, early, pump)
+    merged = merge_pairs(gecko, ds, early, pump)
+    # 19 Tem: kaynak diagnostic — hangi feed ne kadar aday getirdi
+    log.warning("KAYNAK: gecko=%d ds=%d early=%d pump=%d → merge=%d unique",
+                len(gecko), len(ds), len(early), len(pump), len(merged))
+    return merged
 
 
 _scan_lock = threading.Lock()

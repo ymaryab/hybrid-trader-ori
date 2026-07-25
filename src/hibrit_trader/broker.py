@@ -57,6 +57,13 @@ def _rpc_url() -> str:
     return os.getenv("SOLANA_RPC_URL") or DEFAULT_RPC["solana"]
 
 
+def _rpc_post_multi(http: httpx.Client, payload: dict, timeout: float = 15.0) -> dict:
+    """18 Tem: multi-RPC fallback. Primary fail (503/429/timeout) → sirada URL.
+    broker'in tum RPC POST'lari bu wrapper'dan gecer. Tum URL fail: RuntimeError."""
+    from hibrit_trader.rpc_multi import rpc_post
+    return rpc_post(payload["method"], payload["params"], timeout=timeout, http=http)
+
+
 def _zincir_dolum(http: httpx.Client, sig: str, owner: str, mint: str,
                   deneme: int = 3, bekleme_sn: float = 1.5) -> float | None:
     """Onayli alim tx'inin pre/postTokenBalances farkindan owner+mint icin
@@ -68,7 +75,7 @@ def _zincir_dolum(http: httpx.Client, sig: str, owner: str, mint: str,
                                 "maxSupportedTransactionVersion": 0}]}
     for i in range(deneme):
         try:
-            r = http.post(_rpc_url(), json=payload, timeout=15).json()
+            r = _rpc_post_multi(http, payload, timeout=15)
             tx = r.get("result")
             if tx:
                 meta = tx["meta"]
@@ -91,7 +98,7 @@ def _zincir_token_bakiye(http: httpx.Client, owner: str, mint: str) -> float | N
     payload = {"jsonrpc": "2.0", "id": 1, "method": "getTokenAccountsByOwner",
                "params": [owner, {"mint": mint}, {"encoding": "jsonParsed"}]}
     try:
-        r = http.post(_rpc_url(), json=payload, timeout=10).json()
+        r = _rpc_post_multi(http, payload, timeout=10)
         return sum((acc["account"]["data"]["parsed"]["info"]["tokenAmount"]["uiAmount"] or 0.0)
                    for acc in r["result"]["value"])
     except Exception as e:
@@ -105,7 +112,7 @@ def _zincir_imza_durumu(http: httpx.Client, sig: str) -> str | None:
     payload = {"jsonrpc": "2.0", "id": 1, "method": "getSignatureStatuses",
                "params": [[sig], {"searchTransactionHistory": True}]}
     try:
-        r = http.post(_rpc_url(), json=payload, timeout=10).json()
+        r = _rpc_post_multi(http, payload, timeout=10)
         durum = r["result"]["value"][0]
     except Exception as e:
         log.warning("zincir imza durumu okunamadi: %s", e)
@@ -312,12 +319,10 @@ class DryrunExecBroker:
         if mint in self._dec_cache:
             return self._dec_cache[mint]
         try:
-            resp = self._http.post(_rpc_url(), json={
-                "jsonrpc": "2.0", "id": 1,
+            r = _rpc_post_multi(self._http, {
                 "method": "getTokenSupply", "params": [mint],
             }, timeout=15)
-            resp.raise_for_status()
-            dec = int(resp.json()["result"]["value"]["decimals"])
+            dec = int(r["result"]["value"]["decimals"])
             self._dec_cache[mint] = dec
             return dec
         except Exception as e:
@@ -376,13 +381,12 @@ class DryrunExecBroker:
         try:
             from hibrit_trader.jupiter import build_swap_tx
             tx_b64 = build_swap_tx(self._http, ham_quote, pubkey)
-            resp = self._http.post(_rpc_url(), json={
-                "jsonrpc": "2.0", "id": 1, "method": "simulateTransaction",
+            r = _rpc_post_multi(self._http, {
+                "method": "simulateTransaction",
                 "params": [tx_b64, {"encoding": "base64", "sigVerify": False,
                                     "replaceRecentBlockhash": True}],
             }, timeout=20)
-            resp.raise_for_status()
-            err = resp.json()["result"]["value"].get("err")
+            err = r["result"]["value"].get("err")
             if err is not None:
                 return False, f"sim_fail: {err}"
             return True, None
@@ -822,6 +826,23 @@ def make_exec_broker(mode: str | None = None, http: httpx.Client | None = None):
                 "(icerik: canli-islem-onayliyorum) birlikte gerekli")
         return LiveExecBroker(http=http)
     raise ValueError(f"bilinmeyen broker modu: {mode}")
+
+
+def init_motor_exec(motor_id: str):
+    """4-motor canli hat swap: sadece CANLI_MOTOR env'inde secilen motor
+    BROKER_MODE'a (live/paper/dryrun) tabi calisir; digerleri hep PaperExec.
+    Default CANLI_MOTOR=v7 (mevcut davranis). Donus: (exec, arizali_flag).
+    Live baglanamazsa fail-closed PaperExec + arizali=True (girisler kapali)."""
+    canli = os.getenv("CANLI_MOTOR", "v7").strip().lower()
+    if canli != motor_id.lower():
+        return PaperExecBroker(), False
+    try:
+        return make_exec_broker(), False
+    except Exception as e:
+        logging.getLogger(__name__).critical(
+            "%s canli init hata: %s → PaperExec fallback, girisler KAPALI",
+            motor_id.upper(), e)
+        return PaperExecBroker(), True
 
 
 # ---- Golge olcum: paper fill aninda paralel dryrun quote kiyasi ------------------------
