@@ -19,6 +19,7 @@ Kullanim: python scripts/q_veri_seti.py [--veri data]
 from __future__ import annotations
 
 import argparse
+import bisect
 import glob
 import io
 import json
@@ -27,6 +28,11 @@ import sys
 import time
 from collections import Counter
 from pathlib import Path
+
+# Sayim imza fixinin (CreateTokenAccount sahte-lansman, commit 9e34123)
+# VPS yayin ani (yaklasik): oncesi CensusPulse lansman_1h ~%60 SISIK.
+# Baglam kaydinda bayrakla beyan edilir; duzeltilmeye CALISILMAZ.
+SAYIM_FIX_TS = 1784974000.0
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -112,6 +118,42 @@ def erken_q(ev: dict) -> dict:
             "kapsam": pl.get("kapsam")}
 
 
+def census_pulslari(veri: Path) -> list[tuple[float, dict]]:
+    """(ts, {lansman_1h, havuz_1h}) listesi, ts sirali."""
+    out = []
+    for yolad in sorted(glob.glob(
+            str(veri / "gozlem/events/*/*.sayim.jsonl*"))):
+        for e in _satirlar(yolad):
+            if e.get("kind") != "CensusPulse":
+                continue
+            pl = e.get("payload") or {}
+            out.append((e["ts_ms"] / 1000,
+                        {"lansman_1h": pl.get("lansman_1h"),
+                         "havuz_1h": pl.get("havuz_1h")}))
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+def baglam_q(terfi_ts: float, pulslar: list, puls_ts: list,
+             dogum_ts: list) -> dict:
+    """q_baglam KAYDI (25 Tem kullanici onayi): piyasa baglami terfi
+    aninda. Kill bataryasi OZELLIK listesine GIRMEZ (on-kayit sabit);
+    yalniz gelecek analiz icin olculur."""
+    b = {"saat_utc": int(time.strftime("%H", time.gmtime(terfi_ts))),
+         "sayim_fix_sonrasi": terfi_ts >= SAYIM_FIX_TS,
+         "lansman_1h": None, "havuz_1h": None}
+    i = bisect.bisect_left(puls_ts, terfi_ts)
+    aday = [j for j in (i - 1, i) if 0 <= j < len(puls_ts)]
+    if aday:
+        j = min(aday, key=lambda k: abs(puls_ts[k] - terfi_ts))
+        if abs(puls_ts[j] - terfi_ts) <= 900:
+            b.update(pulslar[j][1])
+    lo = bisect.bisect_left(dogum_ts, terfi_ts - 3600)
+    hi = bisect.bisect_right(dogum_ts, terfi_ts)
+    b["ekg_tetik_1h"] = hi - lo
+    return b
+
+
 def yaratici_asof(token: str, lansmanlar: dict, ath: dict) -> dict | None:
     """SIZINTISIZ yaratici ozellikleri (on-kayit Duzeltme 1): yalniz bu
     tokenin dogumundan ONCEKI lansmanlar sayilir; tokenin kendi sonucu
@@ -149,6 +191,9 @@ def main() -> None:
     ilk = sensor_ilk_olcumler(veri)
     yollar = {y.token: y for y in YolArsivi(veri).yollar()}
     ath_map = {t: y.ath_pct for t, y in yollar.items()}
+    pulslar = census_pulslari(veri)
+    puls_ts = [ts for ts, _ in pulslar]
+    dogum_ts = sorted(y.ticks[0][0] for y in yollar.values())
 
     kapsam = Counter()
     satir_n = 0
@@ -156,11 +201,20 @@ def main() -> None:
         for tok in sorted(set(ilk) | set(yollar)):
             olc = ilk.get(tok) or {}
             yar = yaratici_asof(tok, lansmanlar, ath_map)
+            terfi_ts = None
+            for alan in ("holder", "lp", "erken"):
+                if alan in olc:
+                    terfi_ts = olc[alan]["ts_ms"] / 1000
+                    break
+            if terfi_ts is None and tok in yollar:
+                terfi_ts = yollar[tok].ticks[0][0]
             q = {
                 "holder": holder_q(olc["holder"]) if "holder" in olc else None,
                 "lp": lp_q(olc["lp"]) if "lp" in olc else None,
                 "erken": erken_q(olc["erken"]) if "erken" in olc else None,
                 "yaratici": yar,
+                "baglam": (baglam_q(terfi_ts, pulslar, puls_ts, dogum_ts)
+                           if terfi_ts is not None else None),
             }
             yol = yollar.get(tok)
             yol_oz = None
@@ -171,7 +225,8 @@ def main() -> None:
                           "dogum_ts": yol.ticks[0][0]}
             for ad, deger in (("holder", q["holder"]), ("lp", q["lp"]),
                               ("erken", q["erken"]),
-                              ("yaratici", q["yaratici"]), ("yol", yol_oz)):
+                              ("yaratici", q["yaratici"]),
+                              ("baglam", q["baglam"]), ("yol", yol_oz)):
                 kapsam[ad + ("_var" if deger is not None else "_yok")] += 1
             out.write(json.dumps({"token": tok, "q": q, "yol": yol_oz})
                       + "\n")
