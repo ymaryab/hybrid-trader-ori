@@ -286,6 +286,19 @@ def gecis_mutabakati(mevcut: str) -> dict | None:
     return payload
 
 
+def _golge_olayla(skorlar: dict, mevcut: str, karar: str,
+                  aday: str | None, eval_id: str | None) -> None:
+    """Edge zinciri GOLGE kiyasi (25 Tem HAT 2): ayni girdiler, sifir
+    etki; hata golgeyi oldurur, seciciyi ASLA."""
+    try:
+        from hibrit_trader.edge.golge import golge_degerlendir
+        golge = golge_degerlendir(skorlar, mevcut, karar, aday,
+                                  esik=POZITIF_ESIK)
+        olay_yaz("EdgeShadowEvaluated", {"eval_id": eval_id, **golge})
+    except Exception:  # noqa: BLE001
+        log.debug("edge golge hatasi", exc_info=True)
+
+
 def yetim_tasfiye_mutabakati() -> dict | None:
     """Boot'ta diskte CANLI_TASFIYE varsa YETIMDIR: onu bekleyen secici
     dongusu restart'ta oldu, tasfiyeyi tamamlayacak kimse yok. Dosya
@@ -395,8 +408,6 @@ def kontrol_dongusu() -> None:
         time.sleep(KONTROL_SN)
         try:
             d = durum_oku()
-            if not d["user_enabled"]:
-                continue
             mevcut = os.getenv("CANLI_KAYNAK_MOTOR", "r1").strip().lower()
             skorlar = pencere_skorlari(float(d["pencere_dk"]), kaynaklar)
             egimler = {m: (round(skorlar[m]["pct"] - gecmis_skorlar[m][0], 3)
@@ -408,6 +419,11 @@ def kontrol_dongusu() -> None:
                 gecmis_skorlar[m] = gecmis_skorlar[m][-2:]
             lider = lider_bul(skorlar, mevcut)
             lider_pct = skorlar[lider]["pct"] if lider else 0.0
+            if not d["user_enabled"]:
+                # OTONOM kapaliyken de GOLGE kiyasi birikir (25 Tem):
+                # legacy pasif = mevcutta kal; secici hicbir sey yapmaz
+                _golge_olayla(skorlar, mevcut, "otonom_kapali", None, None)
+                continue
             eval_id = f"ev-{int(time.time() * 1000)}"
             # kural 3-4: system_enabled (saltere dokunmaz, yalniz secim)
             if all(s["pct"] < POZITIF_ESIK for s in skorlar.values()):
@@ -471,6 +487,7 @@ def kontrol_dongusu() -> None:
                                            else round(firsat_yas, 1)),
                 "cooldown_remaining_sec": round(cooldown_kalan, 1),
                 "config": config_anlik()})
+            _golge_olayla(skorlar, mevcut, karar, aday, eval_id)
             if karar != "gecis":
                 continue
             # ---- gecis prosedueru ----
