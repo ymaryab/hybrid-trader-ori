@@ -17,15 +17,24 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from pathlib import Path
 
 PERIYOT_SN = float(os.getenv("GOZLEM_KONSANTRASYON_SN", "180"))
 # 25 Tem: kamu ana RPC getTokenLargestAccounts'i 429'luyor; rotasyonlu
 # kamu uc listesi (rpc_multi ile ayni aday havuzu)
-URLS = [u.strip() for u in os.getenv(
+def _env_rpc():
+    """.env'deki SOLANA_RPC_URL doluysa (anahtarli uc) onu one koy."""
+    try:
+        for ln in open(Path(__file__).resolve().parents[3] / ".env"):
+            if ln.startswith("SOLANA_RPC_URL=") and ln.strip() != "SOLANA_RPC_URL=":
+                return [ln.split("=", 1)[1].strip()]
+    except OSError:
+        pass
+    return []
+
+
+URLS = _env_rpc() + [u.strip() for u in os.getenv(
     "GOZLEM_KONS_RPC",
-    "https://solana-rpc.publicnode.com,"
-    "https://solana.drpc.org,"
-    "https://rpc.ankr.com/solana,"
     "https://api.mainnet-beta.solana.com").split(",") if u.strip()]
 
 
@@ -60,31 +69,50 @@ class Konsantrasyon:
         return v
 
     async def calis(self):
+        """Az-ve-oz mod (25 Tem, 429/403 gercegi): oncelik TERFI ANI
+        olcumu (karar-ani bilgisi icin kritik olan ilk fotograf), sonra
+        token basina 15dk'da bir tazeleme. Istekler >=10 sn arayla;
+        arka arkaya hata olursa ustel geri cekilme (60->960 sn)."""
+        son_olcum: dict[str, float] = {}
+        backoff = 0.0
         while True:
-            bas = time.monotonic()
-            tokenler = sorted({m["token"] for m in
-                               self.onbellek.izlenen.values() if m.get("token")})
-            for mint in tokenler:
-                try:
-                    r = await self._rpc("getTokenLargestAccounts",
-                                        [mint])
-                    hesaplar = ((r.get("result") or {}).get("value")) or []
-                    arz = await self._supply(mint)
-                    self.bus.yayinla_kayipli(
-                        "sensor", "HolderKonsantrasyon",
-                        {"mint": mint,
-                         "arz": arz,
-                         "hesaplar": [
-                             {"adres": h.get("address"),
-                              "miktar": h.get("uiAmountString")
-                                        or h.get("uiAmount")}
-                             for h in hesaplar]},
-                        token=mint, src="konsantrasyon")
-                except Exception as e:  # noqa: BLE001
-                    self.bus.yazici.yaz(
-                        "sistem", "GapDetected",
-                        {"src": "konsantrasyon", "neden": str(e)[:150]},
-                        token=mint, src="konsantrasyon")
-                await asyncio.sleep(2.0)   # RPC nezaketi: istekler yayilir
-            gecen = time.monotonic() - bas
-            await asyncio.sleep(max(2.0, PERIYOT_SN - gecen))
+            await asyncio.sleep(max(10.0, backoff))
+            simdi = time.time()
+            tokenler = {m["token"] for m in
+                        self.onbellek.izlenen.values() if m.get("token")}
+            aday = None
+            for mint in sorted(tokenler):
+                if mint not in son_olcum:          # terfi ani: oncelik
+                    aday = mint
+                    break
+            if aday is None:
+                for mint in sorted(tokenler, key=lambda m: son_olcum.get(m, 0)):
+                    if simdi - son_olcum.get(mint, 0) >= PERIYOT_SN * 5:
+                        aday = mint
+                        break
+            if aday is None:
+                continue
+            try:
+                r = await self._rpc("getTokenLargestAccounts", [aday])
+                hesaplar = ((r.get("result") or {}).get("value")) or []
+                arz = await self._supply(aday)
+                self.bus.yayinla_kayipli(
+                    "sensor", "HolderKonsantrasyon",
+                    {"mint": aday, "arz": arz,
+                     "hesaplar": [{"adres": h.get("address"),
+                                   "miktar": h.get("uiAmountString")
+                                             or h.get("uiAmount")}
+                                  for h in hesaplar]},
+                    token=aday, src="konsantrasyon")
+                son_olcum[aday] = simdi
+                backoff = 0.0
+            except Exception as e:  # noqa: BLE001
+                backoff = min(max(60.0, backoff * 2), 960.0)
+                self.bus.yazici.yaz(
+                    "sistem", "GapDetected",
+                    {"src": "konsantrasyon", "neden": str(e)[:120],
+                     "backoff_sn": backoff},
+                    token=aday, src="konsantrasyon")
+            for mint in list(son_olcum):
+                if mint not in tokenler:
+                    son_olcum.pop(mint, None)
