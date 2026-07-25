@@ -16,7 +16,7 @@
 | Konsantrasyon: terfi ani | largestAccounts+supply | ~150 yeni token x 2 | 300 |
 | Konsantrasyon: tazeleme | largestAccounts | ~25 token x 4/saat x 24 (supply 24h cache) | 2.400 |
 | LP kilit (AKTIF 25 Tem) | accountInfo (+supply+largest yalniz raydium) | 150 terfi x 1-3, kalici cache, TAVAN 600/gun | 550 |
-| Yaratici sicili (planli) | getTransaction | log'dan ayristirilamayan lansmanlar, TAVAN 500/gun (asani birak+say) | 500 |
+| Yaratici sicili (AKTIF 25 Tem) | 0 kredi (log ayristirma, gecelik 04:17) | v0 RPC fallback YOK; ayristirilamayan sayilir (%40, iyilestirme adayi) | 0 |
 | Erken alici yasi (planli) | getSignaturesForAddress(limit1) | YENI cuzdan basina 1, kalici cache, TAVAN 2.000/gun | 2.000 |
 | Senkron bekcisi + kasa | balance/largest(mint) | poz basina 60sn + 10dk kasa | ~1.500 |
 | Canli broker mutabakat | signatureStatuses/getTransaction | ~90 islem x ~3 | ~300 |
