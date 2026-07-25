@@ -111,6 +111,10 @@ RUNNER_ARM_PCT = float(os.getenv("R2_RUNNER_ARM_PCT", "25"))  # trail bu tepeden
 KILIT1_PCT = float(os.getenv("R2_KILIT1_PCT", "25"))          # 1. kilit: orijinalin 1/4
 KILIT2_PCT = float(os.getenv("R2_KILIT2_PCT", "40"))          # 2. kilit: orijinalin 1/4 daha
 # 24 Tem erken koruma (kullanici onayi):
+# 25 Tem kullanici karari (sonda kapanisiyla birlikte): erken_zayif de
+# ayni -2 dip-satma mekanizmasi; R2'de drop-in ile KAPALI. Yeni koruma
+# merdiveni: felaket -15 (her an) -> 15dk grace -> stop_gec -5 ->
+# breakeven/kilit/trail. YZn1 ve diger motorlar etkilenmez.
 ERKEN_GUC_AKTIF = os.getenv("R2_ERKEN_GUC", "1") == "1"
 ERKEN_GUC_MFE = float(os.getenv("R2_ERKEN_GUC_MFE", "1.0"))
 ERKEN_GUC_PCT = float(os.getenv("R2_ERKEN_GUC_PCT", "-2.0"))
@@ -124,8 +128,11 @@ KISMI_ORAN_HARITASI = {"tp_kilit_25": KILIT_ORAN,
 TRAIL_T1 = float(os.getenv("R2_TRAIL_T1", "20"))              # tepe kari <50 iken
 TRAIL_T2 = float(os.getenv("R2_TRAIL_T2", "15"))              # 50..100
 TRAIL_T3 = float(os.getenv("R2_TRAIL_T3", "10"))              # >100 (ac gozluluk freni)
-# Sonda-ve-olcekle (22 Tem replay onayli; DEGISTIRME: dogrulama dongusu):
-# 1/3 sonda; +2 teyitte kalan alinir; teyitsiz -2 sonda_kes.
+# Sonda-ve-olcekle (22 Tem replay onayli). 25 Tem kullanici karari:
+# R2'de KAPALI (drop-in R2_SONDA=0): kesilen 34 kagidin %59'u 10dk
+# icinde +5 ustune toparliyordu (dip satma); YZn1'de kural suruyor.
+# Kapaliyken pasif golge kaydi tutulur (r2_sonda_golge.jsonl): sonda
+# olsaydi kesecegi an loglanir, davranis DEGISMEZ (karsi-olgusal veri).
 SONDA_AKTIF = os.getenv("R2_SONDA", "1") == "1"
 SONDA_ORAN = float(os.getenv("R2_SONDA_ORAN", str(1/3)))
 SONDA_TEYIT_PCT = float(os.getenv("R2_SONDA_TEYIT", "2.0"))
@@ -688,6 +695,21 @@ class R2Engine:
                 pnl_pct = (price / entry - 1) * 100 if entry > 0 else 0.0
             elif pnl_pct <= SONDA_KES_PCT:
                 return "sonda_kes"
+        elif (not SONDA_AKTIF and not pos.get("sonda_golge_ts")
+                and pos["mfe_pct"] < SONDA_TEYIT_PCT
+                and pnl_pct <= SONDA_KES_PCT):
+            # pasif golge (25 Tem): sonda acik olsaydi burada keserdi
+            pos["sonda_golge_ts"] = now
+            try:
+                with open(_data_dir() / "r2_sonda_golge.jsonl", "a") as f:
+                    f.write(json.dumps({
+                        "ts": round(now, 3), "trade_id": pos.get("trade_id"),
+                        "pair": pos.get("pair"),
+                        "token_address": pos.get("token_address"),
+                        "pnl_pct": round(pnl_pct, 3),
+                        "mfe_pct": pos.get("mfe_pct")}) + "\n")
+            except OSError:
+                log.debug("r2 sonda golge yazilamadi", exc_info=True)
         age = now - pos["opened_ts"]
         # 1) Felaket freni (her an) -%15 alti
         if pnl_pct <= DISASTER_PCT:
