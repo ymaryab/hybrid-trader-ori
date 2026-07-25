@@ -53,6 +53,27 @@ EKG yollari dakika-cozunurluklu ve tetik-kosullu (secilim etkisi);
 tick arasi hareket, kayma ve ucret modellenmez. Edge tahmini hatasi =
 kosullama hatasi + simulator sadakat hatasi; ikisi ayri raporlanir.
 
+## Edge Engine'in nihai rolu (REFERANS TANIM, kullanici onayi 25 Tem)
+
+Edge Engine motorlarin yerine gecmez; onlari FIYATLAYAN katmandir:
+"su kosulda su politikanin beklenen avantaji nedir" cevabini uretir,
+karar bu fiyatin uzerine kurulur. Uc ufuk:
+
+1. **Bugun (golge):** rolu yok; mevcut seciciyle ayni girdilerle kiyas
+   aynasi (EdgeShadowEvaluated).
+2. **Orta vade (kill bataryasi GECERSE):** motorlar korunur; secici
+   cekirdegi geriye-bakan momentumdan ("son 30dk kim kazandi") ileriye
+   bakan kosul-temelli tahsise ("q verildiginde hangi politikanin
+   edge'i pozitif") gecer; kesirli tahsis ayni arayuzden.
+3. **Uzun vade (YENI kanitla, ayri kullanici karari):** karar taneciği
+   motordan FIRSATA iner: aday basina politika fiyatlanir ve atanir;
+   motor kimligi politika kutuphanesine donusur, hicbir sey silinmez.
+
+Degismezler: edge OGRENILMEZ (arsiv x simulator turetimi; ogrenen tek
+parca kosullama, sinav sartli); Edge Engine yurutmeyi ASLA devralmaz;
+broker/kill-switch/LIVE_ONAY/senkron katmanlari her zaman ustundedir.
+Batarya kalirsa terfi yok: golge olcum araci kalir veya kapanir.
+
 ## Sprint 2 sonu hedefi
 
 Calisan yeni mimari + eksik TEK parca: kosullama modeli.
