@@ -183,27 +183,34 @@ def _defter_izleri(canli_motor: str,
         if tok:
             mintler.add(tok)
             girisler.append((tok, float(p.get("opened_ts") or 0)))
-    yol = DATA / f"{canli_motor}_trades.jsonl"
-    try:
-        for ln in open(yol):
-            if not ln.strip():
-                continue
-            try:
-                t = json.loads(ln)
-            except ValueError:
-                continue
-            if t.get("type"):
-                continue
-            if t.get("tx_al"):
-                txler.add(t["tx_al"])
-            tok = t.get("token_address")
-            if tok:
-                mintler.add(tok)
-                ts = float(t.get("ts") or 0)
-                girisler.append(
-                    (tok, ts - float(t.get("hold_sec") or 0)))
-    except OSError:
-        pass
+    # 25 Tem ilk tur dersi: yalniz aktif canli defteri taramak eski
+    # canli donemlerin (v7/r1) tozunu sahte-CASHCOW yapiyordu. Mint izi
+    # TUM defterlerden toplanir (cuzdan tek); zaman-esi girisler ise
+    # yalniz aktif canli defterden (WAL kiyasinin dogrulugu icin).
+    import glob as _glob
+    for yolad in _glob.glob(str(DATA / "*_trades.jsonl")):
+        aktif = yolad.endswith(f"{canli_motor}_trades.jsonl")
+        try:
+            for ln in open(yolad):
+                if not ln.strip():
+                    continue
+                try:
+                    t = json.loads(ln)
+                except ValueError:
+                    continue
+                if t.get("type"):
+                    continue
+                if t.get("tx_al"):
+                    txler.add(t["tx_al"])
+                tok = t.get("token_address")
+                if tok:
+                    mintler.add(tok)
+                    if aktif:
+                        ts = float(t.get("ts") or 0)
+                        girisler.append(
+                            (tok, ts - float(t.get("hold_sec") or 0)))
+        except OSError:
+            continue
     return txler, mintler, girisler
 
 
