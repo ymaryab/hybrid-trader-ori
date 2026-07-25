@@ -23,6 +23,15 @@ from hibrit_trader.broker import (
 TOK = "So11111111111111111111111111111111111111112"
 
 
+@pytest.fixture(autouse=True)
+def _imza_durumu_varsayilan_onayli(monkeypatch):
+    """25 Tem sertlestirmesi sonrasi: imza durumunu mock'lamayan genel
+    akis testleri icin varsayilan 'onaylandi' (eski quote-fallback
+    semantigi korunur). Ozel testler kendi mock'uyla ezer."""
+    monkeypatch.setattr(broker, "_zincir_imza_durumu",
+                        lambda *a, **k: "onaylandi")
+
+
 # ---- sahte http istemcisi --------------------------------------------------------------
 
 class FakeResponse:
@@ -539,6 +548,10 @@ def test_belirsiz_alim_zincirde_yoksa_kayit_yok_kilit_acilir(data_dir, monkeypat
     assert len(sorgular) >= 3  # yok karari tek sorguya birakilmaz
     assert br.belirsiz_sonuc("T") == ("yok", None)
     # para cikmadi: kilit acildi, sonraki alim serbest
+    # (25 Tem: sonraki alimin kendi imza durumu 'onaylandi' olmali,
+    #  yoksa mock'taki kalici 'yok' yeni alimi da belirsize dusurur)
+    monkeypatch.setattr(broker, "_zincir_imza_durumu",
+                        lambda http, sig: "onaylandi")
     gorulen = _swap_yakala(monkeypatch)
     assert br.execute(_al_emri()).ok is True
     assert gorulen["usd"] == 10.0
@@ -1216,17 +1229,22 @@ def test_live_al_tx_zincirde_basarisiz_kayit_yok(data_dir, monkeypatch):
     assert _wal_kayitlari(data_dir) == []
 
 
-def test_live_al_dolum_yok_tx_durumu_belirsiz_quote_fallback(data_dir, monkeypatch):
-    # tx durumu okunamiyorsa eski davranis korunur: quote miktari kaydedilir
-    # (para cikmis olabilir; kayitsiz birakmak CASHCOW yetimini uretir)
+def test_live_al_dolum_yok_tx_durumu_belirsiz_uzlastiriciya(data_dir, monkeypatch):
+    """25 Tem: durum belirsizse ne quote-hayali (eski) ne kayitsiz-CASHCOW;
+    belirsiz-uzlastirici devralir (kilit + zincir mutabakati)."""
     br = _live_broker(data_dir, monkeypatch)
     _swap_yakala(monkeypatch)
+    monkeypatch.setattr(broker.LiveExecBroker, "_belirsiz_thread_baslat",
+                        lambda self: None)
     monkeypatch.setattr(broker, "_zincir_dolum", lambda *a, **k: None)
     monkeypatch.setattr(broker, "_zincir_imza_durumu", lambda http, sig: None)
     fill = br.execute(_al_emri())
-    assert fill.ok is True
-    assert fill.miktar_token == pytest.approx(5.0)  # quote: 5e9 raw @ dec 9
-    assert len(_wal_kayitlari(data_dir)) == 1
+    assert fill.ok is False and fill.neden == "islem_belirsiz"
+    assert br._belirsiz_kilit is True
+    assert br._belirsiz_bekleyen["sig"] == "SIG"
+    assert len(_wal_kayitlari(data_dir)) == 0       # kayit yok, WAL yok
+    # sonraki alim kilide takilir (uzlastirici cozene kadar)
+    assert br.execute(_al_emri()).neden == "belirsiz_kilit"
 
 
 def test_belirsiz_uzlastirici_gerceklesen_dolum_wal_yazilir(data_dir, monkeypatch):

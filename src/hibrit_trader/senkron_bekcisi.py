@@ -139,6 +139,177 @@ def kasa_mutabakat(state: dict) -> None:
     _kasa_son_fark = fark
 
 
+# ---- Derin mutabakat (25 Tem, CASHCOW yonu): WAL<->defter + yetim tarama
+DERIN_PERIYOT_SEC = float(os.getenv("SENKRON_DERIN_SN", "600"))
+WAL_OLGUNLUK_SEC = float(os.getenv("SENKRON_WAL_OLGUNLUK", "180"))
+WSOL = "So11111111111111111111111111111111111111112"
+TOKEN22_PROG = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+_derin_son = 0.0
+_yetim_supheli: dict[str, float] = {}
+
+
+def _gorulen_yukle(ad: str) -> dict:
+    try:
+        return json.loads((DATA / ad).read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _gorulen_kaydet(ad: str, d: dict) -> None:
+    try:
+        tmp = DATA / (ad + ".tmp")
+        tmp.write_text(json.dumps(d))
+        os.replace(tmp, DATA / ad)
+    except OSError:
+        log.warning("SENKRON: %s kaydedilemedi", ad)
+
+
+GIRIS_ES_TOLERANS_SEC = 600.0
+
+
+def _defter_izleri(canli_motor: str,
+                   state: dict) -> tuple[set, set, list]:
+    """(tx kumesi, mint kumesi, giris listesi[(token, giris_ts)]).
+
+    Trade satirlari tx tasimaz (dogrulandi 25 Tem); WAL eslesmesi bu
+    yuzden tx VEYA token+giris-zamani yakinligi ile yapilir. Yetim
+    tanimi: cuzdanda var ama bu izlerin HICBIRINDE yok (toz dogal
+    olarak dislanir: bir kez ticareti yapilan mint iz birakir)."""
+    txler, mintler, girisler = set(), set(), []
+    for p in state.get("positions", []) or []:
+        if p.get("tx_al"):
+            txler.add(p["tx_al"])
+        tok = p.get("token_address")
+        if tok:
+            mintler.add(tok)
+            girisler.append((tok, float(p.get("opened_ts") or 0)))
+    yol = DATA / f"{canli_motor}_trades.jsonl"
+    try:
+        for ln in open(yol):
+            if not ln.strip():
+                continue
+            try:
+                t = json.loads(ln)
+            except ValueError:
+                continue
+            if t.get("type"):
+                continue
+            if t.get("tx_al"):
+                txler.add(t["tx_al"])
+            tok = t.get("token_address")
+            if tok:
+                mintler.add(tok)
+                ts = float(t.get("ts") or 0)
+                girisler.append(
+                    (tok, ts - float(t.get("hold_sec") or 0)))
+    except OSError:
+        pass
+    return txler, mintler, girisler
+
+
+def wal_defter_mutabakat(canli_motor: str, state: dict) -> None:
+    """WAL'daki her 'al' dolumu WAL_OLGUNLUK_SEC sonra defterde iz
+    birakmis olmali; birakmadiysa CASHCOW sinifi persist kaybi demektir."""
+    txler, _, girisler = _defter_izleri(canli_motor, state)
+    gorulen = _gorulen_yukle("senkron_wal_gorulen.json")
+    simdi = time.time()
+    degisti = False
+    try:
+        fh = open(DATA / "canli_fills.jsonl")
+    except OSError:
+        return
+    with fh:
+        for ln in fh:
+            if not ln.strip():
+                continue
+            try:
+                t = json.loads(ln)
+            except ValueError:
+                continue
+            if t.get("yon") not in ("al", "alis"):
+                continue
+            tx = t.get("tx") or t.get("tx_al")
+            ts = float(t.get("ts") or 0)
+            if not tx or tx in gorulen or simdi - ts < WAL_OLGUNLUK_SEC:
+                continue
+            tok = t.get("token_address")
+            zaman_esi = any(
+                g_tok == tok and abs(g_ts - ts) <= GIRIS_ES_TOLERANS_SEC
+                for g_tok, g_ts in girisler)
+            if tx not in txler and not zaman_esi:
+                from hibrit_trader.uyari_notify import kritik_uyari
+                kritik_uyari("[CANLI] WAL MUTABAKAT", f"wal:{tx[:12]}",
+                             f"zincirde dolum var, defterde IZ YOK "
+                             f"(CASHCOW sinifi): {t.get('pair') or ''} "
+                             f"mint {(t.get('token_address') or '?')[:8]} "
+                             f"tx {tx[:12]}")
+            gorulen[tx] = simdi          # cozulen de tekrar taranmaz
+            degisti = True
+    if degisti:
+        _gorulen_kaydet("senkron_wal_gorulen.json", gorulen)
+
+
+def _cuzdan_tum_mintler() -> dict[str, float] | None:
+    mintler: dict[str, float] = {}
+    for prog in (TOKEN_PROG, TOKEN22_PROG):
+        try:
+            r = _rpc("getTokenAccountsByOwner",
+                     [CUZDAN, {"programId": prog},
+                      {"encoding": "jsonParsed"}])
+        except Exception as e:  # noqa: BLE001
+            log.warning("SENKRON yetim tarama RPC hatasi: %r", e)
+            return None
+        for a in (r.get("result", {}).get("value", []) or []):
+            try:
+                info = a["account"]["data"]["parsed"]["info"]
+                ui = float(info["tokenAmount"].get("uiAmount") or 0)
+                if ui > 0:
+                    mintler[info["mint"]] = ui
+            except (KeyError, TypeError, ValueError):
+                continue
+    return mintler
+
+
+def yetim_token_tarama(canli_motor: str, state: dict) -> None:
+    """Cuzdanda olup defterde HIC iz birakmamis mint = yetim (17 Tem
+    CASHCOW vakasi: basarili alim + persist kaybi). Iki-tur teyit +
+    kalici gorulen kaydi (restart sonrasi tekrar alarm yok)."""
+    mintler = _cuzdan_tum_mintler()
+    if mintler is None:
+        return
+    _, defter_mintler, _ = _defter_izleri(canli_motor, state)
+    gorulen = _gorulen_yukle("senkron_yetim_gorulen.json")
+    simdi = time.time()
+    degisti = False
+    for mint, ui in mintler.items():
+        if mint == WSOL or mint in defter_mintler or mint in gorulen:
+            continue
+        if mint not in _yetim_supheli:
+            _yetim_supheli[mint] = simdi      # ilk tur: teyit bekle
+            continue
+        from hibrit_trader.uyari_notify import kritik_uyari
+        kritik_uyari("[CANLI] YETIM TOKEN", f"yetim:{mint[:12]}",
+                     f"cuzdanda {ui:.4g} adet var, defterde HIC iz yok "
+                     f"(CASHCOW sinifi, WAL/persist kaybi?): mint {mint}")
+        gorulen[mint] = simdi
+        _yetim_supheli.pop(mint, None)
+        degisti = True
+    for mint in list(_yetim_supheli):
+        if mint not in mintler or mint in gorulen:
+            _yetim_supheli.pop(mint, None)
+    if degisti:
+        _gorulen_kaydet("senkron_yetim_gorulen.json", gorulen)
+
+
+def derin_mutabakat(canli_motor: str, state: dict) -> None:
+    global _derin_son
+    if time.time() - _derin_son < DERIN_PERIYOT_SEC:
+        return
+    _derin_son = time.time()
+    wal_defter_mutabakat(canli_motor, state)
+    yetim_token_tarama(canli_motor, state)
+
+
 def check_once() -> None:
     # 24 Tem: 10. motor mimarisi: canli pozisyonlar canli_state.json'da.
     # (Eski CANLI_MOTOR env'i v7 varsayip YANLIS dosyayi izliyordu.)
@@ -186,6 +357,7 @@ def check_once() -> None:
         if key not in su_tur_supheli:
             _supheli.pop(key, None)
     kasa_mutabakat(s)
+    derin_mutabakat(canli_motor, s)
 
 
 def run_forever() -> None:

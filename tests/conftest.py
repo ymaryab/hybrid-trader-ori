@@ -8,6 +8,8 @@ import pytest
 
 os.environ.setdefault("HIBRIT_BRAIN_AUTO", "0")
 os.environ.setdefault("HIBRIT_BRAIN_ENABLED", "0")
+# 25 Tem: alim dolum-okunamadi tekrar dongusu testlerde beklemesin
+os.environ.setdefault("BROKER_OKUNAMADI_BEKLE_SN", "0")
 
 
 @pytest.fixture(autouse=True)

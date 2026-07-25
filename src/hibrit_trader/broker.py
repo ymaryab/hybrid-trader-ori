@@ -145,6 +145,31 @@ def _belirsiz_cap_sec() -> float:
         return 600.0
 
 
+OKUNAMADI_DENEME = int(os.getenv("BROKER_OKUNAMADI_DENEME", "3"))
+OKUNAMADI_BEKLE_SN = float(os.getenv("BROKER_OKUNAMADI_BEKLE_SN", "5"))
+
+
+def _alim_kayit_karari(durum_tx: str | None, gercek: float | None,
+                       quote: float) -> tuple[str, float]:
+    """Alim dolumu okunamadiginda kayit karari (25 Tem sertlestirme).
+
+    Donen: ("kayit", miktar) | ("basarisiz", 0) | ("belirsiz", 0).
+    - zincir dolumu okunduysa her zaman o (zincir gercegi)
+    - tx zincirde HATALI: kayit yok (20 Tem holyshit vakasi)
+    - tx ONAYLI ama dolum okunamadi: quote fallback (eski davranis)
+    - tx BULUNAMADI veya durum sorgusu hatali: BELIRSIZ. Eski davranis
+      quote yazip hayali poz riskiydi; kayitsiz birakmak da CASHCOW
+      yetimi uretirdi. Dogru yol mevcut belirsiz-uzlastirici: kilit +
+      150sn/3-sorgu zincir mutabakati, gerceklesirse pozisyon devri."""
+    if gercek is not None and gercek > 0:
+        return "kayit", gercek
+    if durum_tx == "hatali":
+        return "basarisiz", 0.0
+    if durum_tx == "onaylandi":
+        return "kayit", quote
+    return "belirsiz", 0.0
+
+
 def _satis_miktari(kayit: float, zincir: float | None) -> float | None:
     """Satilacak miktar karari. None donerse satis reddedilmeli (zincirde
     bakiye yok, manuel islem suphesi). RPC okunamadiysa kayit kullanilir
@@ -616,11 +641,25 @@ class LiveExecBroker(DryrunExecBroker):
                                     gercek, miktar_quote, gercek - miktar_quote)
                     miktar_token = gercek
                 else:
-                    # 20 Tem holyshit vakasi: tx zincirde finalized+Err iken
-                    # quote fallback hayali pozisyon yaziyordu. Swap atomik;
-                    # tx basarisizsa para cikmadi (yalniz fee), kayit yok.
-                    durum_tx = _zincir_imza_durumu(self._http, res["signature"])
-                    if durum_tx == "hatali":
+                    # 20 Tem holyshit + 25 Tem sertlestirme: durum/dolum
+                    # netlesene kadar kisa tekrar (indeks gecikmesi tipik);
+                    # nihai karar _alim_kayit_karari'nda (saf, testli)
+                    durum_tx = None
+                    for _deneme in range(OKUNAMADI_DENEME):
+                        durum_tx = _zincir_imza_durumu(self._http,
+                                                       res["signature"])
+                        if durum_tx == "hatali":
+                            break
+                        if durum_tx == "onaylandi":
+                            gercek = _zincir_dolum(
+                                self._http, res["signature"],
+                                str(keypair.pubkey()), order.token_address)
+                            if gercek is not None and gercek > 0:
+                                break
+                        time.sleep(OKUNAMADI_BEKLE_SN)
+                    karar, miktar_token = _alim_kayit_karari(
+                        durum_tx, gercek, miktar_quote)
+                    if karar == "basarisiz":
                         gecikme_ms = round((time.monotonic() - t0) * 1000, 1)
                         log.error("BROKER LIVE %s al: tx zincirde BASARISIZ, "
                                   "kayit yazilmiyor (tx %s)", order.engine,
@@ -628,9 +667,25 @@ class LiveExecBroker(DryrunExecBroker):
                         return ExecFill(ok=False,
                                         neden="tx_zincirde_basarisiz",
                                         gecikme_ms=gecikme_ms)
-                    log.warning("BROKER LIVE dolum zincirden okunamadi, "
-                                "quote miktari kaydedildi (%.6g)", miktar_quote)
-                    miktar_token = miktar_quote
+                    if karar == "belirsiz":
+                        # 25 Tem: quote-fallback hayali pozu da, kayitsiz
+                        # birakmanin CASHCOW'u da yerine mevcut uzlastirici
+                        gecikme_ms = round((time.monotonic() - t0) * 1000, 1)
+                        self._belirsiz_kilit = True
+                        self._belirsiz_izle(order.engine, res["signature"],
+                                            order.token_address, usd_exec,
+                                            str(keypair.pubkey()))
+                        log.critical("BROKER live BELIRSIZ DOLUM %s al: "
+                                     "durum=%s; kilit kapali, zincir "
+                                     "mutabakati baslatildi (tx %s)",
+                                     order.engine, durum_tx,
+                                     res["signature"])
+                        return ExecFill(ok=False, neden="islem_belirsiz",
+                                        gecikme_ms=gecikme_ms)
+                    if miktar_token == miktar_quote:
+                        log.warning("BROKER LIVE dolum zincirden okunamadi, "
+                                    "quote miktari kaydedildi (%.6g)",
+                                    miktar_quote)
                 fiyat = res["cost_usd"] / miktar_token if miktar_token > 0 else 0.0
             else:
                 zincir = _zincir_token_bakiye(self._http, str(keypair.pubkey()),
