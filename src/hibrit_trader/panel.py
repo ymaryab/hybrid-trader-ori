@@ -1015,6 +1015,52 @@ def api_r2_equity(minutes: int = Query(0, ge=0)) -> dict:
     return _equity_series("r2", minutes)
 
 
+_EDGE_OZET_CACHE: dict = {}
+
+
+@app.get("/api/edge-ozet")
+def api_edge_ozet() -> dict:
+    """Edge zinciri ozet rozeti (25 Tem): gece zincirinin urettigi
+    JSON'lardan hafif okuma; mtime degismedikce disk okunmaz."""
+    data_dir = Path(os.getenv("MOMENTUM_DATA_DIR", "data"))
+    out = {}
+    for anahtar, dosya, alanlar in (
+            ("sadakat", "sadakat_rapor.json",
+             ("kaynak", "replay_n", "kapsam_orani", "temiz_etiket_uyum",
+              "temiz_medyan_mutlak_fark", "uretim_ts")),
+            ("edge_anlik", "edge_rapor_anlik.json", None),
+            ("karne", "kural_karnesi.json", None)):
+        p = data_dir / dosya
+        try:
+            mt = p.stat().st_mtime
+        except OSError:
+            out[anahtar] = None
+            continue
+        onbellek = _EDGE_OZET_CACHE.get(anahtar)
+        if onbellek and onbellek[0] == mt:
+            out[anahtar] = onbellek[1]
+            continue
+        try:
+            ham = json.loads(p.read_text())
+        except (OSError, ValueError):
+            out[anahtar] = None
+            continue
+        if anahtar == "edge_anlik":
+            deger = {"golge": ham.get("golge"),
+                     "tp2_n": ((ham.get("arsiv_edge") or {})
+                               .get("TP2") or {}).get("n"),
+                     "uretim_ts": ham.get("uretim_ts")}
+        elif anahtar == "karne":
+            toplamlar = {et: m.get("TOPLAM", {}).get("uyum")
+                         for et, m in (ham.get("karne") or {}).items()}
+            deger = {"uyumlar": toplamlar, "uretim_ts": ham.get("uretim_ts")}
+        else:
+            deger = {k: ham.get(k) for k in alanlar}
+        _EDGE_OZET_CACHE[anahtar] = (mt, deger)
+        out[anahtar] = deger
+    return out
+
+
 @app.get("/api/yz/equity")
 def api_yz_equity(minutes: int = Query(0, ge=0)) -> dict:
     return _equity_series("yz", minutes)
@@ -1917,6 +1963,7 @@ _MOMENTUM_HTML = """<!doctype html>
   <span id="feedBadge" class="badge">feed: -</span>
   <span id="rejimBadge" class="badge">rejim sol_h1: -</span>
   <span id="taramaBadge" class="badge">tarama: -</span>
+  <span id="edgeBadge" class="badge" title="Edge zinciri: sadakat = gercek~replay etiket uyumu (temiz kume); golge = edge-zinciri v1 ile mevcut secici karar uyumu. Kaynak: gece zinciri JSON'lari.">edge: -</span>
   <button id="otonomBtn" class="badge" style="cursor:pointer;font-family:monospace" title="Otonom mod: acikken son penceredeki kazanan motora otomatik gecis (tasfiye + kaynak swap). Kapali: kaynak sabit.">otonom: -</button>
   <button id="canliOnayBtn" class="badge" style="cursor:pointer;font-family:monospace" title="Acil fren (LIVE_ONAY dosyasi): kapatinca satislar DAHIL tum canli emirler durur">canlı: -</button>
   <button id="canliSalterBtn" class="badge" style="cursor:pointer;font-family:monospace" title="Ana salter (CANLI_DUR dosyasi): kapali konumda yeni canli giris yok, cikislar calisir">şalter: -</button>
@@ -2834,6 +2881,17 @@ function eqSyncButtons(){
 }
 eqSyncButtons();
 chipRender(); filoTick(); setInterval(filoTick,5000);
+async function edgeOzet(){
+  try{
+    const r=await fetch("/api/edge-ozet"); const d=await r.json();
+    const b=document.getElementById("edgeBadge"); if(!b)return;
+    const s=d.sadakat||{}, g=(d.edge_anlik||{}).golge||{};
+    const sd=s.temiz_etiket_uyum!=null?Math.round(s.temiz_etiket_uyum*100)+"%":"-";
+    const gl=g.uyum_orani!=null?Math.round(g.uyum_orani*100)+"%":"-";
+    b.textContent="edge: sadakat "+sd+" · gölge "+gl;
+  }catch(e){}
+}
+edgeOzet(); setInterval(edgeOzet,60000);
 </script></body></html>"""
 
 
