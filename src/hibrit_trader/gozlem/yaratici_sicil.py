@@ -27,12 +27,36 @@ import base64
 import glob
 import io
 import json
+import os
 import subprocess
 import time
+import urllib.request
 from collections import defaultdict
 from pathlib import Path
 
 from .lp_kilit import _b58
+
+# tx-fallback (25 Tem): butce satiri docs/sprint2_rpc_butcesi.md'de ONCE
+# eklendi. Ayristirilamayan LaunchObserved imzalari gecelik kosuda
+# getTransaction ile tamamlanir; imza basina KALICI cache (negatif dahil),
+# gunluk tavan SICIL_TX_TAVAN, ag hatasi cache'LENMEZ (ertesi gece dener).
+TX_TAVAN = int(os.getenv("SICIL_TX_TAVAN", "500"))
+
+
+def tx_loglari(sig: str, url: str, timeout: float = 8.0) -> list[str]:
+    """getTransaction -> meta.logMessages (tam loglar; WSS kesiklerini
+    tamamlar). Ag/parse hatasi raise eder (cagiran cache'lemez)."""
+    istek = json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": "getTransaction",
+        "params": [sig, {"maxSupportedTransactionVersion": 0,
+                         "encoding": "json"}]}).encode()
+    r = urllib.request.urlopen(
+        urllib.request.Request(url, istek,
+                               {"Content-Type": "application/json"}),
+        timeout=timeout)
+    y = json.loads(r.read())
+    return (((y.get("result") or {}).get("meta") or {})
+            .get("logMessages")) or []
 
 
 def create_ayristir(logs: list[str]) -> dict | None:
@@ -84,10 +108,46 @@ def _oku(yol):
     fh.close()
 
 
-def sicil_uret(veri: Path = Path("data")) -> dict:
+def _tx_fallback(basarisiz: list[tuple[str, float]], veri: Path,
+                 tx_getir=None) -> tuple[dict, dict]:
+    """Ayristirilamayan imzalari kalici cache + gunluk tavanla tamamla.
+    tx_getir(sig) -> logs (test enjeksiyonu; None = gercek RPC)."""
+    cache_yol = veri / "gozlem" / "create_tx_cache.json"
+    try:
+        cache = json.loads(cache_yol.read_text())
+    except (OSError, ValueError):
+        cache = {}
+    if tx_getir is None:
+        from .konsantrasyon import URLS
+        url = URLS[0] if URLS else None
+        if url is None:
+            return cache, {"fetch_n": 0, "hata_n": 0, "neden": "url_yok"}
+        tx_getir = lambda s: tx_loglari(s, url)  # noqa: E731
+    fetch_n = hata_n = 0
+    for sig, _ts in sorted(basarisiz, key=lambda x: -x[1]):  # yeni once
+        if sig in cache or fetch_n >= TX_TAVAN:
+            continue
+        try:
+            logs = tx_getir(sig)
+        except Exception:          # ag hatasi: cache'leme, ertesi gece
+            hata_n += 1
+            if hata_n >= 10:       # uc arizali: geceyi bosa harcama
+                break
+            continue
+        fetch_n += 1
+        cache[sig] = create_ayristir(logs)     # None da KALICI yazilir
+        time.sleep(0.15)
+    tmp = cache_yol.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cache))
+    os.replace(tmp, cache_yol)
+    return cache, {"fetch_n": fetch_n, "hata_n": hata_n}
+
+
+def sicil_uret(veri: Path = Path("data"), tx_getir=None) -> dict:
     # 1) lansmanlar: mint -> (yaratici, dogum_ts)
     lansman = {}
     atlanan = 0
+    basarisiz: list[tuple[str, float]] = []
     for yol in sorted(glob.glob(str(veri / "gozlem/events/*/*.sayim.jsonl*"))):
         for e in _oku(yol):
             if e.get("kind") != "LaunchObserved":
@@ -95,9 +155,22 @@ def sicil_uret(veri: Path = Path("data")) -> dict:
             r = create_ayristir((e.get("payload") or {}).get("logs") or [])
             if r is None:
                 atlanan += 1
+                if e.get("sig"):
+                    basarisiz.append((e["sig"], e["ts_ms"] / 1000))
                 continue
             lansman.setdefault(r["mint"],
                                (r["yaratici"], e["ts_ms"] / 1000))
+    # 1b) tx-fallback: cache + gunluk tavan; kurtarilanlar birlesir
+    kurtarilan = 0
+    fb_ozet = {"fetch_n": 0, "hata_n": 0}
+    if basarisiz:
+        cache, fb_ozet = _tx_fallback(basarisiz, veri, tx_getir)
+        for sig, ts in basarisiz:
+            r = cache.get(sig)
+            if r and r.get("mint"):
+                if r["mint"] not in lansman:
+                    kurtarilan += 1
+                lansman.setdefault(r["mint"], (r["yaratici"], ts))
     # 2) EKG bolumleri: mint -> (ath_pct, yasam_dk)
     ekg = {}
     for ln in open(veri / "kosucu_ekg.jsonl"):
@@ -153,6 +226,9 @@ def sicil_uret(veri: Path = Path("data")) -> dict:
         }
     ozet = {"uretim_ts": time.time(), "yaratici_n": len(cikti),
             "lansman_n": len(lansman), "ayristirilamayan": atlanan,
+            "tx_kurtarilan": kurtarilan,
+            "tx_fetch_n": fb_ozet.get("fetch_n", 0),
+            "tx_hata_n": fb_ozet.get("hata_n", 0),
             "ekg_eslesen": sum(1 for m in lansman if m in ekg)}
     (veri / "yaratici_sicili.json").write_text(
         json.dumps({"ozet": ozet, "sicil": cikti}))

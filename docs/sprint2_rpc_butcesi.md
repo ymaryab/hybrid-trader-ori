@@ -24,6 +24,19 @@
 
 **Sonuc: 7.550/gun = 226.500/ay = butcenin %23'u; tavana 3.3x, limite 4.4x pay var.**
 
+## Ek satir (25 Tem): yaratici sicili tx-fallback
+- (1) getTransaction, ~5 kredi/istek (Helius standart cagri).
+- (2) Tetik: gecelik sicil uretiminde "Program data:" ayristirilamayan
+  LaunchObserved imzalari (fiili ~%40 lansman; yalniz YENI basarisizlar,
+  cache'liler bedava). Tavan dolana kadar en yeni imzalardan geriye.
+- (3) Cache: imza basina KALICI (data/gozlem/create_tx_cache.json);
+  negatif sonuc da KALICI yazilir (ayni imza iki kez sorgulanmaz).
+- (4) Gunluk TAVAN: SICIL_TX_TAVAN=500 istek (~2.500 kredi); asim
+  sayilarak birakilir, kalan imzalar ertesi geceye kalir.
+- (5) Toplama etkisi: 7.550 -> ~10.050/gun = butcenin %30'u; tavan
+  25.000/gun icinde. Hiz: gecelik seri, 0.15 sn ara -> ~6.7/sn tepe,
+  gunduz sensorleriyle CAKISMAZ (04:17 kosusu).
+
 ## Hiz siniri kaniti (10 istek/sn)
 - Konsantrasyon: 1 istek / >=10 sn (seri, tekli kuyruk) -> 0.1/sn
 - LP kilit: terfi olayina bagli, seri, >=2 sn ara -> tepe 0.5/sn (nadir)
