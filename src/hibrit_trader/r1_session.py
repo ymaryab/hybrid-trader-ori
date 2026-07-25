@@ -504,12 +504,22 @@ class R1Engine:
         # R1 Runner Catcher (18 Tem karari): rejim + BTC gate DEVRE DISI.
         # X-yapan tokenlar kendi katalizoruyle hareket eder (SOL/BTC bagimsiz).
         # Kendi korumasi var: felaket -%15 + grace stop -%5 + timeout 120dk.
-        # sol_h1 log kaydi icin cekilir (fail-open: hata halinde None gecer).
+        # sol_h1 rejim kapisi + log icin cekilir; None halinde asagidaki
+        # fail-closed blok karar verir (25 Tem P0).
         try:
             sol_h1 = self._sol_chg_h1(client)
         except Exception:
             sol_h1 = None
-        # SOL- rejim kapisi (21 Tem): fail-open (sol_h1 None ise gecer)
+        # SOL- rejim kapisi. 25 Tem P0: FAIL-CLOSED; kapi acikken veri
+        # yoksa giris yok (sol_chg_h1 10dk bayat toleransi tasir, None =
+        # uzun kesinti; eski fail-open negatif rejimde alim deligiydi)
+        if SOL_GIRIS_MIN > -999 and sol_h1 is None:
+            rejim_reject_kaydet(cands, "R1", None)
+            if not self._regime_logged:
+                self._regime_logged = True
+                log.warning("R1: SOL rejim verisi yok (fail-closed), "
+                            "yeni giris yok")
+            return
         if SOL_GIRIS_MIN > -999 and sol_h1 is not None and sol_h1 < SOL_GIRIS_MIN:
             rejim_reject_kaydet(cands, "R1", sol_h1)
             if not self._regime_logged:
