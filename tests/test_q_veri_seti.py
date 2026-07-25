@@ -43,6 +43,25 @@ def test_pumpswap_lp_alansiz():
     assert q["amm"] == "pumpswap" and "lp_top1_pay" not in q
 
 
+def test_yaratici_asof_sizintisiz():
+    """Tokenin kendi sonucu ve sonraki lansmanlar SAYILMAZ (Duzeltme 1)."""
+    lans = {"T0": ["C", 100.0],     # onceki: runner
+            "T1": ["C", 200.0],     # onceki: EKG'de yok (dead)
+            "HEDEF": ["C", 300.0],  # incelenen token (kendisi runner!)
+            "T3": ["C", 400.0]}     # SONRAKI: sayilmamali
+    ath = {"T0": 250.0, "HEDEF": 500.0, "T3": 999.0}
+    r = qvs.yaratici_asof("HEDEF", lans, ath)
+    assert r["lansman_n_asof"] == 2          # T0 + T1
+    assert r["runner_n_asof"] == 1           # yalniz T0
+    assert r["runner_var_asof"] == 1.0
+    assert r["dead_orani_asof"] == 0.5       # T1 izlenmedi
+    # ilk lansman: onceki yok -> runner_var None (bilinmiyor), bayrak True
+    r0 = qvs.yaratici_asof("T0", lans, ath)
+    assert r0["ilk_lansman_mi"] is True
+    assert r0["runner_var_asof"] is None
+    assert qvs.yaratici_asof("YOK", lans, ath) is None
+
+
 def test_ilk_olcum_kurali(tmp_path, monkeypatch):
     """Ayni token icin IKINCI holder olcumu yok sayilir (terfi ani)."""
     import json

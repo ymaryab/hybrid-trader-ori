@@ -112,6 +112,28 @@ def erken_q(ev: dict) -> dict:
             "kapsam": pl.get("kapsam")}
 
 
+def yaratici_asof(token: str, lansmanlar: dict, ath: dict) -> dict | None:
+    """SIZINTISIZ yaratici ozellikleri (on-kayit Duzeltme 1): yalniz bu
+    tokenin dogumundan ONCEKI lansmanlar sayilir; tokenin kendi sonucu
+    hesaba ASLA girmez. ath: mint -> ath_pct (EKG'de olanlar)."""
+    kayit = lansmanlar.get(token)
+    if kayit is None:
+        return None
+    yar, dogum_ts = kayit
+    onceki = [(m, ts) for m, (y, ts) in lansmanlar.items()
+              if y == yar and ts < dogum_ts and m != token]
+    runner_n = sum(1 for m, _ in onceki if ath.get(m, 0.0) >= 100.0)
+    izlenen_n = sum(1 for m, _ in onceki if m in ath)
+    return {"lansman_n_asof": len(onceki),
+            "izlenen_n_asof": izlenen_n,
+            "dead_orani_asof": (round(1 - izlenen_n / len(onceki), 3)
+                                if onceki else None),
+            "runner_n_asof": runner_n,
+            "runner_var_asof": (1.0 if runner_n > 0 else 0.0)
+                               if onceki else None,
+            "ilk_lansman_mi": not onceki}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--veri", default="data")
@@ -119,21 +141,21 @@ def main() -> None:
     veri = Path(a.veri)
 
     try:
-        yaratici_map = json.loads((veri / "yaratici_map.json").read_text())
-        sicil = json.loads(
-            (veri / "yaratici_sicili.json").read_text()).get("sicil") or {}
+        lansmanlar = json.loads(
+            (veri / "yaratici_lansmanlar.json").read_text())
     except (OSError, ValueError):
-        yaratici_map, sicil = {}, {}
+        lansmanlar = {}
 
     ilk = sensor_ilk_olcumler(veri)
     yollar = {y.token: y for y in YolArsivi(veri).yollar()}
+    ath_map = {t: y.ath_pct for t, y in yollar.items()}
 
     kapsam = Counter()
     satir_n = 0
     with open(veri / "q_veri_seti.jsonl", "w") as out:
         for tok in sorted(set(ilk) | set(yollar)):
             olc = ilk.get(tok) or {}
-            yar = sicil.get(yaratici_map.get(tok))
+            yar = yaratici_asof(tok, lansmanlar, ath_map)
             q = {
                 "holder": holder_q(olc["holder"]) if "holder" in olc else None,
                 "lp": lp_q(olc["lp"]) if "lp" in olc else None,
@@ -158,7 +180,7 @@ def main() -> None:
             "kapsam": dict(kapsam),
             "tam_q_ve_yol": sum(
                 1 for tok in set(ilk) & set(yollar)
-                if len(ilk[tok]) == 3 and yaratici_map.get(tok) in sicil)}
+                if len(ilk[tok]) == 3 and tok in lansmanlar)}
     print(json.dumps(ozet, indent=1))
 
 

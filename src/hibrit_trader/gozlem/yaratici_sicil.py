@@ -233,6 +233,10 @@ def sicil_uret(veri: Path = Path("data"), tx_getir=None) -> dict:
     (veri / "yaratici_sicili.json").write_text(
         json.dumps({"ozet": ozet, "sicil": cikti}))
     (veri / "yaratici_map.json").write_text(json.dumps(mint_map))
+    # as-of ozellik hesabi icin ham lansman listesi (25 Tem, sizinti
+    # duzeltmesi: q veri seti yalniz dogum-oncesi lansmanlari sayar)
+    (veri / "yaratici_lansmanlar.json").write_text(json.dumps(
+        {m: [yar, ts] for m, (yar, ts) in lansman.items()}))
     return ozet
 
 

@@ -30,15 +30,12 @@ OZELLIKLER = [
     ("erken.ort_yas_gun", lambda q: (q.get("erken") or {}).get("ort_yas_gun")),
     ("erken.medyan_yas_gun",
      lambda q: (q.get("erken") or {}).get("medyan_yas_gun")),
-    ("yaratici.runner_var",
-     lambda q: (None if not q.get("yaratici")
-                else float(q["yaratici"].get("runner_n", 0) > 0))),
-    ("yaratici.lansman_n",
-     lambda q: (q.get("yaratici") or {}).get("lansman_n")),
-    ("yaratici.dead_orani",
-     lambda q: (None if not q.get("yaratici") else
-                q["yaratici"].get("dead_born_n", 0)
-                / max(q["yaratici"].get("lansman_n", 0), 1))),
+    ("yaratici.runner_var_asof",
+     lambda q: (q.get("yaratici") or {}).get("runner_var_asof")),
+    ("yaratici.lansman_n_asof",
+     lambda q: (q.get("yaratici") or {}).get("lansman_n_asof")),
+    ("yaratici.dead_orani_asof",
+     lambda q: (q.get("yaratici") or {}).get("dead_orani_asof")),
     ("lp.pumpswap",
      lambda q: (None if not q.get("lp")
                 else float(q["lp"].get("amm") == "pumpswap"))),

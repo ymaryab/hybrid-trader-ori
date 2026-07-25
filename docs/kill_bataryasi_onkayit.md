@@ -22,9 +22,16 @@ temel nesne P(Path|q) — bkz docs/edge_mimari_iskeleti.md.)
 ## Sinanan ozellikler (sabit liste; ekleme = on-kayit ihlali)
   holder.top1_pay, holder.top5_pay, holder.top10_pay,
   erken.yeni_eski_orani, erken.ort_yas_gun, erken.medyan_yas_gun,
-  yaratici.runner_n (>0 ikili), yaratici.lansman_n,
-  yaratici.dead_born_n / max(lansman_n,1), lp.amm (pumpswap ikili),
-  lp.lp_top1_pay
+  yaratici.runner_var_asof (ikili), yaratici.lansman_n_asof,
+  yaratici.dead_orani_asof, lp.amm (pumpswap ikili), lp.lp_top1_pay
+
+### DUZELTME 1 (25 Tem, sinav ONCESI; gerekce kaydi)
+Ilk taslakta yaratici ozellikleri toplam sicilden geliyordu; DRY-RUN
+AUC=1.0 gosterdi ve kok neden SIZINTIYDI: sicil, tokenin KENDI
+sonucunu da sayiyor (runner token -> yaraticisinin runner_n'i >= 1).
+Duzeltme: yaratici ozellikleri AS-OF hesaplanir: yalniz bu tokenin
+dogumundan ONCEKI lansmanlar sayilir (leave-current-out zaten kapsam
+ici). Esikler ve diger tanimlar DEGISMEDI.
 
 ## Hedef etiket
 runner = yolun ATH'si >= +%100 (EKG tetik fiyatina gore; sicil ile
