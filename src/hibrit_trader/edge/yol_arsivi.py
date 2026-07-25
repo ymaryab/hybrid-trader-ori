@@ -1,16 +1,22 @@
 """Path Archive: ampirik yol olcusu uzerinde SALT-OKUR arayuz.
 
-Kaynak: data/kosucu_ekg.jsonl (EKG tick kayitlari; motor koduna dokunmaz,
-dosyayi yalniz okur). Piyasa modellenmez, uretilmez, tahmin edilmez:
-arsivdeki gercek yollar dagilimin kendisidir (ham-veri ilkesi).
+Iki kaynak, ayni Yol tipi:
+- YolArsivi: data/kosucu_ekg.jsonl (genis kapsam, SEYREK: islem cevresi
+  medyan tick araligi ~14 dk olculdu, 25 Tem sadakat raporu).
+- GozlemYolArsivi: gozlem anlik akisi Snapshot olaylari (R0 izlenen
+  tokenlar, ~15 sn kadans, 22 Tem'den beri): YOGUN ama dar kapsam.
+  Hizli politikalarin (TP2 vb) sadakati icin bu kaynak sarttir.
 
-Yol = tek tokenin zaman sirali (ts, fiyat) serisi + turev ozetler.
-Turevler diske YAZILMAZ; her sey okuma aninda hesaplanir.
+Piyasa modellenmez, uretilmez, tahmin edilmez: arsivdeki gercek yollar
+dagilimin kendisidir (ham-veri ilkesi). Turevler diske YAZILMAZ.
 """
 
 from __future__ import annotations
 
+import glob
+import io
 import json
+import subprocess
 from pathlib import Path
 
 
@@ -79,6 +85,68 @@ class YolArsivi:
     def yol(self, token: str) -> Yol | None:
         ticks = self._ham().get(token) or []
         return Yol(token, ticks) if len(ticks) >= self.min_tick else None
+
+    def sayim(self) -> dict:
+        ham = self._ham()
+        yeterli = sum(1 for t in ham.values() if len(t) >= self.min_tick)
+        return {"token_n": len(ham), "yeterli_n": yeterli,
+                "elenen_n": len(ham) - yeterli, "min_tick": self.min_tick}
+
+
+class GozlemYolArsivi:
+    """anlik/Snapshot olaylarindan yogun yollar. Salt okur.
+
+    gun_onek: yalniz bu tarih-oneklerine (YYYYMMDD) bakar; None = hepsi.
+    Ayni (token, ts) ciftinde son gorulen fiyat kazanir (idempotent).
+    """
+
+    def __init__(self, veri: Path = Path("data"), min_tick: int = 3,
+                 gun_onek: list[str] | None = None):
+        self.kok = Path(veri) / "gozlem" / "events"
+        self.min_tick = min_tick
+        self.gun_onek = gun_onek
+
+    def _dosyalar(self):
+        for yolad in sorted(glob.glob(str(self.kok / "*/*.anlik.jsonl*"))):
+            gun = Path(yolad).parent.name
+            if self.gun_onek is not None and gun not in self.gun_onek:
+                continue
+            yield yolad
+
+    def _ham(self) -> dict[str, list[tuple[float, float]]]:
+        seriler: dict[str, dict[float, float]] = {}
+        for yolad in self._dosyalar():
+            if yolad.endswith(".zst"):
+                p = subprocess.run(["zstd", "-dc", yolad],
+                                   capture_output=True, check=True)
+                fh = io.BytesIO(p.stdout)
+            else:
+                fh = open(yolad, "rb")
+            with fh:
+                for ln in fh:
+                    if b'"Snapshot"' not in ln:
+                        continue
+                    try:
+                        e = json.loads(ln)
+                    except ValueError:
+                        continue
+                    if e.get("kind") != "Snapshot":
+                        continue
+                    tok = e.get("token")
+                    try:
+                        fiyat = float((e.get("payload") or {})
+                                      .get("priceUsd") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    ts = e.get("ts_ms", 0) / 1000
+                    if tok and fiyat > 0 and ts > 0:
+                        seriler.setdefault(tok, {})[ts] = fiyat
+        return {t: sorted(d.items()) for t, d in seriler.items()}
+
+    def yollar(self):
+        for token, ticks in self._ham().items():
+            if len(ticks) >= self.min_tick:
+                yield Yol(token, ticks)
 
     def sayim(self) -> dict:
         ham = self._ham()

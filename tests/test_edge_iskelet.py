@@ -7,7 +7,7 @@ from hibrit_trader.edge.kosullama import TekKatman
 from hibrit_trader.edge.simulator import (degerlendir, runner_politikasi,
                                           tp_politikasi)
 from hibrit_trader.edge.tahsis import HepsiLidere
-from hibrit_trader.edge.yol_arsivi import Yol, YolArsivi
+from hibrit_trader.edge.yol_arsivi import GozlemYolArsivi, Yol, YolArsivi
 
 
 def _ekg_yaz(tmp_path, seriler):
@@ -65,6 +65,31 @@ def test_edge_motoru_tek_katman(tmp_path):
     assert e["katman"] == "hepsi" and e["n"] == 2
     assert e["kazanma_orani"] == 0.5
     assert e["cikislar"] == {"tp": 1, "seri_sonu": 1}
+
+
+def test_gozlem_yogun_arsiv(tmp_path):
+    gun = tmp_path / "gozlem" / "events" / "20260725"
+    gun.mkdir(parents=True)
+    with open(gun / "08.anlik.jsonl", "w") as fh:
+        for ts_ms, fiyat in ((1000, "1.0"), (16000, "1.05"),
+                             (31000, "1.10"), (16000, "1.06")):
+            fh.write(json.dumps({"kind": "Snapshot", "token": "TOK",
+                                 "ts_ms": ts_ms,
+                                 "payload": {"priceUsd": fiyat}}) + "\n")
+        fh.write(json.dumps({"kind": "MarketContext", "ts_ms": 5,
+                             "payload": {}}) + "\n")
+        fh.write(json.dumps({"kind": "Snapshot", "token": "TOK",
+                             "ts_ms": 40000,
+                             "payload": {"priceUsd": None}}) + "\n")
+    a = GozlemYolArsivi(tmp_path)
+    yol = next(a.yollar())
+    assert yol.token == "TOK"
+    assert len(yol.ticks) == 3                 # ayni ts son fiyatla tekil
+    assert yol.ticks[1] == (16.0, 1.06)        # son gorulen kazandi
+    assert a.sayim()["yeterli_n"] == 1
+    # gun filtresi: eslesmeyen onek bos doner
+    assert list(GozlemYolArsivi(tmp_path,
+                                gun_onek=["20260101"]).yollar()) == []
 
 
 def test_tahsis_hepsi_lidere():

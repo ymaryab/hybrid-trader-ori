@@ -30,7 +30,8 @@ from statistics import median
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from hibrit_trader.edge.simulator import degerlendir, tp_politikasi  # noqa: E402
-from hibrit_trader.edge.yol_arsivi import Yol, YolArsivi             # noqa: E402
+from hibrit_trader.edge.yol_arsivi import (GozlemYolArsivi, Yol,     # noqa: E402
+                                           YolArsivi)
 
 # Motor -> replay politikasi. yz: kural seti kesin (TP+2, felaket -20,
 # timeout 60). v7hizli: felaket -20 VARSAYIM (kod tabani paylasik).
@@ -79,6 +80,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--motor", default="yz")
     ap.add_argument("--gun", type=float, default=3.0)
+    ap.add_argument("--kaynak", choices=("ekg", "anlik"), default="ekg")
     ap.add_argument("--veri", default=os.getenv("MOMENTUM_DATA_DIR", "data"))
     a = ap.parse_args()
     veri = Path(a.veri)
@@ -100,7 +102,13 @@ def main() -> None:
             continue
         islemler.append(t)
 
-    arsiv = {y.token: y for y in YolArsivi(veri).yollar()}
+    if a.kaynak == "anlik":
+        gunler = sorted({time.strftime("%Y%m%d", time.gmtime(
+            time.time() - g * 86400)) for g in range(int(a.gun) + 2)})
+        kaynak_arsiv = GozlemYolArsivi(veri, gun_onek=gunler)
+    else:
+        kaynak_arsiv = YolArsivi(veri)
+    arsiv = {y.token: y for y in kaynak_arsiv.yollar()}
     ciftler = []
     kapsam_yok = 0
     for t in islemler:
@@ -119,6 +127,7 @@ def main() -> None:
                            == grup(t.get("exit_reason") or "")})
 
     rapor = {"uretim_ts": time.time(), "motor": a.motor,
+             "kaynak": a.kaynak,
              "politika": politika, "pencere_gun": a.gun,
              "islem_n": len(islemler), "kapsam_yok_n": kapsam_yok,
              "replay_n": len(ciftler)}
