@@ -11,6 +11,10 @@ LOG=data/edge_gece.log
   python3 scripts/kill_bataryasi.py | head -4 || echo "batarya HATA ($?)"
   python3 scripts/edge_rapor.py --saat 24 >/dev/null \
     && echo "edge_rapor OK" || echo "edge_rapor HATA ($?)"
+  python3 scripts/edge_rapor.py --saat 24 --kaynak anlik >/dev/null \
+    && echo "edge_rapor_anlik OK" || echo "edge_rapor_anlik HATA ($?)"
+  python3 scripts/sadakat_rapor.py --motor yz --gun 1 --kaynak anlik \
+    >/dev/null && echo "sadakat OK" || echo "sadakat HATA ($?)"
   python3 scripts/kural_karnesi.py --gun 7 >/dev/null \
     && echo "kural_karnesi OK" || echo "kural_karnesi HATA ($?)"
 } >> "$LOG" 2>&1

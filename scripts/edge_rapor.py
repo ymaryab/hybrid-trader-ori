@@ -26,7 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from hibrit_trader.edge.edge_motoru import EdgeMotoru          # noqa: E402
 from hibrit_trader.edge.simulator import (runner_politikasi,   # noqa: E402
                                           tp_politikasi)
-from hibrit_trader.edge.yol_arsivi import YolArsivi            # noqa: E402
+from hibrit_trader.edge.yol_arsivi import (GozlemYolArsivi,    # noqa: E402
+                                           YolArsivi)
 
 POLITIKALAR = {
     "TP2": tp_politikasi(2, 60),
@@ -75,10 +76,17 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--veri", default="data")
     ap.add_argument("--saat", type=float, default=24.0)
+    ap.add_argument("--kaynak", choices=("ekg", "anlik"), default="ekg")
     a = ap.parse_args()
     veri = Path(a.veri)
 
-    em = EdgeMotoru(PencereliArsiv(YolArsivi(veri), a.saat))
+    if a.kaynak == "anlik":
+        gunler = sorted({time.strftime("%Y%m%d", time.gmtime(
+            time.time() - g * 3600)) for g in range(int(a.saat) + 2)})
+        kaynak = GozlemYolArsivi(veri, gun_onek=gunler)
+    else:
+        kaynak = YolArsivi(veri)
+    em = EdgeMotoru(PencereliArsiv(kaynak, a.saat))
     tablo = {ad: em.edge(pol) for ad, pol in POLITIKALAR.items()}
 
     uyum = Counter()
@@ -97,6 +105,7 @@ def main() -> None:
                 "neden": pl.get("sapma_nedeni")})
     rapor = {
         "uretim_ts": time.time(), "pencere_saat": a.saat,
+        "kaynak": a.kaynak,
         "sadakat_notu": ("EKG dakika-cozunurluklu, tetik-kosullu; kayma/"
                          "ucret yok. Edge hatasi = kosullama + simulator "
                          "sadakati; ayri degerlendirin."),
@@ -109,7 +118,8 @@ def main() -> None:
                   "sapma_nedenleri": dict(sapmalar),
                   "son_sapmalar": son_sapmalar[-5:]},
     }
-    (veri / "edge_rapor.json").write_text(json.dumps(rapor, indent=1))
+    ad = "edge_rapor_anlik.json" if a.kaynak == "anlik" else "edge_rapor.json"
+    (veri / ad).write_text(json.dumps(rapor, indent=1))
     print(json.dumps(rapor, indent=1))
 
 
