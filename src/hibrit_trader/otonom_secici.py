@@ -286,6 +286,34 @@ def gecis_mutabakati(mevcut: str) -> dict | None:
     return payload
 
 
+def yetim_tasfiye_mutabakati() -> dict | None:
+    """Boot'ta diskte CANLI_TASFIYE varsa YETIMDIR: onu bekleyen secici
+    dongusu restart'ta oldu, tasfiyeyi tamamlayacak kimse yok. Dosya
+    silinir, olay + bildirim yazilir (24 Tem yetim vakasi: zamanlanmis
+    yanlis zorla-satis elle durdurulmustu; bu kalici fix, P0 madde 1)."""
+    from hibrit_trader.canli_session import TASFIYE_FILE
+    from hibrit_trader.killswitch import notify
+    yol = _data_dir() / TASFIYE_FILE
+    if not yol.exists():
+        return None
+    try:
+        icerik = json.loads(yol.read_text())
+    except (OSError, ValueError):
+        icerik = {"bozuk": True}
+    yol.unlink(missing_ok=True)
+    payload = {"switch_id": icerik.get("switch_id"),
+               "from": icerik.get("from"), "to": icerik.get("to"),
+               "zorla_ts": icerik.get("zorla_ts"),
+               "yetim_pid": icerik.get("pid"),
+               "zorla_gecmis_miydi": bool(
+                   icerik.get("zorla_ts")
+                   and time.time() >= float(icerik["zorla_ts"] or 0))}
+    olay_yaz("AutonomOrphanTasfiyeCleared", payload)
+    notify("[CANLI] OTONOM: yetim tasfiye temizlendi "
+           f"(switch {payload['switch_id']}), gecis iptal sayildi")
+    return payload
+
+
 def _salter_indir(neden: str) -> None:
     """Kural 3 eki (23 Tem kullanici karari): tum motorlar <=0 iken
     salter de iner (CANLI_DUR): yeni canli giris yok, cikislar surer."""
@@ -356,10 +384,12 @@ def kontrol_dongusu() -> None:
     gecmis_skorlar: dict[str, list] = {}
     mevcut = os.getenv("CANLI_KAYNAK_MOTOR", "r1").strip().lower()
     mut = gecis_mutabakati(mevcut)
+    yetim = yetim_tasfiye_mutabakati()
     d = durum_oku()
     olay_yaz("SelectorBoot", {
         "current_live_engine": mevcut, "durum": d,
         "mutabakat": None if mut is None else mut.get("switch_id"),
+        "yetim_tasfiye": None if yetim is None else yetim.get("switch_id"),
         "config": config_anlik(), "kaynaklar": kaynaklar})
     while True:
         time.sleep(KONTROL_SN)
@@ -457,9 +487,11 @@ def kontrol_dongusu() -> None:
             tasfiye = _data_dir() / TASFIYE_FILE
             bas = time.time()
             zorla_ts = bas + DOGAL_SN
+            # pid = sahiplik damgasi (25 Tem P0): restart sonrasi yeni
+            # surec bu dosyayi YETIM tanir, zorla satis ateslenmez
             tasfiye.write_text(json.dumps({
                 "switch_id": switch_id, "from": mevcut, "to": aday,
-                "zorla_ts": zorla_ts}))
+                "zorla_ts": zorla_ts, "bas_ts": bas, "pid": os.getpid()}))
             duz = False
             dogal_sonu_poz = None
             while time.time() - bas < DOGAL_SN + TASFIYE_SN:

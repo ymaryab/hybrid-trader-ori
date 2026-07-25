@@ -157,15 +157,23 @@ def tasfiye_talebi_var() -> bool:
 def tasfiye_zorla_aktif() -> bool:
     """Hibrit tasfiye fazi: dosyadaki zorla_ts gecilmisse pozisyonlar
     "otonom_tasfiye" ile ZORLA satilir; oncesinde dogal kurallar
-    (tp/fren/timeout) calismaya devam eder. Dosya parse edilemezse
-    guvenli taraf: zorla satis (eski format uyumu)."""
+    (tp/fren/timeout) calismaya devam eder.
+
+    YETIM KORUMASI (25 Tem P0, 24 Tem vakasi): dosyadaki pid bu surece
+    ait degilse tasfiyeyi bekleyen secici dongusu olmus demektir; zorla
+    satis ASLA ateslenmez (giris blogu tasfiye_talebi_var ile surer,
+    temizligi secici boot mutabakati yapar). Bozuk/eski format da yetim
+    sayilir: yanlis zorla satis geri alinamaz, giris blogu alinabilir."""
     p = _data_dir() / TASFIYE_FILE
     if not p.exists():
         return False
     try:
-        zorla_ts = float(json.loads(p.read_text()).get("zorla_ts") or 0)
+        d = json.loads(p.read_text())
+        zorla_ts = float(d.get("zorla_ts") or 0)
     except (OSError, ValueError, AttributeError):
-        return True
+        return False
+    if d.get("pid") != os.getpid():
+        return False
     return time.time() >= zorla_ts
 
 

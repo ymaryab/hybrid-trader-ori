@@ -125,19 +125,25 @@ def test_olay_omurgaya_yazilir_zarfli(tmp_path):
 
 def test_tasfiye_kancasi_hibrit(tmp_path):
     """Dogal fazda giris blogu var ama zorla satis yok; zorla_ts gecince
-    zorla satis; eski format (json degil) guvenli tarafta zorla sayilir."""
+    ZORLA yalniz SAHIP surecte (pid eslesir); pid'siz/bozuk dosya yetim
+    sayilir, zorla ateslemez (25 Tem P0, 24 Tem yetim vakasi)."""
+    import os as _os
+
     import hibrit_trader.canli_session as cs
     assert cs.tasfiye_talebi_var() is False
     assert cs.tasfiye_zorla_aktif() is False
     (tmp_path / cs.TASFIYE_FILE).write_text(json.dumps(
-        {"zorla_ts": time.time() + 300}))
+        {"zorla_ts": time.time() + 300, "pid": _os.getpid()}))
     assert cs.tasfiye_talebi_var() is True      # giris blogu hemen
     assert cs.tasfiye_zorla_aktif() is False    # dogal faz: zorlama yok
     (tmp_path / cs.TASFIYE_FILE).write_text(json.dumps(
-        {"zorla_ts": time.time() - 1}))
-    assert cs.tasfiye_zorla_aktif() is True     # sure doldu: zorla
+        {"zorla_ts": time.time() - 1, "pid": _os.getpid()}))
+    assert cs.tasfiye_zorla_aktif() is True     # sure doldu + sahibiz: zorla
+    (tmp_path / cs.TASFIYE_FILE).write_text(json.dumps(
+        {"zorla_ts": time.time() - 1}))         # pid yok = yetim
+    assert cs.tasfiye_zorla_aktif() is False
     (tmp_path / cs.TASFIYE_FILE).write_text("eski-format")
-    assert cs.tasfiye_zorla_aktif() is True     # parse edilemez: zorla
+    assert cs.tasfiye_zorla_aktif() is False    # bozuk = yetim, zorla yok
 
 
 def test_rejim_salteri(tmp_path):
