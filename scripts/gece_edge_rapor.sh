@@ -17,4 +17,6 @@ LOG=data/edge_gece.log
     >/dev/null && echo "sadakat OK" || echo "sadakat HATA ($?)"
   python3 scripts/kural_karnesi.py --gun 7 >/dev/null \
     && echo "kural_karnesi OK" || echo "kural_karnesi HATA ($?)"
+  python3 scripts/kacis_payi.py --motor yz --gun 1 >/dev/null \
+    && echo "kacis_payi OK" || echo "kacis_payi HATA ($?)"
 } >> "$LOG" 2>&1

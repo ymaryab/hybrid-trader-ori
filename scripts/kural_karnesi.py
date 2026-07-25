@@ -55,6 +55,12 @@ VAATLER = {
                     "vaad": "+40 kilit dolumu"},
     "runner_trail": {"tur": "mfe_yakalama",
                      "vaad": "kosucunun tepesinin cogunu getir"},
+    # betimsel: vaadi olmayan notr cikislar; uyum notu yok, istatistik var
+    "timeout": {"tur": "betimsel", "vaad": "(notr) sure doldu cikisi"},
+    "tp_partial": {"tur": "betimsel",
+                   "vaad": "(notr) kademeli kismi satis"},
+    "manuel_kapanis": {"tur": "betimsel",
+                       "vaad": "(notr) kullanici mudahalesi"},
 }
 
 
@@ -103,6 +109,8 @@ def hucre_ozeti(satirlar: list[dict], tanim: dict) -> dict:
         oz["mfe_yakalama_medyan"] = (round(median(oranlar), 3)
                                      if oranlar else None)
         oz["uyum"] = oz["mfe_yakalama_medyan"]
+    elif tur == "betimsel":
+        oz["uyum"] = None
     return oz
 
 
