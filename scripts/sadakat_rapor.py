@@ -63,8 +63,16 @@ def islem_replay(t: dict, arsiv_yol, politika: dict) -> dict | None:
         return None
     r = degerlendir(Yol(t.get("token_address") or "?",
                         [(giris_ts, giris_fiyat)] + sonraki), politika)
+    # COZUNURLUK RISKI: cikis karari, giristen uzun bosluk sonrasi ILK
+    # tick'te dustuyse tick arasi TP/stop dokunusu GORULEMEZ (kotumser
+    # yanlilik kaynagi). Bayrakla sayilir, duzeltilmeye CALISILMAZ.
+    ilk_tick_sn = sonraki[0][0] - giris_ts
+    riskli = (r["sure_dk"] <= (ilk_tick_sn / 60) + 0.01
+              and ilk_tick_sn > 120)
     return {"replay_pnl": r["pnl_pct"], "replay_cikis": r["cikis"],
-            "replay_sure_dk": r["sure_dk"], "tick_n": len(sonraki)}
+            "replay_sure_dk": r["sure_dk"], "tick_n": len(sonraki),
+            "ilk_tick_sn": round(ilk_tick_sn, 1),
+            "cozunurluk_riskli": riskli}
 
 
 def main() -> None:
@@ -116,7 +124,20 @@ def main() -> None:
              "replay_n": len(ciftler)}
     if ciftler:
         farklar = [c["fark"] for c in ciftler]
+        temiz = [c for c in ciftler if not c.get("cozunurluk_riskli")]
         rapor.update({
+            "cozunurluk_riskli_n": sum(
+                1 for c in ciftler if c.get("cozunurluk_riskli")),
+            "medyan_ilk_tick_sn": round(median(
+                c["ilk_tick_sn"] for c in ciftler), 1),
+            "temiz_n": len(temiz),
+            "temiz_medyan_mutlak_fark": round(median(
+                abs(c["fark"]) for c in temiz), 3) if temiz else None,
+            "temiz_ort_fark": round(sum(c["fark"] for c in temiz)
+                                    / len(temiz), 3) if temiz else None,
+            "temiz_etiket_uyum": round(sum(
+                1 for c in temiz if c["etiket_uyum"]) / len(temiz), 3)
+                if temiz else None,
             "kapsam_orani": round(len(ciftler) / len(islemler), 3),
             "etiket_uyum_orani": round(
                 sum(1 for c in ciftler if c["etiket_uyum"]) / len(ciftler), 3),
