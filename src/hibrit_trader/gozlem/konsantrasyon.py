@@ -60,7 +60,7 @@ class Konsantrasyon:
 
     async def _supply(self, mint: str):
         c = self._arz.get(mint)
-        if c and time.time() - c[0] < 3600:
+        if c and time.time() - c[0] < 86400:   # arz nadiren degisir: 24h cache (kredi tasarrufu)
             return c[1]
         r = await self._rpc("getTokenSupply", [mint])
         v = (r.get("result") or {}).get("value")
