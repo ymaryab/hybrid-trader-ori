@@ -86,6 +86,8 @@ async def calistir():
     musluk = Musluk(bus, veri, kok)
     from .konsantrasyon import Konsantrasyon
     konsantrasyon = Konsantrasyon(bus, onbellek)
+    from .lp_kilit import LpKilit
+    lp_kilit = LpKilit(bus, onbellek)
 
     await bus.yayinla("sistem", "ObserverStarted",
                       {"pid": os.getpid(), "wss": wss,
@@ -103,6 +105,7 @@ async def calistir():
         asyncio.create_task(anlik.mctx_dongusu(), name="mctx"),
         asyncio.create_task(musluk.calis(), name="musluk"),
         asyncio.create_task(konsantrasyon.calis(), name="konsantrasyon"),
+        asyncio.create_task(lp_kilit.calis(), name="lp_kilit"),
         asyncio.create_task(saglik(bus, sayac), name="saglik"),
     ]
 
