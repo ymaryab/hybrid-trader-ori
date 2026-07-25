@@ -84,6 +84,8 @@ async def calistir():
     izlenen = IzlenenKume(bus, onbellek, veri, swap_abone=swap_ws)
     anlik = Anlik(bus, onbellek, sayac)
     musluk = Musluk(bus, veri, kok)
+    from .konsantrasyon import Konsantrasyon
+    konsantrasyon = Konsantrasyon(bus, onbellek)
 
     await bus.yayinla("sistem", "ObserverStarted",
                       {"pid": os.getpid(), "wss": wss,
@@ -100,6 +102,7 @@ async def calistir():
         asyncio.create_task(anlik.snapshot_dongusu(), name="snapshot"),
         asyncio.create_task(anlik.mctx_dongusu(), name="mctx"),
         asyncio.create_task(musluk.calis(), name="musluk"),
+        asyncio.create_task(konsantrasyon.calis(), name="konsantrasyon"),
         asyncio.create_task(saglik(bus, sayac), name="saglik"),
     ]
 
