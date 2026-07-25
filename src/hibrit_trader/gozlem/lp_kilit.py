@@ -39,7 +39,7 @@ def _b58(b: bytes) -> str:
     while n:
         n, r = divmod(n, 58)
         s = _ABC[r] + s
-    return "1" * (len(b) - len(b.lstrip(b"\\0"))) + s
+    return "1" * (len(b) - len(b.lstrip(b"\x00"))) + s
 
 
 def v4_mintler(ham: bytes) -> dict:
