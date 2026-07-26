@@ -39,19 +39,26 @@ _HAM_IMZALAR = ("Instruction: Create", "Instruction: Migrate",
 
 
 class SayimR2:
-    def __init__(self, bus, sayac):
+    def __init__(self, bus, sayac, islem_kanca=None):
         self.bus = bus
         self.sayac = sayac
         self._puls_gorev = None
+        self.islem_kanca = islem_kanca   # K1: sayima uymayan trade'ler
 
     def on_ham(self, ham: str) -> bool:
         """json.loads oncesi ucuz metin filtresi: firehose'un tamamini
         ayristirmadan sayar, sadece dogum/mezuniyet adaylarini gecirir.
-        Kisa mesajlar (abonelik onaylari) her zaman gecer."""
+        Kisa mesajlar (abonelik onaylari) her zaman gecer. Sayima
+        uymayanlar K1 islem-akisi kancasina verilir (Sprint 6): veri
+        artik cope gitmez, sinirli kuyrukta agregata donusur."""
         if len(ham) < 300:
             return True
         self.sayac.r2_ham_mesaj += 1
-        return any(imza in ham for imza in _HAM_IMZALAR)
+        if any(imza in ham for imza in _HAM_IMZALAR):
+            return True
+        if self.islem_kanca is not None:
+            self.islem_kanca(ham)
+        return False
 
     async def isle(self, addr: str, etiket: str, params: dict) -> None:
         val = (params.get("result") or {}).get("value") or {}

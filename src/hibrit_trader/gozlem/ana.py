@@ -80,7 +80,9 @@ async def calistir():
 
     bus.karar = KararUretici(bus, onbellek, snap_getir=snap_getir)
 
-    sayim = SayimR2(bus, sayac)
+    from .islem_akisi import IslemAkisi
+    islem = IslemAkisi(bus, veri)
+    sayim = SayimR2(bus, sayac, islem_kanca=islem.on_ham)
     sayim_ws = WssAbone(wss, bus, "ws-sayim", sayim.isle,
                         on_ham=sayim.on_ham)
     sayim_ws.abonelik_ayarla({p: et for p, et in PROGRAMLAR.items()})
@@ -116,7 +118,10 @@ async def calistir():
         asyncio.create_task(konsantrasyon.calis(), name="konsantrasyon"),
         asyncio.create_task(lp_kilit.calis(), name="lp_kilit"),
         asyncio.create_task(erken_alici.calis(), name="erken_alici"),
+        asyncio.create_task(islem.worker(), name="islem_worker"),
+        asyncio.create_task(islem.flush_dongusu(), name="islem_flush"),
         asyncio.create_task(saglik(bus, sayac, nesne_sayimi=lambda: {
+            **islem.nesneler(),
             "son_snapshot": len(onbellek.son_snapshot),
             "izlenen": len(onbellek.izlenen),
             "ctx_uretilen": len(bus.karar._uretilen),
