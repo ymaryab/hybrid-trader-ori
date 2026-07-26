@@ -25,6 +25,8 @@ LOG=data/edge_gece.log
     && echo "calkalama OK" || echo "calkalama HATA ($?)"
   python3 scripts/golge_defter.py --saat 24 >/dev/null \
     && echo "golge_defter OK" || echo "golge_defter HATA ($?)"
+  python3 scripts/alpha_kapilari.py >/dev/null \
+    && echo "alpha_kapilari OK" || echo "alpha_kapilari HATA ($?)"
   python3 scripts/edge_replay_dogrula.py --saat 24 >/dev/null \
     && echo "edge_replay OK" || echo "edge_replay HATA ($?)"
   python3 scripts/sadakat_rapor.py --motor r2 --gun 1 --kaynak anlik \
