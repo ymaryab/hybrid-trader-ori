@@ -92,6 +92,59 @@ Katman 3 veto setine kanitla girer.
 4. Motor Card'in loglama-sozlesmesi hali (surumlu sema) ancak
    1-3'ten sonra, ayri karar.
 
+## Karar Yonetisimi (Decision Governance)
+
+**Statu:** MIMARININ DEGISMEZ YONETIM ILKELERI (26 Tem kullanici
+onayi). Yeni ozellik degildir; uc katmanin uzerindeki anayasal
+cercevedir. Durum vektoru metrikleri iki sinifa ayrilir:
+**Decision** (Edge karar fonksiyonunun okumasina izinli) ve
+**Observation** (yalniz gozlem/replay/analiz/rapor; Edge ASLA
+okuyamaz). Yeni her metrik VARSAYILAN olarak Observation dogar.
+Ayrim yapisal uygulanir: karar fonksiyonunun girdi semasi yalniz
+Decision alanlarini icerir, "okumama sozu" degil.
+
+### 1. Karar Butcesi (Decision Budget)
+
+Decision katmani sinirsiz buyuyemez. Karar fonksiyonunun sabit
+yapi butcesi vardir: 1 taban siralama + sinirli sayida veto
+(baslangic tavani: 5) + 1 boyut kanali. Yeni Decision metrigi
+eklenecekse ya butcede yer acilir (mevcut biri duser) ya da
+mevcut bir metrikten acikca guclu oldugu kanitlanir. Butce
+degisikligi kullanici karari gerektirir.
+
+### 2. Terfi / Geri Cagirma (Promotion / Demotion)
+
+Decision kalici kadro degildir. Observation metrikleri kanitla
+terfi eder; katkisini kaybeden Decision metrigi Observation'a
+geri dusurulur. Her Decision metriginin katkisi surekli olculur
+(gece zinciri); kaniti zayiflayan otomatik isaretlenir, dusurme
+kullanici onayiyla uygulanir. Sistem tek yonlu buyumez.
+
+### 3. Kanita Bagli Terfi (Evidence-Governed Promotion)
+
+Hicbir metrik yalniz istatistiksel anlamlilik gordugu icin
+Decision'a alinamaz. Terfi sureci ON-KAYITLIDIR ve mevcut Alpha
+Factory disiplinini kullanir: BH/FDR duzeltmesi, eslesitirilmis
+karsi-olgusal olcum, ornekleme-disi teyit. Coklu-karsilastirma
+tuzagina karsi terfi testleri de kapi protokolunun FDR havuzuna
+dahildir. Terfi HER ZAMAN (metrik + kanal + esik) uclusune
+verilir; kanal-bazlidir (veto olarak kanitlanan, siralama terimi
+olma hakki kazanmaz).
+
+### 4. Acil Mudahale Supabi (Emergency Override)
+
+Risk yonetimi gerektirirse kullanici karariyla gecici bir
+Decision kurali ANINDA uygulanabilir. Gecici kurallar acikca
+"gecici" isaretlenir ve belirlenen sure icinde kanit toplayip
+kalici terfi alir VEYA otomatik olarak Observation'a doner.
+Hicbir gecici kural sessizce kalici hale gelemez.
+
+Mevcut ornekler (bu ilke altinda kayitli gecici kurallar):
+- Runner canli yasagi (26 Tem, EDGE_CANLI_AILE_YASAK): kanit
+  dosyasi = GO raporlari (istikrar + zamanlama); karar kullanicida.
+- Token kara listesi (26 Tem, karar B): rug-imza vetosu; kalici
+  terfi icin ayni kapidan kanit gerekir.
+
 ## Reddedilenler (kayit)
 
 - Motor self-report saglik skoru: self-report yanlligi,
