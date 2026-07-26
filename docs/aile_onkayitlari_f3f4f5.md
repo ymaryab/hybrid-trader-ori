@@ -131,3 +131,14 @@ esigi gecmiyorsa bos dagitim ({}) secilir ve bu bir karar olarak
 loglanir/fiyatlanir. Mevcut karsiligi tahsis arayuzunun bos sozluk
 donmesi + salter mekanizmasidir; olgun halinde veto saatlerinin
 gerceklesen degeri (kacinilan zarar) duzenli rapor edilir.
+
+---
+## EK: ALPHA FACTORY on-veri kapilari (Sprint 3)
+
+### ECHO on-kaydi (26 Tem, analiz KOSULMADAN muhurlendi)
+Hipotez: yaraticinin kosucusundan (+%100) sonraki 24 saat icindeki
+lansmanlari taban orandan yuksek olasilikla kosucu olur.
+Metrik: RR = P(kosucu|maruz) / P(kosucu|maruz degil); pencere 24h ve
+esik +%100 SABIT (batarya tanimi). PASS: RR>=1.5 VE %95 CI alt>1.0.
+FAIL: CI ust<1.5. Aksi INCONCLUSIVE. Maruz grup n<20 -> INCONCLUSIVE.
+Evren siniri beyani: yalniz EKG-tetik evreni; genelleme iddiasi yok.
