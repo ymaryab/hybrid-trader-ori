@@ -80,12 +80,19 @@ class AnchorDecoder:
             sol = _u64(ham, k["sol_ofs"])
             if not (SOL_MIN_LAMPORT <= sol <= SOL_MAX_LAMPORT):
                 return None
+        if k.get("is_buy_ofs") is not None:      # olay-ici yon bayti
+            b = ham[k["is_buy_ofs"]]
+            if b not in (0, 1):
+                return None
+            is_buy = bool(b)
+        else:
+            is_buy = k.get("is_buy")
         cikti = {"sv": SCHEMA_VERSION, "tur": k["tur"], "disc": disc,
                  "mint": mint, "sol_lamport": sol,
                  "token_miktar": (_u64(ham, k["token_ofs"])
                                   if k.get("token_ofs") is not None
                                   else None),
-                 "is_buy": k.get("is_buy"),
+                 "is_buy": is_buy,
                  "user": (_b58(ham[k["user_ofs"]:k["user_ofs"] + 32])
                           if k.get("user_ofs") is not None else None)}
         return cikti
