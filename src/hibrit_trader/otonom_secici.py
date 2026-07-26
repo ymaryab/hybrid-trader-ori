@@ -286,15 +286,37 @@ def gecis_mutabakati(mevcut: str) -> dict | None:
     return payload
 
 
+_CEKIRDEK = None
+
+
 def _golge_olayla(skorlar: dict, mevcut: str, karar: str,
                   aday: str | None, eval_id: str | None) -> None:
-    """Edge zinciri GOLGE kiyasi (25 Tem HAT 2): ayni girdiler, sifir
-    etki; hata golgeyi oldurur, seciciyi ASLA."""
+    """Edge zinciri GOLGE kiyasi (25 Tem HAT 2; 26 Tem v2 cekirdek):
+    ayni girdiler, sifir etki; hata golgeyi oldurur, seciciyi ASLA.
+    Fallback merdiveni: cekirdek -> girdi_yok -> cekirdek_hata(legacy)."""
+    global _CEKIRDEK
     try:
+        from hibrit_trader.edge.cekirdek import Cekirdek
         from hibrit_trader.edge.golge import golge_degerlendir
-        golge = golge_degerlendir(skorlar, mevcut, karar, aday,
-                                  esik=POZITIF_ESIK)
-        olay_yaz("EdgeShadowEvaluated", {"eval_id": eval_id, **golge})
+        if _CEKIRDEK is None:
+            _CEKIRDEK = Cekirdek()
+        try:
+            v2 = _CEKIRDEK.karar(skorlar)
+            golge_aday = _CEKIRDEK.temsilci(skorlar)
+        except Exception as e:  # noqa: BLE001  (cekirdek_hata katmani)
+            v2 = {"surum": "v2", "katman": "cekirdek_hata",
+                  "aile": None, "dagilim": None, "guven": 0.0,
+                  "hata": str(e)[:120]}
+            golge_aday = aday if karar == "gecis" else (
+                mevcut if karar in ("kal", "cooldown", "firsat_yok",
+                                    "otonom_kapali") else None)
+        eski = golge_degerlendir(skorlar, mevcut, karar, aday,
+                                 esik=POZITIF_ESIK)
+        eski["golge_aday"] = golge_aday          # KPI: v2 temsilcisi esas
+        eski["paylar"] = ({} if golge_aday is None else {golge_aday: 1.0})
+        eski["uyum"] = golge_aday == eski.get("legacy_hedef")
+        olay_yaz("EdgeShadowEvaluated",
+                 {"eval_id": eval_id, **eski, "v2": v2})
     except Exception:  # noqa: BLE001
         log.debug("edge golge hatasi", exc_info=True)
 
@@ -329,12 +351,27 @@ def yetim_tasfiye_mutabakati() -> dict | None:
 
 def _salter_indir(neden: str) -> None:
     """Kural 3 eki (23 Tem kullanici karari): tum motorlar <=0 iken
-    salter de iner (CANLI_DUR): yeni canli giris yok, cikislar surer."""
-    (_data_dir() / "CANLI_DUR").write_text(f"otonom: {neden}")
+    salter de iner (CANLI_DUR): yeni canli giris yok, cikislar surer.
+    TEK-YAZAR (26 Tem CRITICAL-3): sistem KENDI koydugu salteri
+    yonetir; kullanicinin (panel) koydugunu ASLA ezmez/kaldirmaz."""
+    p = _data_dir() / "CANLI_DUR"
+    if p.exists() and "otonom:" not in p.read_text(errors="replace"):
+        log.warning("salter kullanici-yazarli; sistem dokunmuyor")
+        return
+    p.write_text(f"otonom: {neden}")
 
 
 def _salter_kaldir() -> None:
-    (_data_dir() / "CANLI_DUR").unlink(missing_ok=True)
+    p = _data_dir() / "CANLI_DUR"
+    try:
+        icerik = p.read_text(errors="replace")
+    except OSError:
+        return
+    if "otonom:" not in icerik:              # panel/kullanici yazdi
+        log.warning("salter kullanici-yazarli; sistem KALDIRMIYOR "
+                    "(tek-yazar kurali)")
+        return
+    p.unlink(missing_ok=True)
 
 
 def firsat_var(motor: str, dk: float | None = None) -> tuple[bool, float]:
