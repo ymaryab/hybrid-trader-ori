@@ -159,3 +159,14 @@ Evren siniri beyani: yalniz EKG-tetik evreni; genelleme iddiasi yok.
    Aksi: INCONCLUSIVE. Parametre/pencere aramasi YOK.
 6. Tahmini orneklem: ~60 mezuniyet olayi; baglanti orani bilinmiyor.
 7. Maliyet: tek gecis arsiv, sifir RPC.
+
+### ABSORB on-veri kapisi on-kaydi (26 Tem, analiz oncesi muhur)
+Hipotez: yatay fiyat (15dk |d|<=%2) + alim-agirlikli akis (pay>=0.65)
+sonraki 60dk'da guclu yukselis (>=+%20 tepe) onculu. Yon: SwapObserved
+log satirlarinda Buy*/Sell* yapisal sayimi (miktar yok, v1 adet). Puls
+modundaki havuzlar kapsam disi (beyanli). RR = maruz/kontrol; kontrol
+= alim payi 0.35-0.65 yatay pencereler. PASS: maruz n>=30 VE RR>=1.5
+VE CI alt>1.0. FAIL: n>=30 VE CI ust<1.2. Aksi INCONCLUSIVE.
+Parametreler (15dk/60dk/%2/0.65/+%20) SABIT; arama yok.
+PRE-GRAD sonucu: INCONCLUSIVE n=0 (yol arsivi tetik-kosullu; mezuniyet
+ani evren disi) — PARKTA, yeniden-test: baglantili olay >=20.
