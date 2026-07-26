@@ -19,4 +19,8 @@ LOG=data/edge_gece.log
     && echo "kural_karnesi OK" || echo "kural_karnesi HATA ($?)"
   python3 scripts/kacis_payi.py --motor yz --gun 1 >/dev/null \
     && echo "kacis_payi OK" || echo "kacis_payi HATA ($?)"
+  python3 scripts/veto_degeri.py --saat 24 >/dev/null \
+    && echo "veto_degeri OK" || echo "veto_degeri HATA ($?)"
+  python3 scripts/calkalama_olcum.py --saat 24 >/dev/null \
+    && echo "calkalama OK" || echo "calkalama HATA ($?)"
 } >> "$LOG" 2>&1

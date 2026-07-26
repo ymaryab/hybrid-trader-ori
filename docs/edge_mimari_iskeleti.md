@@ -65,6 +65,13 @@ karar bu fiyatin uzerine kurulur. Uc ufuk:
    cekirdegi geriye-bakan momentumdan ("son 30dk kim kazandi") ileriye
    bakan kosul-temelli tahsise ("q verildiginde hangi politikanin
    edge'i pozitif") gecer; kesirli tahsis ayni arayuzden.
+   **26 Tem guncellemesi (kullanici karari):** (a) Edge'in ILK
+   onceligi CASH/VETO'dur: "hicbir politika pozitif degil" karari
+   fiyatlanan mesru sonuctur (ilk 24h olcumu: salter pencereleri
+   ort -3.65$/5dk vs aktif +0.34$; gunluk seri veto_degeri.json'da
+   birikir). (b) Secim birimi MOTOR degil POLITIKA AILESIdir: Edge
+   aile secer (scalp/runner/...), motorlar o ailenin uygulayicisidir;
+   golge/veto raporlari aile bazinda da uretilir.
 3. **Uzun vade (YENI kanitla, ayri kullanici karari):** karar taneciği
    motordan FIRSATA iner: aday basina politika fiyatlanir ve atanir;
    motor kimligi politika kutuphanesine donusur, hicbir sey silinmez.

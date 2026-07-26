@@ -37,6 +37,16 @@
   25.000/gun icinde. Hiz: gecelik seri, 0.15 sn ara -> ~6.7/sn tepe,
   gunduz sensorleriyle CAKISMAZ (04:17 kosusu).
 
+## Ek satir (26 Tem): R0 kadans artisi (kullanici karari, batarya orneklem hizi)
+- GOZLEM_R0_MAX 25 -> 40: izlenen kume buyur, sensor olcum hacmi ~1.6x.
+- Maliyet etkisi: konsantrasyon ~1.6x (az-ve-oz mod ayni kurallar),
+  lp_kilit gunluk <=~64 istek (tavan 600 icinde), erken_alici token
+  basi <=22 istek x ~64 terfi/gun ~= 1400 (tavan 2000 icinde),
+  snapshot DexScreener 30'luk parti -> 2 parti/15sn (kota etkisi kucuk).
+- Toplam kredi: ~10.1k -> ~13k/gun = butcenin ~%39'u; 25k tasarim
+  tavani ve 33k gunluk limit icinde. Tavanlar DEGISMEDI; asim yine
+  Throttled ile sayilarak birakilir.
+
 ## Hiz siniri kaniti (10 istek/sn)
 - Konsantrasyon: 1 istek / >=10 sn (seri, tekli kuyruk) -> 0.1/sn
 - LP kilit: terfi olayina bagli, seri, >=2 sn ara -> tepe 0.5/sn (nadir)
