@@ -50,3 +50,20 @@ Uc kosul da saglanirsa GO; degilse NO-GO ve donem 7 gun uzatilir
   blocker listesinde).
 - Olcum araci: scripts/golge_defter.py; gece zinciri gunluk kosar;
   data/golge_defter.json birikimli seridir.
+
+## GO GUNU PROSEDURU (26 Tem kullanici mutabakati, DONUK: secenek C)
+GO raporu Z1+Z2+Z3 gecerse:
+1. Rapor + KULLANICI ONAYI (kademe acilisi otomatik degil).
+2. KADEME 1 YALNIZ-VETO: 48 saat VE >=10 veto olayi. Edge yalniz
+   "yeni giris yok" diyebilir (salter tek-yazar kurallarina tabi);
+   aile secimi legacy'de kalir. Gecis kriteri: veto pencerelerinin
+   gerceklesen degeri golge tahminiyle tutarli + sifir cift-otorite
+   catismasi + fallback temiz.
+3. KADEME 2 TAM YETKI (kullanici onayiyla): parametreler ilk 7 gun
+   DONUK; RUNNER "dogrulanmamis" etiketi surdukce guven kisiti aynen.
+4. HER KADEMEDE TEK-KOMUT GERI ALMA: Edge aninda golgeye doner,
+   legacy devralir. Geri alma insansiz olabilir; YENIDEN yetki YALNIZ
+   kullanici onayiyla.
+5. Olcum surekliligi: golge-defter ve KPI'lar kademelerde kesintisiz.
+Gerekce: danisman fazi 7 gunluk golge doneminin kendisidir (tekrar
+bilgi uretmez); veto, canli yurutmenin en dusuk-riskli sinavidir.
