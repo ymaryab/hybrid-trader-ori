@@ -49,21 +49,32 @@ class AnchorDecoder:
         self.kayitlar = kayit.get("kayitlar") or {}
         self.kayit_sv = kayit.get("sv")
 
-    def coz(self, ham: bytes,
-            beklenen_mint: str | None = None) -> dict | None:
-        """Tek 'Program data' payload'unu coz. None = taninmadi/gecersiz."""
+    def coz(self, ham: bytes, beklenen_mint: str | None = None,
+            beklenen_pool: str | None = None) -> dict | None:
+        """Tek 'Program data' payload'unu coz. None = taninmadi/gecersiz.
+
+        Kimlik iki turlu olabilir (kayit belirler): mint_ofs (pump.fun
+        TradeEvent: mint gomulu) veya pool_ofs (PumpSwap eventleri:
+        havuz gomulu; mint zarf/harita uzerinden gelir)."""
         if len(ham) < 8:
             return None
         disc = ham[:8].hex()
         k = self.kayitlar.get(disc)
         if k is None or len(ham) < k.get("boy_min", 0):
             return None
-        mint = _b58(ham[k["mint_ofs"]:k["mint_ofs"] + 32])
-        if beklenen_mint is not None:
-            if mint != beklenen_mint:
+        mint = None
+        if k.get("pool_ofs") is not None:
+            pool = _b58(ham[k["pool_ofs"]:k["pool_ofs"] + 32])
+            if beklenen_pool is not None and pool != beklenen_pool:
                 return None
-        elif not mint.endswith("pump"):
-            return None
+            mint = beklenen_mint          # zarf kimligi devralinir
+        else:
+            mint = _b58(ham[k["mint_ofs"]:k["mint_ofs"] + 32])
+            if beklenen_mint is not None:
+                if mint != beklenen_mint:
+                    return None
+            elif not mint.endswith("pump"):
+                return None
         sol = None
         if k.get("sol_ofs") is not None:
             sol = _u64(ham, k["sol_ofs"])
