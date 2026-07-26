@@ -170,3 +170,48 @@ VE CI alt>1.0. FAIL: n>=30 VE CI ust<1.2. Aksi INCONCLUSIVE.
 Parametreler (15dk/60dk/%2/0.65/+%20) SABIT; arama yok.
 PRE-GRAD sonucu: INCONCLUSIVE n=0 (yol arsivi tetik-kosullu; mezuniyet
 ani evren disi) — PARKTA, yeniden-test: baglantili olay >=20.
+
+---
+## COK-KAPILI PROTOKOL v1 (26 Tem, kullanici onayi — analiz oncesi muhur)
+
+METODOLOJI (madde 1-2-4):
+- Ayni veri uzerinde N dogrulayici kapi TEK gecise kosulur; coklu-test
+  duzeltmesi Benjamini-Hochberg, FDR q=0.10 (on-kayitli). Kesif
+  taramalari sinirsiz ama KARAR YETKISIZ; dogrulama daima sonraki
+  donem verisinde.
+- SPRT SABLONU (akan-veri kapilari icin): H1 etki = on-kayitli esik,
+  alfa=0.05 beta=0.20, log-olabilirlik sinirlari A=ln(16), B=ln(1/4);
+  sinir gecilene kadar INCONCLUSIVE-devam. Bu turdaki 6 kapi tek-atis
+  arsiv testleridir, SPRT kullanilmaz.
+- ESLESTIRME STANDARDI: RR-tipi kapilarda kontrol ayni 6-saat gun
+  dilimi tabakasindan; birlestirme Mantel-Haenszel. Rejim-gosterge
+  kapilari (G4-6) tabakalanmaz (gosterge rejimin kendisi).
+- HUKUM: PASS = BH-anlamli VE etki esigi saglandi. FAIL = etki ust
+  siniri kapi-tanimli redde dustu. Aksi INCONCLUSIVE (asgari n sarti
+  dahil). Hukum verilen kapi tekrar KOSULMAZ; INCONCLUSIVE'ler gece
+  zincirinde veriyle otomatik yeniden denenir.
+
+### Bu turun 6 kapisi (esikler DONMUS)
+G1 DIP-CLAIM replay (F3): evren yogun-arsiv yollari; dogumdan <=30dk
+  icinde tepe >= +15 gormus token; giris = tepe sonrasi ilk kez
+  [tepe-8, tepe-3] bandina dusen tick; cikis = +6 hedef / -6 stop /
+  30dk (ilk ulasan). Liq sarti verisizlikten atlanir (BEYAN). PASS:
+  ort getiri > 0 VE isabet >= %50 (BH-anlamli). FAIL: ort getiri ust
+  CI < 0. Min n = 40.
+G2 ABSORB-v2 (YENI on-kayit; olu adet-bazli fikrin miktar-agirlikli
+  akrabasi): k3_akis 15dk penceresi; |fiyat d| <= %2 (yogun arsiv);
+  maruz = SOL-HACIM alim payi >= 0.65; kontrol = 0.35-0.65; sonuc =
+  ileri 60dk tepe >= +20. MH-RR (6h tabaka). PASS: RR >= 1.5 BH-anlamli.
+  FAIL: ust CI < 1.2. Min maruz n = 30.
+G3 SNIPER-YOGUNLUK: K1 TradeAggregate; lansmanin (ilk gorulen dakika)
+  ilk 2 dk toplam n_al; maruz >= P90, kontrol P25-P75; sonuc = 60dk
+  sonunda fiyat <= ilk fiyatin 0.5'i (yariya cokus). MH-RR. PASS:
+  RR >= 1.5 BH-anlamli (veto degeri). FAIL: ust CI < 1.2. Min maruz 30.
+G4 DISPERSIYON: 30dk pencerede sepet (yogun arsiv >=8 token) getiri
+  yayilimi; gosterge ALT ceyrek (yapisik piyasa) vs orta yari; sonuc =
+  izleyen 30dk filo gerceklesen PnL ortalama farki; yon: yapisik ->
+  daha kotu. PASS: fark < 0 BH-anlamli. Min pencere 40/40.
+G5 LANSMAN-Z: lansman/saat z-skoru <= -1 (kuraklik) vs |z| < 0.5;
+  sonuc ayni filo-PnL farki; yon: kuraklikta kotu. Ayni esikler.
+G6 FEE-TIKANIKLIK: prioritization fee P90 ustu pencereler vs P25-75;
+  ayni sonuc/yon/esikler.
