@@ -1031,7 +1031,7 @@ def api_edge_ozet() -> dict:
             ("edge_anlik", "edge_rapor_anlik.json", None),
             ("karar", "edge_karar_son.json",
              ("ts", "aile", "katman", "guven", "golge_aday",
-              "legacy_hedef")),
+              "legacy_hedef", "surucu")),
             ("karne", "kural_karnesi.json", None)):
         p = data_dir / dosya
         try:
@@ -2892,7 +2892,9 @@ async function edgeOzet(){
     const sd=s.temiz_etiket_uyum!=null?Math.round(s.temiz_etiket_uyum*100)+"%":"-";
     const aile=k.aile?k.aile.toUpperCase():"-";
     const yas=k.ts?Math.round((Date.now()/1000-k.ts)/60):null;
-    b.textContent="edge: "+aile+(k.guven!=null?" g"+Math.round(k.guven*100)+"%":"")+" · sadakat "+sd;
+    const canli=k.surucu==="canli";
+    b.textContent=(canli?"🔴EDGE-CANLI: ":"edge: ")+aile+(k.guven!=null?" g"+Math.round(k.guven*100)+"%":"")+" · sadakat "+sd;
+    if(canli){b.style.outline="2px solid #f85149";}else{b.style.outline="";}
     b.title="GOLGE karari (canliya bagli DEGIL). aile: "+aile+
       " | katman: "+(k.katman||"-")+" | guven: "+(k.guven!=null?k.guven:"-")+
       " | temsilci: "+(k.golge_aday||"CASH")+" | legacy: "+(k.legacy_hedef||"-")+
