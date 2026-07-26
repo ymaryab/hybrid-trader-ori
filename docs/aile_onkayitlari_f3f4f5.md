@@ -142,3 +142,20 @@ Metrik: RR = P(kosucu|maruz) / P(kosucu|maruz degil); pencere 24h ve
 esik +%100 SABIT (batarya tanimi). PASS: RR>=1.5 VE %95 CI alt>1.0.
 FAIL: CI ust<1.5. Aksi INCONCLUSIVE. Maruz grup n<20 -> INCONCLUSIVE.
 Evren siniri beyani: yalniz EKG-tetik evreni; genelleme iddiasi yok.
+
+### PRE-GRAD/F4 on-veri kapisi on-kaydi (26 Tem, analiz oncesi muhur)
+1. Hipotez: mezuniyet (curve dolumu -> PumpSwap gocu) sonrasi ilk 30dk
+   penceresi pozitif beklenti tasir (PRE-GRAD ailesinin varlik on-sarti).
+2. Veri: GraduationObserved anchor verisinden mint (32-bayt pencere +
+   'pump' soneki yapisal cikarimi) + yogun/EKG arsiv yollari.
+   Baglanti kurali: mezuniyetten sonraki <=10dk icinde ilk tick'i olan
+   olaylar "baglantili"; digerleri kapsam-disi SAYILIR ve raporlanir.
+3. Null: mezuniyet penceresi bilgi tasimaz (getiri ~ genel taban).
+4. Metrik: giris = mezuniyet sonrasi ILK tick; cikis = giris+30dk'ya
+   en yakin tick (yol kisa kesildiyse son tick, "kisa-yol" isaretli
+   DAHIL: muhafazakar). Medyan ve ortalama getiri.
+5. Esik (donmus): PASS: n>=20 VE medyan >= +3 VE ortalama > +1
+   (ucret payi). FAIL: n>=20 VE medyan <= 0 VE ortalama <= 0.
+   Aksi: INCONCLUSIVE. Parametre/pencere aramasi YOK.
+6. Tahmini orneklem: ~60 mezuniyet olayi; baglanti orani bilinmiyor.
+7. Maliyet: tek gecis arsiv, sifir RPC.
