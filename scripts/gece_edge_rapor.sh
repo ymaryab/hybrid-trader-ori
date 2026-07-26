@@ -23,4 +23,6 @@ LOG=data/edge_gece.log
     && echo "veto_degeri OK" || echo "veto_degeri HATA ($?)"
   python3 scripts/calkalama_olcum.py --saat 24 >/dev/null \
     && echo "calkalama OK" || echo "calkalama HATA ($?)"
+  python3 scripts/golge_defter.py --saat 24 >/dev/null \
+    && echo "golge_defter OK" || echo "golge_defter HATA ($?)"
 } >> "$LOG" 2>&1
