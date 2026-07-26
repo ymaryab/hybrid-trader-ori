@@ -75,3 +75,12 @@ Her yeni sensor bu dosyaya su kalemlerle SATIR EKLEMEDEN yayina alinamaz:
 - Her sensor kendi istek sayacini ObserverHealth'e yazar (kind_sayi).
 - Gunluk kredi ozetini haftalik rapora ekle; %60 kullanim gorulurse
   once tazeleme kadanslari gevsetilir (kalite kaybi en dusuk kalem).
+
+## Ek satir (26 Tem): K1+K3 islem-akisi paketi (Observation Factory)
+- (1) RPC: SIFIR (mevcut WSS aboneligi; dusen veri islenir hale gelir).
+- (2) Disk: TradeAggregate zst tavani 40MB/gun; asim egiliminde 5dk
+  agregat kademesi (onceden tanimli, Throttled beyanli).
+- (3) CPU: eklenti hedefi ort <%5 / tepe <%15 tek cekirdek (kabul
+  kriteri; ObserverHealth ile izlenir).
+- (4) RAM: eklenti <40MB; tavanlar aktif_mint<=4000, kuyruk<=20k,
+  cuzdan seti<=64/mint; ObserverHealth nesne sayaclarina eklenir.
