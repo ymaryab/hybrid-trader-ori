@@ -1,9 +1,14 @@
 # Uc Katmanli Olcum-Karar Mimarisi (Motor Card alternatifi)
 
 **Tarih:** 26 Tem 2026, aksam oturumu
-**Statu:** TASARIM REFERANSI. Kod yok; uygulama adimi ayri kullanici
-onayi gerektirir. Motor Card onerisinin elestirisi sonucunda kabul
-edilen cerceve.
+**Statu:** TASARIM REFERANSI, DONDURULDU (26 Tem kullanici karari).
+Kod yok. Katman 2 implementasyon PLANLAMASI su dort kanit
+toplandiktan SONRA yapilir, oncesinde hicbir mimari degisiklik
+baslatilmaz: (1) K1 kabul raporu (cron 28 Tem), (2) G4 ve diger
+kapilarin sonuclari (gece tekrarlari), (3) en az 7 gunluk GO raporu
+(~2 Agu), (4) runner canli yasaginin etkisi (cift-cekirdek olay
+kayitlarindan eslesitirilmis olcum). Motor Card onerisinin
+elestirisi sonucunda kabul edilen cerceve.
 **Baglam:** BUB adli incelemesi (26 Tem, -%10.27) ve LCB analizi.
 Tespit: LCB motor-agregatlarinin yayilimini olcuyor (uye_n=2 nokta),
 islem-duzeyi varyansi, tek-olay kompozisyonunu, zamansal kumelenmeyi
