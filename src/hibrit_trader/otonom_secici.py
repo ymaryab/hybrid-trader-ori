@@ -371,22 +371,53 @@ def governor_kontrol(notify) -> dict:
             "gecis_izin": int(s.get("gecis_n", 0)) < GOV_GUNLUK_GECIS_MAX}
 
 
+def _canli_yasak_aileler() -> set:
+    """CANLI'ya kapali aileler (26 Tem risk karari: runner). Golge/GO
+    olcumu etkilenmez; kisit yalniz canli surucu katmaninda."""
+    ham = os.getenv("EDGE_CANLI_AILE_YASAK", "")
+    return {a.strip() for a in ham.split(",") if a.strip()}
+
+
+def _canli_skor_suz(skorlar: dict) -> tuple:
+    """Yasakli aile uyelerini skor tablosundan cikarir.
+    Donis: (suzulmus_skorlar, sirali_yasak_listesi | None)."""
+    yasak = _canli_yasak_aileler()
+    if not yasak:
+        return skorlar, None
+    from hibrit_trader.edge.cekirdek import KATALOG
+    uyeler = {m for a in yasak
+              for m in KATALOG.get(a, {}).get("uyeler", [])}
+    return ({k: v for k, v in skorlar.items() if k not in uyeler},
+            sorted(yasak))
+
+
 def _edge_canli_turu(skorlar: dict, mevcut: str, d: dict,
                      notify) -> str:
     """EDGE CANLI SURUCU turu (26 Tem). Donis: "devam" | "restart".
     Karar eslemesi: cash -> edge-salter; kal -> salteri kaldir;
-    gecis -> ortak gecis borusu. Hata -> mevcutta kal (fallback)."""
-    global _CEKIRDEK
+    gecis -> ortak gecis borusu. Hata -> mevcutta kal (fallback).
+    Cift cekirdek (26 Tem risk karari): tam evren cekirdegi golge/GO
+    kaydi icin calisir; canli hat, EDGE_CANLI_AILE_YASAK suzgecinden
+    gecmis skorlarla ayri cekirdekten surulur."""
+    global _CEKIRDEK, _CEKIRDEK_CANLI
     from hibrit_trader.edge.cekirdek import Cekirdek
     eval_id = f"ev-{int(time.time() * 1000)}"
     gov = governor_kontrol(notify)
-    v2, hedef, hata = None, None, None
+    v2, v2c, hedef, hedef_tam, yasak, hata = (None,) * 6
     try:
         if _CEKIRDEK is None:
             _CEKIRDEK = Cekirdek()
-        v2 = _CEKIRDEK.karar(skorlar)
-        hedef = _CEKIRDEK.temsilci(skorlar)
-        if v2["aile"] == "cash" or hedef is None:
+        v2 = _CEKIRDEK.karar(skorlar)          # tam evren: golge/GO kaydi
+        hedef_tam = _CEKIRDEK.temsilci(skorlar)
+        canli_skor, yasak = _canli_skor_suz(skorlar)
+        if yasak:
+            if _CEKIRDEK_CANLI is None:
+                _CEKIRDEK_CANLI = Cekirdek()
+            v2c = _CEKIRDEK_CANLI.karar(canli_skor)
+            hedef = _CEKIRDEK_CANLI.temsilci(canli_skor)
+        else:
+            v2c, hedef = v2, hedef_tam
+        if v2c["aile"] == "cash" or hedef is None:
             karar = "edge_cash"
         elif hedef == mevcut:
             karar = "kal"
@@ -395,8 +426,8 @@ def _edge_canli_turu(skorlar: dict, mevcut: str, d: dict,
     except Exception as e:  # noqa: BLE001
         hata = str(e)[:120]
         karar = "cekirdek_hata_kal"
-        v2 = {"surum": "v2", "katman": "cekirdek_hata", "aile": None,
-              "hata": hata}
+        v2c = v2 = {"surum": "v2", "katman": "cekirdek_hata",
+                    "aile": None, "hata": hata}
     cooldown_kalan = max(
         0.0, COOLDOWN_SN - (time.time() - float(d["son_gecis_ts"])))
     if karar == "gecis":
@@ -422,21 +453,25 @@ def _edge_canli_turu(skorlar: dict, mevcut: str, d: dict,
         "karar_ureticisi": "edge_v2", "window_min": d["pencere_dk"],
         "current_live_engine": mevcut, "ranking": skorlar,
         "decision": karar, "aday": hedef, "v2": v2, "governor": gov,
+        "aday_tam": hedef_tam, "canli_yasak_aileler": yasak,
+        "v2_canli": (v2c if yasak else None),
         "cooldown_remaining_sec": round(cooldown_kalan, 1),
         "config": config_anlik()})
-    _golge_olayla(skorlar, mevcut, karar, hedef, eval_id,
-                  v2_hazir=v2, temsilci_hazir=hedef)
+    _golge_olayla(skorlar, mevcut, karar, hedef_tam, eval_id,
+                  v2_hazir=v2, temsilci_hazir=hedef_tam)
     if karar != "gecis":
         return "devam"
     notify(f"[CANLI] EDGE GECIS KARARI: {mevcut} -> {hedef} "
-           f"(aile {v2['aile']}, guven {v2.get('guven')})")
+           f"(aile {v2c['aile']}, guven {v2c.get('guven')})")
 
     def _edge_dogrulayici():
         son_skor = pencere_skorlari(float(d["pencere_dk"]),
                                     sorted(skorlar))
         try:
-            v2y = _CEKIRDEK.karar(son_skor)
-            t = _CEKIRDEK.temsilci(son_skor)
+            suzuk, y = _canli_skor_suz(son_skor)
+            cek = _CEKIRDEK_CANLI if y else _CEKIRDEK
+            v2y = cek.karar(suzuk)
+            t = cek.temsilci(suzuk)
             return (t if v2y.get("aile") not in (None, "cash") else None,
                     son_skor)
         except Exception:  # noqa: BLE001
@@ -448,6 +483,7 @@ def _edge_canli_turu(skorlar: dict, mevcut: str, d: dict,
 
 
 _CEKIRDEK = None
+_CEKIRDEK_CANLI = None      # 26 Tem: aile-yasakli canli surucu cekirdegi
 
 
 def _golge_olayla(skorlar: dict, mevcut: str, karar: str,

@@ -18,6 +18,7 @@ def ortam(tmp_path, monkeypatch):
     monkeypatch.setattr(osec, "_yazici", None)
     monkeypatch.setattr(osec, "EDGE_CANLI", True)
     monkeypatch.setattr(osec, "_CEKIRDEK", None)
+    monkeypatch.setattr(osec, "_CEKIRDEK_CANLI", None)
     monkeypatch.setattr(osec, "firsat_var", lambda m, dk=None: (True, 1.0))
     monkeypatch.setattr(ck, "TEYIT_TUR", 1)      # testte tek tur teyit
     monkeypatch.setattr(ck, "COOLDOWN_TUR", 0)
@@ -82,6 +83,61 @@ def test_gecis_karari_boruya_gider(monkeypatch):
     assert r == "restart"
     assert cagri["cift"][0] == "v7new"
     assert cagri["cift"][1] in ck.KATALOG["runner"]["uyeler"]
+
+
+def test_aile_yasak_runner_canliya_cikamaz(monkeypatch):
+    """26 Tem risk karari: runner tam-evrende kazansa da canli hedef
+    scalp'tan secilir; tam karar (GO kaydi) runner'i gormeye devam eder."""
+    monkeypatch.setenv("EDGE_CANLI_AILE_YASAK", "runner")
+    cagri, olaylar = {}, []
+    monkeypatch.setattr(osec, "_gecis_uygula",
+                        lambda mevcut, aday, *a, **k:
+                        cagri.update(cift=(mevcut, aday)) or "tamam")
+    gercek_yaz = osec.olay_yaz
+    monkeypatch.setattr(osec, "olay_yaz",
+                        lambda kind, p: (olaylar.append((kind, p)),
+                                         gercek_yaz(kind, p))[1])
+    r = osec._edge_canli_turu(_skorlar(2.0, 8.0), "v7new", _d(),
+                              lambda m: None)
+    assert r == "restart"
+    assert cagri["cift"][1] in ck.KATALOG["scalp"]["uyeler"]
+    ev = [p for k, p in olaylar if k == "AutonomEvaluated"][0]
+    assert ev["canli_yasak_aileler"] == ["runner"]
+    assert ev["v2"]["aile"] == "runner"          # tam evren: GO kaniti
+    assert ev["aday_tam"] in ck.KATALOG["runner"]["uyeler"]
+    assert ev["v2_canli"]["aile"] == "scalp"     # canli surucu: scalp
+    assert ev["aday"] in ck.KATALOG["scalp"]["uyeler"]
+
+
+def test_aile_yasak_scalp_zayifsa_cash(tmp_path, monkeypatch):
+    monkeypatch.setenv("EDGE_CANLI_AILE_YASAK", "runner")
+    monkeypatch.setattr(osec, "_gecis_uygula",
+                        lambda *a, **k: pytest.fail("gecis olmamali"))
+    r = osec._edge_canli_turu(_skorlar(-2.0, 8.0), "v7new", _d(),
+                              lambda m: None)
+    assert r == "devam"
+    assert (tmp_path / "CANLI_DUR").read_text().startswith("edge:")
+
+
+def test_yasak_bosken_davranis_degismez(monkeypatch):
+    monkeypatch.delenv("EDGE_CANLI_AILE_YASAK", raising=False)
+    suzuk, yasak = osec._canli_skor_suz(_skorlar(1.0, 2.0))
+    assert yasak is None and len(suzuk) == len(_skorlar())
+    cagri = {}
+    monkeypatch.setattr(osec, "_gecis_uygula",
+                        lambda mevcut, aday, *a, **k:
+                        cagri.update(aday=aday) or "tamam")
+    osec._edge_canli_turu(_skorlar(0.2, 3.0), "v7new", _d(),
+                          lambda m: None)
+    assert cagri["aday"] in ck.KATALOG["runner"]["uyeler"]
+
+
+def test_canli_skor_suz_uyeleri_dusurur(monkeypatch):
+    monkeypatch.setenv("EDGE_CANLI_AILE_YASAK", "runner")
+    suzuk, yasak = osec._canli_skor_suz(_skorlar())
+    assert yasak == ["runner"]
+    assert not set(suzuk) & set(ck.KATALOG["runner"]["uyeler"])
+    assert set(ck.KATALOG["scalp"]["uyeler"]) <= set(suzuk)
 
 
 def test_governor_kayip_freni(tmp_path, monkeypatch):
