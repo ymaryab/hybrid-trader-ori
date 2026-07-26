@@ -49,7 +49,7 @@ def test_etiket_gruplari():
     assert sr.grup("tp_2") == sr.grup("tp") == "tp"
     assert sr.grup("stop_felaket") == sr.grup("stop") == "stop"
     assert sr.grup("timeout_karla") == "timeout"
-    assert sr.grup("runner_trail") == "diger"
+    assert sr.grup("runner_trail") == "runner"   # HIGH-6: kademeli grubu
 
 
 def test_baglam_q_puls_ve_tetik():

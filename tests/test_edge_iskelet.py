@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from hibrit_trader.edge.edge_motoru import EdgeMotoru
 from hibrit_trader.edge.kosullama import TekKatman
 from hibrit_trader.edge.simulator import (degerlendir, runner_politikasi,
@@ -44,6 +46,20 @@ def test_simulator_tp_stop_timeout():
     assert stop["cikis"] == "stop" and stop["pnl_pct"] == -50
     kisa = degerlendir(yol, tp_politikasi(tp_pct=50, timeout_dk=1.5))
     assert kisa["cikis"] == "timeout"
+
+
+def test_simulator_kademeli():
+    from hibrit_trader.edge.simulator import kademeli_politika
+    # +25 kilit (0.25), +40 kilit (0.25), tepe 60 -> trail 15: 45'te kalan
+    yol = Yol("T", [(0, 1.0), (60, 1.30), (120, 1.60), (180, 1.44)])
+    r = degerlendir(yol, kademeli_politika())
+    beklenen = 0.25 * 25 + 0.25 * 40 + 0.5 * 44.0
+    assert r["cikis"] == "runner_trail"
+    assert r["pnl_pct"] == pytest.approx(beklenen, abs=0.1)
+    # kilit oncesi -9: stop_gec kalanin tamami
+    yol2 = Yol("T", [(0, 1.0), (60, 0.91), (120, 1.5)])
+    r2 = degerlendir(yol2, kademeli_politika())
+    assert r2["cikis"] == "stop_gec" and r2["pnl_pct"] == pytest.approx(-9.0)
 
 
 def test_simulator_runner_trail():

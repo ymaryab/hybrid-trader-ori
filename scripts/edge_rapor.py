@@ -36,17 +36,31 @@ POLITIKALAR = {
 }
 
 
+TAMAMLANMIS_SN = 1800.0   # censoring on-kaydi: son tick >=30dk eski
+
+
 class PencereliArsiv:
-    """Yalniz son N saatte dogan yollari sunan sarmal (arsiv degismez)."""
+    """Yalniz son N saatte dogan ve TAMAMLANMIS yollari sunar.
+
+    CENSORING KURALI (26 Tem on-kayit, HIGH-7): kosusu suren yol
+    (son tick'i 30 dk'dan taze) edge tablolarina GIRMEZ; tepe aninda
+    kesilmis yol runner edge'ini sistematik abartirdi. Dislanan adet
+    raporda beyan edilir (sessiz kirpma yasak)."""
 
     def __init__(self, arsiv: YolArsivi, saat: float):
         self.arsiv = arsiv
         self.esik = time.time() - saat * 3600
+        self.dislanan_suren = 0
 
     def yollar(self):
+        simdi = time.time()
         for yol in self.arsiv.yollar():
-            if yol.ticks[0][0] >= self.esik:
-                yield yol
+            if yol.ticks[0][0] < self.esik:
+                continue
+            if simdi - yol.ticks[-1][0] < TAMAMLANMIS_SN:
+                self.dislanan_suren += 1
+                continue
+            yield yol
 
 
 def golge_olaylari(veri: Path, saat: float):
@@ -106,6 +120,8 @@ def main() -> None:
     rapor = {
         "uretim_ts": time.time(), "pencere_saat": a.saat,
         "kaynak": a.kaynak,
+        "censoring": {"kural": "tamamlanmis_30dk",
+                      "dislanan_suren_yol": em.arsiv.dislanan_suren},
         "sadakat_notu": ("EKG dakika-cozunurluklu, tetik-kosullu; kayma/"
                          "ucret yok. Edge hatasi = kosullama + simulator "
                          "sadakati; ayri degerlendirin."),

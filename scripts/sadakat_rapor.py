@@ -29,24 +29,62 @@ from statistics import median
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from hibrit_trader.edge.simulator import degerlendir, tp_politikasi  # noqa: E402
+from hibrit_trader.edge.simulator import (degerlendir,               # noqa: E402
+                                          kademeli_politika,
+                                          tp_politikasi)
 from hibrit_trader.edge.yol_arsivi import (GozlemYolArsivi, Yol,     # noqa: E402
                                            YolArsivi)
 
 # Motor -> replay politikasi. yz: kural seti kesin (TP+2, felaket -20,
 # timeout 60). v7hizli: felaket -20 VARSAYIM (kod tabani paylasik).
+# r2 (HIGH-6): kademeli aile fonksiyoneli; kiyas POZISYON duzeyinde
+# (kismi satirlar trade_id ile gruplanir).
 MOTOR_POLITIKALARI = {
     "yz": tp_politikasi(2.0, 60.0, stop_pct=-20.0),
     "v7hizli": tp_politikasi(2.0, 60.0, stop_pct=-20.0),
+    "r2": kademeli_politika(),
 }
+POZISYON_DUZEYI = {"r2"}
 
 ETIKET_GRUBU = {
     "tp": "tp", "tp_2": "tp", "tp_5": "tp",
     "stop": "stop", "stop_felaket": "stop", "stop_gec": "stop",
-    "timeout": "timeout", "timeout_60": "timeout",
+    "timeout": "timeout", "timeout_60": "timeout", "timeout_180": "timeout",
     "timeout_karla": "timeout", "timeout_cuval": "timeout",
     "seri_sonu": "seri_sonu",
+    "tp_kilit": "runner", "tp_kilit_25": "runner", "tp_kilit_40": "runner",
+    "runner_trail": "runner",
+    "breakeven_stop": "be", "erken_breakeven": "be", "erken_zayif": "be",
+    "sonda_kes": "be",
 }
+
+
+def pozisyon_grupla(islemler: list[dict]) -> list[dict]:
+    """Kismi satirlari trade_id ile pozisyona indirger (HIGH-6)."""
+    gruplar: dict[str, list] = {}
+    for t in islemler:
+        tid = t.get("trade_id") or f"tid-{t.get('ts')}"
+        gruplar.setdefault(tid, []).append(t)
+    out = []
+    for tid, satirlar in gruplar.items():
+        satirlar.sort(key=lambda x: float(x.get("ts") or 0))
+        ilk, son = satirlar[0], satirlar[-1]
+        maliyet = sum(float(x.get("cost_usd") or 0) for x in satirlar)
+        pnl_usd = sum(float(x.get("pnl_usd") or 0) for x in satirlar)
+        if maliyet <= 0:
+            continue
+        out.append({
+            "ts": float(son.get("ts") or 0),
+            "hold_sec": (float(son.get("ts") or 0)
+                         - (float(ilk.get("ts") or 0)
+                            - float(ilk.get("hold_sec") or 0))),
+            "entry_price": float(ilk.get("entry_price") or 0),
+            "token_address": ilk.get("token_address"),
+            "pnl_pct": round(100 * pnl_usd / maliyet, 3),
+            "exit_reason": son.get("exit_reason"),
+            "friction_pct": son.get("friction_pct"),
+        })
+    return out
 
 
 def grup(etiket: str) -> str:
@@ -101,6 +139,8 @@ def main() -> None:
         if t.get("type") or float(t.get("ts") or 0) < esik:
             continue
         islemler.append(t)
+    if a.motor in POZISYON_DUZEYI:
+        islemler = pozisyon_grupla(islemler)
 
     if a.kaynak == "anlik":
         gunler = sorted({time.strftime("%Y%m%d", time.gmtime(
@@ -161,7 +201,10 @@ def main() -> None:
             "replay_toplam_pnl_pct": round(
                 sum(c["replay_pnl"] for c in ciftler), 2),
             "en_kotu_5": sorted(ciftler, key=lambda c: -abs(c["fark"]))[:5]})
-    (veri / "sadakat_rapor.json").write_text(json.dumps(rapor, indent=1))
+    (veri / f"sadakat_rapor_{a.motor}.json").write_text(
+        json.dumps(rapor, indent=1))
+    if a.motor == "yz":                  # panel/gece uyumu: eski ad da
+        (veri / "sadakat_rapor.json").write_text(json.dumps(rapor, indent=1))
     print(json.dumps({k: v for k, v in rapor.items() if k != "en_kotu_5"},
                      indent=1))
     for c in rapor.get("en_kotu_5", []):

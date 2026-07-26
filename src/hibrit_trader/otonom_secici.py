@@ -315,8 +315,21 @@ def _golge_olayla(skorlar: dict, mevcut: str, karar: str,
         eski["golge_aday"] = golge_aday          # KPI: v2 temsilcisi esas
         eski["paylar"] = ({} if golge_aday is None else {golge_aday: 1.0})
         eski["uyum"] = golge_aday == eski.get("legacy_hedef")
+        # H8: tam girdi anlik goruntusu (pct edgeler'de; islem burada)
+        eski["girdi_islem"] = {m: int(s.get("islem") or 0)
+                               for m, s in skorlar.items()}
         olay_yaz("EdgeShadowEvaluated",
                  {"eval_id": eval_id, **eski, "v2": v2})
+        # H9: panel icin son karar dosyasi (atomik, kucuk)
+        try:
+            son = {"ts": time.time(), "eval_id": eval_id, **v2,
+                   "golge_aday": golge_aday,
+                   "legacy_hedef": eski.get("legacy_hedef")}
+            tmp = _data_dir() / "edge_karar_son.json.tmp"
+            tmp.write_text(json.dumps(son))
+            os.replace(tmp, _data_dir() / "edge_karar_son.json")
+        except OSError:
+            pass
     except Exception:  # noqa: BLE001
         log.debug("edge golge hatasi", exc_info=True)
 

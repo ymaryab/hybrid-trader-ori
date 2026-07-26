@@ -1029,6 +1029,9 @@ def api_edge_ozet() -> dict:
              ("kaynak", "replay_n", "kapsam_orani", "temiz_etiket_uyum",
               "temiz_medyan_mutlak_fark", "uretim_ts")),
             ("edge_anlik", "edge_rapor_anlik.json", None),
+            ("karar", "edge_karar_son.json",
+             ("ts", "aile", "katman", "guven", "golge_aday",
+              "legacy_hedef")),
             ("karne", "kural_karnesi.json", None)):
         p = data_dir / dosya
         try:
@@ -2885,10 +2888,18 @@ async function edgeOzet(){
   try{
     const r=await fetch("/api/edge-ozet"); const d=await r.json();
     const b=document.getElementById("edgeBadge"); if(!b)return;
-    const s=d.sadakat||{}, g=(d.edge_anlik||{}).golge||{};
+    const s=d.sadakat||{}, g=(d.edge_anlik||{}).golge||{}, k=d.karar||{};
     const sd=s.temiz_etiket_uyum!=null?Math.round(s.temiz_etiket_uyum*100)+"%":"-";
-    const gl=g.uyum_orani!=null?Math.round(g.uyum_orani*100)+"%":"-";
-    b.textContent="edge: sadakat "+sd+" · gölge "+gl;
+    const aile=k.aile?k.aile.toUpperCase():"-";
+    const yas=k.ts?Math.round((Date.now()/1000-k.ts)/60):null;
+    b.textContent="edge: "+aile+(k.guven!=null?" g"+Math.round(k.guven*100)+"%":"")+" · sadakat "+sd;
+    b.title="GOLGE karari (canliya bagli DEGIL). aile: "+aile+
+      " | katman: "+(k.katman||"-")+" | guven: "+(k.guven!=null?k.guven:"-")+
+      " | temsilci: "+(k.golge_aday||"CASH")+" | legacy: "+(k.legacy_hedef||"-")+
+      (yas!=null?" | yas: "+yas+"dk":"")+
+      " | sadakat(temiz uyum): "+sd;
+    b.style.background=k.aile==="cash"?"#6e40c9":(k.aile?"#1f6feb":"");
+    b.style.color=k.aile?"#fff":"";
   }catch(e){}
 }
 edgeOzet(); setInterval(edgeOzet,60000);

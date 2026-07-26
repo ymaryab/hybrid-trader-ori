@@ -101,7 +101,21 @@ class Cekirdek:
                 "dagilim": dagilim, "guven": guven,
                 "aile_tablosu": tablo,
                 "bekleyen_aday": dict(self._hedef_sayac),
-                "tur": self._tur}
+                "tur": self._tur,
+                # H8 replay-dogrulama: sonraki karar bu durumdan yeniden
+                # uretilebilir (scripts/edge_replay_dogrula.py)
+                "son_gecis_turu": self._son_gecis_turu,
+                "parametreler": {"lcb_k": LCB_K, "marj": AILE_MARJ,
+                                 "teyit": TEYIT_TUR,
+                                 "cooldown": COOLDOWN_TUR}}
+
+    def durum_yukle(self, aile: str, bekleyen: dict, tur: int,
+                    son_gecis_turu: int) -> None:
+        """Replay dogrulayicisi icin: loglanmis duruma konumlan."""
+        self.karar_aile = aile
+        self._hedef_sayac = dict(bekleyen or {})
+        self._tur = tur
+        self._son_gecis_turu = son_gecis_turu
 
     def temsilci(self, skorlar: dict) -> str | None:
         """KPI surekliligi: secili ailenin en yuksek pct'li uyesi."""
