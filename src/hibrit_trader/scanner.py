@@ -237,7 +237,9 @@ def scan_all(chains: tuple[str, ...] | None = None) -> list[Pair]:
     # 19 Tem: kaynak diagnostic — hangi feed ne kadar aday getirdi
     log.warning("KAYNAK: gecko=%d ds=%d early=%d pump=%d → merge=%d unique",
                 len(gecko), len(ds), len(early), len(pump), len(merged))
-    return merged
+    from hibrit_trader import token_kara_liste
+
+    return token_kara_liste.filtrele(merged, "scan_all")
 
 
 _scan_lock = threading.Lock()
@@ -251,7 +253,9 @@ def scan_all_cached(chains: tuple[str, ...] | None = None) -> list[Pair]:
     with _scan_lock:
         rec = _scan_cache.get(key)
         if rec is not None and now - rec[0] <= SCAN_CACHE_SEC and rec[1]:
-            return list(rec[1])
+            from hibrit_trader import token_kara_liste
+
+            return token_kara_liste.filtrele(list(rec[1]), "scan_cache")
     try:
         pairs = scan_all(chains)
     except Exception as e:
@@ -266,5 +270,7 @@ def scan_all_cached(chains: tuple[str, ...] | None = None) -> list[Pair]:
         if rec is not None and now - rec[0] <= SCAN_STALE_MAX_SEC and rec[1]:
             log.warning("tarama bos dondu, %.0fs onceki paylasimli sonucla telafi",
                         now - rec[0])
-            return list(rec[1])
+            from hibrit_trader import token_kara_liste
+
+            return token_kara_liste.filtrele(list(rec[1]), "scan_stale")
     return pairs

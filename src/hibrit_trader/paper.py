@@ -131,6 +131,12 @@ def enrich_trade_from_position(trade: "Trade", pos: "Position", *, liq_exit: flo
     trade.entry_drift = round(pos.entry_drift_pct, 3)
     if trade.cost_usd:
         trade.pnl_pct = round(100 * trade.pnl_usd / max(trade.cost_usd, 0.01), 3)
+    # Rug-imza kara listesi (26 Tem, karar B): tum modlarin kapanisi buradan
+    # gecer; esigi asan kayip tokeni kalici yasaklar. Hata kapanisi dusurmez.
+    from hibrit_trader import token_kara_liste
+
+    token_kara_liste.islem_kontrol(trade.token_address, trade.pnl_pct,
+                                   pair=trade.pair_name, kaynak="kapanis")
     return trade
 
 
