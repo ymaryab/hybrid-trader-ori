@@ -84,6 +84,6 @@ def test_yeni_yazim_pid_ve_bas_ts_icerir():
     """Secici tasfiye dosyasini pid + bas_ts ile yazmali (kaynak kodu
     sozlesmesi: regresyon bekcisi)."""
     import inspect
-    kaynak = inspect.getsource(osec.kontrol_dongusu)
+    kaynak = inspect.getsource(osec._gecis_uygula)
     assert '"pid": os.getpid()' in kaynak
     assert '"bas_ts": bas' in kaynak

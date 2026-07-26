@@ -286,11 +286,174 @@ def gecis_mutabakati(mevcut: str) -> dict | None:
     return payload
 
 
+# ---- GOVERNOR asgari canli korumalari (26 Tem P0-4) --------------------
+GOV_GUNLUK_KAYIP_USD = float(os.getenv("GOV_GUNLUK_KAYIP_USD", "40"))
+GOV_GUNLUK_GECIS_MAX = int(os.getenv("GOV_GUNLUK_GECIS_MAX", "6"))
+_GOV_SAYAC_DOSYA = "gov_sayac.json"
+
+
+def _gov_sayac_oku() -> dict:
+    try:
+        s = json.loads((_data_dir() / _GOV_SAYAC_DOSYA).read_text())
+    except (OSError, ValueError):
+        s = {}
+    gun = time.strftime("%Y-%m-%d", time.gmtime())
+    if s.get("gun") != gun:
+        s = {"gun": gun, "gecis_n": 0, "kayip_bildirildi": False}
+    return s
+
+
+def _gov_sayac_yaz(s: dict) -> None:
+    tmp = _data_dir() / (_GOV_SAYAC_DOSYA + ".tmp")
+    tmp.write_text(json.dumps(s))
+    os.replace(tmp, _data_dir() / _GOV_SAYAC_DOSYA)
+
+
+def _gov_gecis_kaydet() -> None:
+    s = _gov_sayac_oku()
+    s["gecis_n"] = int(s.get("gecis_n", 0)) + 1
+    _gov_sayac_yaz(s)
+
+
+def _canli_gun_pnl() -> float:
+    """Bugunku (UTC) canli gerceklesen PnL (governor kayip butcesi)."""
+    gun = time.strftime("%Y-%m-%d", time.gmtime())
+    toplam = 0.0
+    try:
+        for ln in open(_data_dir() / "canli_trades.jsonl"):
+            if not ln.strip():
+                continue
+            try:
+                t = json.loads(ln)
+            except ValueError:
+                continue
+            if t.get("type"):
+                continue
+            if time.strftime("%Y-%m-%d",
+                             time.gmtime(float(t.get("ts") or 0))) == gun:
+                toplam += float(t.get("pnl_usd") or 0)
+    except OSError:
+        pass
+    return round(toplam, 2)
+
+
+def _governor_salter_kaldir_gun_donumu() -> None:
+    icerik = _salter_icerik()
+    if icerik and "governor:" in icerik:
+        s = _gov_sayac_oku()
+        if not s.get("kayip_bildirildi"):     # yeni gun: butce tazelendi
+            (_data_dir() / "CANLI_DUR").unlink(missing_ok=True)
+            olay_yaz("GovernorSalterKalkti", {"neden": "gun_donumu"})
+
+
+def governor_kontrol(notify) -> dict:
+    """Mutlak sigortalar: gunluk kayip butcesi + gecis tavani.
+    Kayip asiminda governor-yazarli salter (yalniz kullanici veya gun
+    donumu kaldirir); gecis tavani asiminda yeni gecis izni yok."""
+    s = _gov_sayac_oku()
+    _governor_salter_kaldir_gun_donumu()
+    pnl = _canli_gun_pnl()
+    kayip_asildi = pnl <= -GOV_GUNLUK_KAYIP_USD
+    if kayip_asildi:
+        p = _data_dir() / "CANLI_DUR"
+        if not p.exists():
+            p.write_text(f"governor: gunluk kayip {pnl} <= "
+                         f"-{GOV_GUNLUK_KAYIP_USD}")
+        if not s.get("kayip_bildirildi"):
+            s["kayip_bildirildi"] = True
+            _gov_sayac_yaz(s)
+            olay_yaz("GovernorKayipFreni", {
+                "gun_pnl": pnl, "limit": -GOV_GUNLUK_KAYIP_USD})
+            notify(f"[CANLI] GOVERNOR: gunluk kayip {pnl}$ limiti asti, "
+                   "yeni girisler DURDU (cikislar acik)")
+    return {"gun_pnl": pnl, "kayip_asildi": kayip_asildi,
+            "gecis_n": int(s.get("gecis_n", 0)),
+            "gecis_izin": int(s.get("gecis_n", 0)) < GOV_GUNLUK_GECIS_MAX}
+
+
+def _edge_canli_turu(skorlar: dict, mevcut: str, d: dict,
+                     notify) -> str:
+    """EDGE CANLI SURUCU turu (26 Tem). Donis: "devam" | "restart".
+    Karar eslemesi: cash -> edge-salter; kal -> salteri kaldir;
+    gecis -> ortak gecis borusu. Hata -> mevcutta kal (fallback)."""
+    global _CEKIRDEK
+    from hibrit_trader.edge.cekirdek import Cekirdek
+    eval_id = f"ev-{int(time.time() * 1000)}"
+    gov = governor_kontrol(notify)
+    v2, hedef, hata = None, None, None
+    try:
+        if _CEKIRDEK is None:
+            _CEKIRDEK = Cekirdek()
+        v2 = _CEKIRDEK.karar(skorlar)
+        hedef = _CEKIRDEK.temsilci(skorlar)
+        if v2["aile"] == "cash" or hedef is None:
+            karar = "edge_cash"
+        elif hedef == mevcut:
+            karar = "kal"
+        else:
+            karar = "gecis"
+    except Exception as e:  # noqa: BLE001
+        hata = str(e)[:120]
+        karar = "cekirdek_hata_kal"
+        v2 = {"surum": "v2", "katman": "cekirdek_hata", "aile": None,
+              "hata": hata}
+    cooldown_kalan = max(
+        0.0, COOLDOWN_SN - (time.time() - float(d["son_gecis_ts"])))
+    if karar == "gecis":
+        if gov["kayip_asildi"]:
+            karar = "governor_kayip"
+        elif not gov["gecis_izin"]:
+            karar = "governor_gecis_tavani"
+        elif cooldown_kalan > 0:
+            karar = "cooldown"
+        elif hedef in FIRSAT_MOTORLAR and not firsat_var(hedef)[0]:
+            karar = "firsat_yok"
+    if karar == "edge_cash":
+        if _edge_salter_indir("cekirdek CASH karari"):
+            notify("[CANLI] EDGE: CASH karari, yeni girisler durdu "
+                   "(cikislar acik)")
+    elif karar in ("kal", "gecis") and not gov["kayip_asildi"]:
+        if _edge_salter_kaldir():
+            notify("[CANLI] EDGE: CASH bitti, girisler acildi")
+    switch_id = (f"sw-{int(time.time() * 1000)}"
+                 if karar == "gecis" else None)
+    olay_yaz("AutonomEvaluated", {
+        "eval_id": eval_id, "switch_id": switch_id,
+        "karar_ureticisi": "edge_v2", "window_min": d["pencere_dk"],
+        "current_live_engine": mevcut, "ranking": skorlar,
+        "decision": karar, "aday": hedef, "v2": v2, "governor": gov,
+        "cooldown_remaining_sec": round(cooldown_kalan, 1),
+        "config": config_anlik()})
+    _golge_olayla(skorlar, mevcut, karar, hedef, eval_id,
+                  v2_hazir=v2, temsilci_hazir=hedef)
+    if karar != "gecis":
+        return "devam"
+    notify(f"[CANLI] EDGE GECIS KARARI: {mevcut} -> {hedef} "
+           f"(aile {v2['aile']}, guven {v2.get('guven')})")
+
+    def _edge_dogrulayici():
+        son_skor = pencere_skorlari(float(d["pencere_dk"]),
+                                    sorted(skorlar))
+        try:
+            v2y = _CEKIRDEK.karar(son_skor)
+            t = _CEKIRDEK.temsilci(son_skor)
+            return (t if v2y.get("aile") not in (None, "cash") else None,
+                    son_skor)
+        except Exception:  # noqa: BLE001
+            return None, son_skor
+    sonuc = _gecis_uygula(mevcut, hedef, eval_id, switch_id,
+                          v2.get("guven"), d, _edge_dogrulayici, notify,
+                          "edge_karari")
+    return "restart" if sonuc == "tamam" else "devam"
+
+
 _CEKIRDEK = None
 
 
 def _golge_olayla(skorlar: dict, mevcut: str, karar: str,
-                  aday: str | None, eval_id: str | None) -> None:
+                  aday: str | None, eval_id: str | None,
+                  v2_hazir: dict | None = None,
+                  temsilci_hazir: str | None = None) -> None:
     """Edge zinciri GOLGE kiyasi (25 Tem HAT 2; 26 Tem v2 cekirdek):
     ayni girdiler, sifir etki; hata golgeyi oldurur, seciciyi ASLA.
     Fallback merdiveni: cekirdek -> girdi_yok -> cekirdek_hata(legacy)."""
@@ -301,8 +464,11 @@ def _golge_olayla(skorlar: dict, mevcut: str, karar: str,
         if _CEKIRDEK is None:
             _CEKIRDEK = Cekirdek()
         try:
-            v2 = _CEKIRDEK.karar(skorlar)
-            golge_aday = _CEKIRDEK.temsilci(skorlar)
+            if v2_hazir is not None:      # surucu turu: cift-ilerletme yok
+                v2, golge_aday = v2_hazir, temsilci_hazir
+            else:
+                v2 = _CEKIRDEK.karar(skorlar)
+                golge_aday = _CEKIRDEK.temsilci(skorlar)
         except Exception as e:  # noqa: BLE001  (cekirdek_hata katmani)
             v2 = {"surum": "v2", "katman": "cekirdek_hata",
                   "aile": None, "dagilim": None, "guven": 0.0,
@@ -323,6 +489,7 @@ def _golge_olayla(skorlar: dict, mevcut: str, karar: str,
         # H9: panel icin son karar dosyasi (atomik, kucuk)
         try:
             son = {"ts": time.time(), "eval_id": eval_id, **v2,
+                   "surucu": "canli" if edge_canli_aktif() else "golge",
                    "golge_aday": golge_aday,
                    "legacy_hedef": eski.get("legacy_hedef")}
             tmp = _data_dir() / "edge_karar_son.json.tmp"
@@ -332,6 +499,121 @@ def _golge_olayla(skorlar: dict, mevcut: str, karar: str,
             pass
     except Exception:  # noqa: BLE001
         log.debug("edge golge hatasi", exc_info=True)
+
+
+def _gecis_uygula(mevcut: str, aday: str, eval_id: str, switch_id: str,
+                  gerekce_pct, d: dict, dogrulayici, notify,
+                  neden: str) -> str:
+    """Ortak canli kaynak gecis borusu (26 Tem: legacy + edge surucusu).
+
+    Hibrit tasfiye -> duzlesme -> son dogrulama -> niyet -> swap.
+    dogrulayici() -> (yeni_aday, ranking): aday degistiyse iptal.
+    Donis: "tamam" (swap tetiklendi, restart geliyor) | "iptal"."""
+    from hibrit_trader.canli_session import TASFIYE_FILE
+    acik = _canli_acik_poz()
+    olay_yaz("AutonomSwitchRequested", {
+        "switch_id": switch_id, "eval_id": eval_id,
+        "from": mevcut, "to": aday, "reason": neden,
+        "leader_change_pct": gerekce_pct,
+        "cooldown_remaining_sec": 0.0,
+        "open_positions": acik, "config": config_anlik()})
+    notify(f"[CANLI] GECIS ({neden}): {mevcut} -> {aday}; hibrit "
+           f"tasfiye: {acik} poz, dogal cikisa {DOGAL_SN:.0f}sn")
+    tasfiye = _data_dir() / TASFIYE_FILE
+    bas = time.time()
+    zorla_ts = bas + DOGAL_SN
+    # pid = sahiplik damgasi (25 Tem P0): restart sonrasi yeni surec
+    # bu dosyayi YETIM tanir, zorla satis ateslenmez
+    tasfiye.write_text(json.dumps({
+        "switch_id": switch_id, "from": mevcut, "to": aday,
+        "zorla_ts": zorla_ts, "bas_ts": bas, "pid": os.getpid()}))
+    duz = False
+    dogal_sonu_poz = None
+    while time.time() - bas < DOGAL_SN + TASFIYE_SN:
+        time.sleep(5)
+        if dogal_sonu_poz is None and time.time() >= zorla_ts:
+            dogal_sonu_poz = _canli_acik_poz()   # zorlamaya kalanlar
+        if _canli_acik_poz() == 0:
+            duz = True
+            break
+    tasfiye.unlink(missing_ok=True)
+    kalan = _canli_acik_poz()
+    if dogal_sonu_poz is None:       # dogal fazda duzlesti
+        dogal_sonu_poz = 0 if duz else kalan
+    dogal_kapatilan = max(0, acik - max(dogal_sonu_poz, 0))
+    zorla_kapatilan = max(0, max(dogal_sonu_poz, 0) - max(kalan, 0))
+    if not duz:
+        olay_yaz("AutonomSwitchAborted", {
+            "switch_id": switch_id, "reason": "timeout",
+            "asama": "tasfiye", "acik_kalan_poz": kalan,
+            "dogal_kapatilan": dogal_kapatilan,
+            "zorla_kapatilan": zorla_kapatilan})
+        notify("[CANLI] GECIS: tasfiye zaman asimi, iptal")
+        return "iptal"
+    son_aday, son_ranking = dogrulayici()
+    if son_aday != aday:
+        olay_yaz("AutonomSwitchAborted", {
+            "switch_id": switch_id, "reason": "leader_changed",
+            "asama": "son_dogrulama", "eski_aday": aday,
+            "yeni_aday": son_aday, "ranking": son_ranking})
+        notify("[CANLI] GECIS: hedef degisti, iptal")
+        return "iptal"
+    d["son_gecis_ts"] = time.time()
+    durum_yaz(d)
+    _gov_gecis_kaydet()
+    niyet = {"switch_id": switch_id, "eval_id": eval_id,
+             "from": mevcut, "to": aday, "bas_ts": bas,
+             "tasfiye_sure_sec": round(time.time() - bas, 1),
+             "positions_closed": acik,
+             "dogal_kapatilan": dogal_kapatilan,
+             "zorla_kapatilan": zorla_kapatilan}
+    yol = _data_dir() / NIYET_DOSYA
+    tmp = yol.with_suffix(".tmp")
+    tmp.write_text(json.dumps(niyet))
+    os.replace(tmp, yol)
+    notify(f"[CANLI] GECIS: duzlesti, kaynak {aday} oluyor "
+           "(servis restart)")
+    _swap_tetikle(aday)
+    return "tamam"
+
+
+# ---- EDGE CANLI SURUCU (26 Tem kullanici talimati) ---------------------
+EDGE_CANLI = os.getenv("EDGE_CANLI", "0") == "1"
+EDGE_GERI_AL_DOSYA = "EDGE_GERI_AL"
+
+
+def edge_canli_aktif() -> bool:
+    """Edge surucu yetkisi: EDGE_CANLI=1 VE geri-alma bayragi yok.
+    TEK-KOMUT ROLLBACK: `touch data/EDGE_GERI_AL` -> anlik golgeye
+    doner, legacy devralir (restartsiz). Yeniden yetki: dosyayi silmek
+    KULLANICI kararidir."""
+    return EDGE_CANLI and not (_data_dir() / EDGE_GERI_AL_DOSYA).exists()
+
+
+def _salter_icerik() -> str | None:
+    try:
+        return (_data_dir() / "CANLI_DUR").read_text(errors="replace")
+    except OSError:
+        return None
+
+
+def _edge_salter_indir(neden: str) -> bool:
+    """Edge-yazarli salter: dosya varsa (kim koyduysa) dokunmaz;
+    yoksa 'edge:' imzasiyla yazar. Oncelik: kullanici > governor >
+    edge > otonom."""
+    p = _data_dir() / "CANLI_DUR"
+    if p.exists():
+        return False
+    p.write_text(f"edge: {neden}")
+    return True
+
+
+def _edge_salter_kaldir() -> bool:
+    icerik = _salter_icerik()
+    if icerik is None or "edge:" not in icerik:
+        return False
+    (_data_dir() / "CANLI_DUR").unlink(missing_ok=True)
+    return True
 
 
 def yetim_tasfiye_mutabakati() -> dict | None:
@@ -474,6 +756,17 @@ def kontrol_dongusu() -> None:
                 # legacy pasif = mevcutta kal; secici hicbir sey yapmaz
                 _golge_olayla(skorlar, mevcut, "otonom_kapali", None, None)
                 continue
+            # ---- EDGE CANLI SURUCU dali (26 Tem kullanici talimati) ----
+            if EDGE_CANLI:
+                if not edge_canli_aktif():
+                    # geri-alma bayragi: edge salteri asili kalmasin,
+                    # legacy asagida devralir
+                    _edge_salter_kaldir()
+                else:
+                    if _edge_canli_turu(skorlar, mevcut, d,
+                                        notify) == "restart":
+                        return
+                    continue
             eval_id = f"ev-{int(time.time() * 1000)}"
             # kural 3-4: system_enabled (saltere dokunmaz, yalniz secim)
             if all(s["pct"] < POZITIF_ESIK for s in skorlar.values()):
@@ -540,76 +833,18 @@ def kontrol_dongusu() -> None:
             _golge_olayla(skorlar, mevcut, karar, aday, eval_id)
             if karar != "gecis":
                 continue
-            # ---- gecis prosedueru ----
-            acik = _canli_acik_poz()
-            olay_yaz("AutonomSwitchRequested", {
-                "switch_id": switch_id, "eval_id": eval_id,
-                "from": mevcut, "to": aday, "reason": "lider_degisti",
-                "leader_change_pct": lider_pct,
-                "cooldown_remaining_sec": 0.0,
-                "open_positions": acik, "config": config_anlik()})
-            notify(f"[CANLI] OTONOM GECIS: {mevcut} -> {aday} "
-                   f"(%{lider_pct}); hibrit tasfiye: {acik} poz, "
-                   f"dogal cikisa {DOGAL_SN:.0f}sn")
-            tasfiye = _data_dir() / TASFIYE_FILE
-            bas = time.time()
-            zorla_ts = bas + DOGAL_SN
-            # pid = sahiplik damgasi (25 Tem P0): restart sonrasi yeni
-            # surec bu dosyayi YETIM tanir, zorla satis ateslenmez
-            tasfiye.write_text(json.dumps({
-                "switch_id": switch_id, "from": mevcut, "to": aday,
-                "zorla_ts": zorla_ts, "bas_ts": bas, "pid": os.getpid()}))
-            duz = False
-            dogal_sonu_poz = None
-            while time.time() - bas < DOGAL_SN + TASFIYE_SN:
-                time.sleep(5)
-                if dogal_sonu_poz is None and time.time() >= zorla_ts:
-                    dogal_sonu_poz = _canli_acik_poz()   # zorlamaya kalanlar
-                if _canli_acik_poz() == 0:
-                    duz = True
-                    break
-            tasfiye.unlink(missing_ok=True)
-            kalan = _canli_acik_poz()
-            if dogal_sonu_poz is None:       # dogal fazda duzlesti
-                dogal_sonu_poz = 0 if duz else kalan
-            dogal_kapatilan = max(0, acik - max(dogal_sonu_poz, 0))
-            zorla_kapatilan = max(0, max(dogal_sonu_poz, 0) - max(kalan, 0))
-            if not duz:
-                olay_yaz("AutonomSwitchAborted", {
-                    "switch_id": switch_id, "reason": "timeout",
-                    "asama": "tasfiye", "acik_kalan_poz": kalan,
-                    "dogal_kapatilan": dogal_kapatilan,
-                    "zorla_kapatilan": zorla_kapatilan})
-                notify("[CANLI] OTONOM: tasfiye zaman asimi, gecis iptal")
-                continue
-            # swap oncesi son dogrulama: lider hala ayni mi (yaris kosulu)
-            son_skor = pencere_skorlari(float(d["pencere_dk"]), kaynaklar)
-            son_egim = {m: (round(son_skor[m]["pct"] - gecmis_skorlar[m][0], 3)
-                            if len(gecmis_skorlar.get(m, [])) >= 2 else None)
-                        for m in son_skor}
-            son_aday = aday_sec(son_skor, mevcut, egimler=son_egim)
-            if son_aday != aday:
-                olay_yaz("AutonomSwitchAborted", {
-                    "switch_id": switch_id, "reason": "leader_changed",
-                    "asama": "son_dogrulama", "eski_aday": aday,
-                    "yeni_aday": son_aday, "ranking": son_skor})
-                notify("[CANLI] OTONOM: lider degisti, gecis iptal")
-                continue
-            d["son_gecis_ts"] = time.time()
-            durum_yaz(d)
-            niyet = {"switch_id": switch_id, "eval_id": eval_id,
-                     "from": mevcut, "to": aday, "bas_ts": bas,
-                     "tasfiye_sure_sec": round(time.time() - bas, 1),
-                     "positions_closed": acik,
-                     "dogal_kapatilan": dogal_kapatilan,
-                     "zorla_kapatilan": zorla_kapatilan}
-            yol = _data_dir() / NIYET_DOSYA
-            tmp = yol.with_suffix(".tmp")
-            tmp.write_text(json.dumps(niyet))
-            os.replace(tmp, yol)
-            notify(f"[CANLI] OTONOM: duzlesti, kaynak {aday} oluyor "
-                   "(servis restart)")
-            _swap_tetikle(aday)
-            return   # restart geliyor; mutabakati yeni surec yapar
+            def _legacy_dogrulayici():
+                son_skor = pencere_skorlari(float(d["pencere_dk"]),
+                                            kaynaklar)
+                son_egim = {m: (round(son_skor[m]["pct"]
+                                      - gecmis_skorlar[m][0], 3)
+                                if len(gecmis_skorlar.get(m, [])) >= 2
+                                else None) for m in son_skor}
+                return aday_sec(son_skor, mevcut, egimler=son_egim), son_skor
+            if _gecis_uygula(mevcut, aday, eval_id, switch_id, lider_pct,
+                             d, _legacy_dogrulayici, notify,
+                             "lider_degisti") == "tamam":
+                return   # restart geliyor; mutabakati yeni surec yapar
+            continue
         except Exception:
             log.exception("otonom secici tur hatasi")
