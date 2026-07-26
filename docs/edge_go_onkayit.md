@@ -67,3 +67,12 @@ GO raporu Z1+Z2+Z3 gecerse:
 5. Olcum surekliligi: golge-defter ve KPI'lar kademelerde kesintisiz.
 Gerekce: danisman fazi 7 gunluk golge doneminin kendisidir (tekrar
 bilgi uretmez); veto, canli yurutmenin en dusuk-riskli sinavidir.
+
+## DUZELTME 2 (26 Tem, kullanici talimati): kademeli plan revize
+Kullanici karari: Edge ayni gun TAM canli surucu oldu (once veto
+kademesi uygulanmadi). Z1/Z2/Z3 olcum tanimlari PAPER-PAPER oldugundan
+DEGISMEDI ve birikmeye devam eder; ancak raporlar su dipnotu tasir:
+"donem boyunca Edge canli surucuydu". GO raporu artik yetki kapisi
+degil, PERFORMANS DEGERLENDIRME raporudur. Rollback: data/EDGE_GERI_AL
+(tek komut, restartsiz); governor korumalar: gunluk kayip butcesi +
+gecis tavani.
