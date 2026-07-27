@@ -119,3 +119,56 @@ def test_maliyet_ozeti(veri_dizin):
     m = karsilastir.maliyet_ozeti(hedef, ev.islemler)
     assert m["evren_pnl_usd"] == pytest.approx(-41.0)
     assert m["kohort_haric_pnl_usd"] == pytest.approx(9.0)
+
+
+def test_varsayilan_olcut_yuzdedir(veri_dizin):
+    """28 Tem duzeltmesi: kohort varsayilan olarak pnl_pct ile siralanir."""
+    bas = veri._ts(veri.GUVENILIR_BASLANGIC) + 7200
+    # buyuk bilet + kucuk yuzde kayip  vs  kucuk bilet + buyuk yuzde kayip
+    sat = [
+        _satir("v7", bas + 60, -50.0, -5.0, tid="BUYUK_BILET", cost_usd=1000.0),
+        _satir("v7", bas + 120, -8.0, -40.0, tid="BUYUK_YUZDE", cost_usd=20.0),
+    ]
+    sat += [_satir("v7", bas + 200 + i, +1.0, 1.0, tid=f"OK{i}") for i in range(6)]
+    (veri_dizin / "v7_trades.jsonl").write_text("\n".join(sat))
+    ev = veri.yukle(("v7",))
+    s = kohort.uygula("gunluk_en_kotu_n", ev.islemler, n=1)
+    assert s.hedef[0]["trade_id"] == "BUYUK_YUZDE"      # yuzde olcutu
+    assert s.damga["olcut"] == "pct" and not s.damga["uyari"]
+    # dolar olcutu opsiyonel ve UYARILI
+    s2 = kohort.uygula("gunluk_en_kotu_n", ev.islemler, n=1, olcut="usd")
+    assert s2.hedef[0]["trade_id"] == "BUYUK_BILET"
+    assert "tautoloji" in s2.damga["uyari"] or "BULGU SAYILMAZ" in s2.damga["uyari"]
+
+
+def test_secim_tuple_gibi_de_calisir(veri_dizin):
+    bas = veri._ts(veri.GUVENILIR_BASLANGIC) + 7200
+    (veri_dizin / "v7_trades.jsonl").write_text("\n".join(
+        _satir("v7", bas + i * 60, -float(i), -float(i), tid=f"K{i}")
+        for i in range(1, 9)))
+    ev = veri.yukle(("v7",))
+    hedef, kontrol = kohort.uygula("gunluk_en_kotu_n", ev.islemler, n=2)
+    assert len(hedef) == 2 and len(kontrol) == 6
+
+
+def test_bilinmeyen_olcut_hata(veri_dizin):
+    bas = veri._ts(veri.GUVENILIR_BASLANGIC) + 7200
+    (veri_dizin / "v7_trades.jsonl").write_text(
+        _satir("v7", bas + 60, -1.0, -1.0, tid="X"))
+    ev = veri.yukle(("v7",))
+    with pytest.raises(ValueError):
+        kohort.uygula("gunluk_en_kotu_n", ev.islemler, olcut="euro")
+
+
+def test_rapor_olcutu_damgalar(veri_dizin):
+    from hibrit_trader.forensic import rapor
+    bas = veri._ts(veri.GUVENILIR_BASLANGIC) + 7200
+    sat = [_satir("v7", bas + i * 60, -float(i + 1), -float(i + 1), tid=f"K{i}")
+           for i in range(12)]
+    (veri_dizin / "v7_trades.jsonl").write_text("\n".join(sat))
+    ev = veri.yukle(("v7",))
+    s = kohort.uygula("gunluk_en_kotu_n", ev.islemler, n=3)
+    imz = karsilastir.imza(s.hedef, s.kontrol, min_n=3)
+    mal = karsilastir.maliyet_ozeti(s.hedef, ev.islemler)
+    m = rapor.metin(ev.ozet(), "gunluk_en_kotu_n", mal, imz, damga=s.damga)
+    assert "SECICI DAMGASI" in m and "OLCUT" in m and "pct" in m

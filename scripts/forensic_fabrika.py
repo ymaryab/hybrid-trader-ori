@@ -28,6 +28,10 @@ def main() -> int:
                     help="ISO (or. 2026-07-23T00:00:00Z); varsayilan guvenilir baslangic")
     ap.add_argument("--kirli", action="store_true",
                     help="guvenilir baslangictan onceki veriyi de al (damgalanir)")
+    ap.add_argument("--olcut", default="pct", choices=("pct", "usd"),
+                    help="kohort siralama olcutu; varsayilan pct (bilet-bagimsiz)")
+    ap.add_argument("--yalniz-giris", action="store_true",
+                    help="yalniz giris aninda bilinen ozellikleri degerlendir")
     ap.add_argument("--cikti", default="data/forensic_son.json")
     ap.add_argument("--liste", action="store_true")
     a = ap.parse_args()
@@ -53,23 +57,26 @@ def main() -> int:
         print("GUVEN KAPISI:", e)
         return 2
 
-    kw = {}
+    kw = {"olcut": a.olcut}
     if a.kohort == "gunluk_en_kotu_n":
-        kw = {"n": a.n}
+        kw["n"] = a.n
     elif a.kohort in ("pareto_zarar", "katki_kuyrugu"):
-        kw = {"pay": a.pay}
+        kw["pay"] = a.pay
     elif a.kohort == "esik_alti_pct":
-        kw = {"esik": a.esik}
-    hedef, kontrol = kohort.uygula(a.kohort, ev.islemler, **kw)
+        kw["esik"] = a.esik
+    secim = kohort.uygula(a.kohort, ev.islemler, **kw)
+    hedef, kontrol = secim.hedef, secim.kontrol
     if not hedef:
         print("kohort bos: secici hicbir islem dondurmedi")
         return 1
 
-    imz = karsilastir.imza(hedef, kontrol)
+    oz = ozellik.giris_anI() if a.yalniz_giris else None
+    imz = karsilastir.imza(hedef, kontrol, ozellikler=oz)
     mal = karsilastir.maliyet_ozeti(hedef, ev.islemler)
     ornek = sorted(hedef, key=lambda t: t.get("pnl_usd") or 0)
-    print(rapor.metin(ev.ozet(), a.kohort, mal, imz, ornek))
-    rapor.json_yaz(Path(a.cikti), ev.ozet(), a.kohort, mal, imz)
+    print(rapor.metin(ev.ozet(), a.kohort, mal, imz, ornek, damga=secim.damga))
+    rapor.json_yaz(Path(a.cikti), ev.ozet(), a.kohort, mal, imz,
+                   damga=secim.damga)
     print("\njson: %s" % a.cikti)
     return 0
 

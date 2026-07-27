@@ -13,13 +13,29 @@ import time
 from pathlib import Path
 
 
+_OLCUT_ACIKLAMA = {
+    "pct": "yuzde kayip (pnl_pct) · bilet buyuklugunden BAGIMSIZ",
+    "usd": "dolar kayip (pnl_usd) · buyuk biletleri MEKANIK one alir",
+}
+
+
 def metin(evren_ozet: dict, kohort_ad: str, maliyet: dict,
-          imza: dict, ornekler: list[dict] | None = None) -> str:
+          imza: dict, ornekler: list[dict] | None = None,
+          damga: dict | None = None) -> str:
+    damga = damga or {}
+    olcut = damga.get("olcut", "?")
     s = []
     s.append("=" * 72)
-    s.append(f"FORENSIC FABRIKA · kohort: {kohort_ad} · "
-             f"{time.strftime('%Y-%m-%d %H:%M', time.gmtime())} UTC")
+    s.append(f"FORENSIC FABRIKA · {time.strftime('%Y-%m-%d %H:%M', time.gmtime())} UTC")
     s.append("=" * 72)
+    s.append("")
+    s.append("SECICI DAMGASI")
+    s.append(f"  kohort secici : {damga.get('secici', kohort_ad)}")
+    s.append(f"  OLCUT         : {olcut}  ({_OLCUT_ACIKLAMA.get(olcut, '-')})")
+    if damga.get("parametreler"):
+        s.append(f"  parametreler  : {damga['parametreler']}")
+    if damga.get("uyari"):
+        s.append(f"  !! {damga['uyari']}")
     s.append("")
     s.append("VERI SAYDAMLIGI")
     s.append(f"  evren: {evren_ozet['n']} islem, {evren_ozet['baslangic']}'ten itibaren")
@@ -84,11 +100,12 @@ def metin(evren_ozet: dict, kohort_ad: str, maliyet: dict,
 
 
 def json_yaz(yol: Path, evren_ozet: dict, kohort_ad: str,
-             maliyet: dict, imza: dict) -> None:
+             maliyet: dict, imza: dict, damga: dict | None = None) -> None:
     yol.parent.mkdir(parents=True, exist_ok=True)
     tmp = yol.with_suffix(".tmp")
     tmp.write_text(json.dumps({
-        "sv": 1, "ts": time.time(), "kohort": kohort_ad,
-        "evren": evren_ozet, "maliyet": maliyet, "imza": imza},
+        "sv": 2, "ts": time.time(), "kohort": kohort_ad,
+        "damga": damga or {}, "evren": evren_ozet,
+        "maliyet": maliyet, "imza": imza},
         ensure_ascii=False, indent=1))
     tmp.replace(yol)
