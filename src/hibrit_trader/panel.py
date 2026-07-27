@@ -942,17 +942,15 @@ def api_filo(limit: int = Query(30)) -> dict:
         if prefix == aktif_canli:
             pozz = [p for p in pozz if not float(p.get("canli_miktar") or 0.0) > 0]
         return _paper_pozlar(bot_ad, pozz)
-    tum_pozlar += _paper_bot("V7", "v7")
-    tum_pozlar += _paper_bot("V7C", "v7c")
-    tum_pozlar += _paper_bot("V7D", "v7d")
-    tum_pozlar += _paper_bot("V7HIZLI", "v7hizli")
-    tum_pozlar += _paper_bot("V7NEW", "v7new")
-    tum_pozlar += _paper_bot("V7HT", "v7ht")
-    tum_pozlar += _paper_bot("YZ", "yz")
-    tum_pozlar += _paper_bot("YZN1", "yzn1")
-    tum_pozlar += _paper_bot("R1", "r1")
-    tum_pozlar += _paper_bot("R2", "r2")
-    tum_pozlar += _paper_bot("V7T", "v7t")
+    # UI tablosu: gizlenen motorlarin satirlari basilmaz (backend verisi durur)
+    _gizli = _panel_gizli()
+    for _ad, _pre in (("V7", "v7"), ("V7C", "v7c"), ("V7D", "v7d"),
+                      ("V7HIZLI", "v7hizli"), ("V7NEW", "v7new"),
+                      ("V7HT", "v7ht"), ("YZ", "yz"), ("YZN1", "yzn1"),
+                      ("R1", "r1"), ("R2", "r2"), ("V7T", "v7t")):
+        if _pre in _gizli:
+            continue
+        tum_pozlar += _paper_bot(_ad, _pre)
     out["acik_pozlar"] = tum_pozlar
     # Aktif canli motor: swap butonu icin JS bunu kullanir
     out["canli_motor"] = os.getenv("CANLI_MOTOR", "v7").strip().lower()
@@ -1756,6 +1754,17 @@ _FILO_MOTORLAR: list[dict] = [
      "rozet": "10. motor · kaynak " + os.getenv("CANLI_KAYNAK_MOTOR", "r1").upper(),
      "desc": "CANLI 10. motor (19 Tem): gerçek cüzdanla emir keser · kural seti CANLI_KAYNAK_MOTOR env'den (default R1) · birikimli defter + kural_degisim satırları"},
 ]
+
+
+def _panel_gizli() -> set:
+    """UI'dan gizlenecek motor id'leri (PANEL_GIZLI_MOTORLAR, virgullu).
+
+    YALNIZ gorunum: motorlar calismaya, defterlerine yazmaya ve /api
+    uclarindan (or. /api/r1/equity, /api/filo icindeki r1 anahtari)
+    servis edilmeye devam eder. Bos birakilirsa hicbir sey degismez.
+    """
+    ham = os.getenv("PANEL_GIZLI_MOTORLAR", "")
+    return {a.strip().lower() for a in ham.split(",") if a.strip()}
 
 
 _CANLI_CUZDAN = "DZXZGD5FURZDwa5BWByxxd7iLdCvGxSCy6RWHsgupaYa"
@@ -2945,7 +2954,9 @@ def momentum_page() -> str:
     else:
         mod_rozet = '<span class="badge">paper</span>'
         canli_durum = "yok"
-    gorunur = [m for m in _FILO_MOTORLAR if not m.get("gizli")]
+    _gizli = _panel_gizli()
+    gorunur = [m for m in _FILO_MOTORLAR
+               if not m.get("gizli") and m["id"].lower() not in _gizli]
     kartlar = "".join(_filo_kart(m, canli_durum)
                       for m in gorunur if not m.get("arka"))
     chartlar = "".join(_filo_chart(m, canli_durum)
