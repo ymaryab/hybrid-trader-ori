@@ -604,6 +604,20 @@ def _equity_rows(yol: Path) -> list[tuple[float, float]]:
 
 
 def _equity_series(prefix: str, minutes: int, equity_jsonl: bool = True) -> dict:
+    """Equity serisi. Dondurulmus motorlarda (RUNNER_DONDUR) kisa TTL
+    onbellekten doner: panel bu ucu saniyede birkac kez cagiriyor ve her
+    cagri tum trades dosyasini ayristiriyor. Alim-satima etkisi yok."""
+    from hibrit_trader import runner_dondur
+
+    if runner_dondur.donduruldu(prefix):
+        return runner_dondur.panel_onbellek(
+            f"eq:{prefix}:{minutes}:{equity_jsonl}",
+            lambda: _equity_series_hesapla(prefix, minutes, equity_jsonl))
+    return _equity_series_hesapla(prefix, minutes, equity_jsonl)
+
+
+def _equity_series_hesapla(prefix: str, minutes: int,
+                           equity_jsonl: bool = True) -> dict:
     """Equity serisi: trades kumulatifi + panel orneklemleri + canli uc nokta.
 
     Uc nokta istek aninda state'ten _live_equity ile hesaplanir; ust ozetle

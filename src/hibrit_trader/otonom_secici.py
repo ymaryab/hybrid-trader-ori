@@ -373,9 +373,17 @@ def governor_kontrol(notify) -> dict:
 
 def _canli_yasak_aileler() -> set:
     """CANLI'ya kapali aileler (26 Tem risk karari: runner). Golge/GO
-    olcumu etkilenmez; kisit yalniz canli surucu katmaninda."""
+    olcumu etkilenmez; kisit yalniz canli surucu katmaninda.
+
+    Iki kaynak birlesir: EDGE_CANLI_AILE_YASAK listesi ve RUNNER_DONDUR
+    tek-anahtari (27 Tem: runner tam dondurma)."""
+    from hibrit_trader import runner_dondur
+
     ham = os.getenv("EDGE_CANLI_AILE_YASAK", "")
-    return {a.strip() for a in ham.split(",") if a.strip()}
+    yasak = {a.strip() for a in ham.split(",") if a.strip()}
+    if runner_dondur.aktif():
+        yasak.add(runner_dondur.AILE)
+    return yasak
 
 
 def _canli_skor_suz(skorlar: dict) -> tuple:
