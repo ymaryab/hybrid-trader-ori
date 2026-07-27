@@ -27,18 +27,51 @@ _OZELLIKLER: dict[str, dict] = {}
 
 
 def kaydet(ad: str, zaman: str, alanlar: tuple[str, ...],
-           aciklama: str = "") -> Callable:
+           aciklama: str = "", turev: tuple[str, ...] = ()) -> Callable:
+    """Ozellik kaydi. zaman beyani KOD DENETIMIYLE dogrulanir.
+
+    28 Tem kurali: bir ozellik 'giris' blogunda yer alabilmesi icin
+    dayandigi TUM alanlarin sicilde damga="giris" olmasi sarttir. Cikista
+    veya dolum sonrasi uretilen bir alan giris blogunda ILAN EDILEMEZ;
+    denemek hata verir (tetik_gecikme bu kurala takildi).
+
+    turev: bu ozellik baska ozelliklerin deterministik fonksiyonuysa
+    onlarin adlari; rapor bagimsiz sinyal gibi okunmasin diye isaretler.
+    """
     if zaman not in ("giris", "sonra"):
         raise ValueError("zaman 'giris' veya 'sonra' olmali")
     alan_kontrol(alanlar)                      # yok/bilinmeyen alan = hata
+    if zaman == "giris":
+        ihlal = [a for a in alanlar
+                 if ALAN_SICILI[a].get("damga", "giris") != "giris"]
+        if ihlal:
+            raise ValueError(
+                f"'{ad}' giris blogunda ilan edilemez: {ihlal} alanlari "
+                "girisTEN SONRA uretiliyor (sicildeki damga). zaman='sonra' "
+                "kullanin.")
     kismi = [a for a in alanlar
              if ALAN_SICILI[a]["durum"] in ("kismi", "supheli")]
+    supheli = [a for a in alanlar if ALAN_SICILI[a]["durum"] == "supheli"]
+    if supheli:
+        guven = "C"
+    elif kismi or turev:
+        guven = "B"
+    else:
+        guven = "A"
 
     def sar(fn):
         _OZELLIKLER[ad] = {"fn": fn, "zaman": zaman, "alanlar": alanlar,
-                           "aciklama": aciklama, "kismi_alanlar": tuple(kismi)}
+                           "aciklama": aciklama, "kismi_alanlar": tuple(kismi),
+                           "turev": tuple(turev), "guven": guven}
         return fn
     return sar
+
+
+GUVEN_ACIKLAMA = {
+    "A": "tam dolu alan · karar aninda bilinir · bagimsiz",
+    "B": "kismi dolu alan VEYA baska ozelliklerin turevi",
+    "C": "degeri dogrulanmamis (supheli) alan",
+}
 
 
 def liste(zaman: str | None = None) -> dict:
@@ -92,7 +125,8 @@ def _(t):
     return None if v is None or v < 0 else math.log10(v + 1)
 
 
-@kaydet("m5_h1_orani", "giris", ("chg_h1", "chg_m5"), "kisa/uzun ivme orani")
+@kaydet("m5_h1_orani", "giris", ("chg_h1", "chg_m5"), "kisa/uzun ivme orani",
+        turev=("h1", "m5"))
 def _(t):
     h, m = _f(t, "chg_h1"), _f(t, "chg_m5")
     if h is None or m is None or abs(h) < 1:
@@ -101,7 +135,8 @@ def _(t):
 
 
 @kaydet("h1_m5_sapma", "giris", ("chg_h1", "chg_m5"),
-        "h1 ile m5'in dogrusal izdusumu arasindaki sapma")
+        "h1 ile m5'in dogrusal izdusumu arasindaki sapma",
+        turev=("h1", "m5"))
 def _(t):
     h, m = _f(t, "chg_h1"), _f(t, "chg_m5")
     return None if h is None or m is None else h - 12 * m
@@ -113,22 +148,32 @@ def _(t):
     return None if not v or v <= 0 else math.log10(v)
 
 
-@kaydet("saat_utc", "giris", ("hold_sec",), "giris saati (UTC, 0-23)")
+@kaydet("saat_utc", "giris", ("_giris_ts",), "giris saati (UTC, 0-23)")
 def _(t):
     return float(time.gmtime(t["_giris_ts"]).tm_hour)
 
 
-@kaydet("tetik_gecikme", "giris", ("tetik_gecikme_sec",),
-        "KISMI ALAN (%75): tetikten doluma gecen saniye")
-def _(t): return _f(t, "tetik_gecikme_sec")
-
-
 @kaydet("taze_fark", "giris", ("entry_fresh_fark_pct",),
-        "KISMI ALAN (%58): hizli fiyat ile taze kotasyon farki")
+        "KISMI ALAN (%58): giris dogrulamasinda hizli fiyat ile taze "
+        "kotasyon farki (karar aninda bilinir)")
 def _(t): return _f(t, "entry_fresh_fark_pct")
 
 
 # ---- GIRISTEN SONRA olusanlar: yalniz teshis -------------------------
+# 28 Tem: tetik_gecikme buraya TASINDI. Kod denetimi (v7hizli_session:692)
+# bu degerin cikisi tetikleyen fiyat ornegi ile kapanis arasindaki gecikme
+# oldugunu gosterdi; giris aninda mevcut degildir. Onceki "en kararli
+# giris sinyali" okumasi bu yuzden gecersizdir.
+@kaydet("tetik_gecikme", "sonra", ("tetik_gecikme_sec",),
+        "CIKIS aninda uretilir: tetikleyen ornek ile kapanis arasi gecikme")
+def _(t): return _f(t, "tetik_gecikme_sec")
+
+
+@kaydet("friction", "sonra", ("friction_pct",),
+        "dolum SONRASI: giris kaymasi + cikis kaymasi toplami")
+def _(t): return _f(t, "friction_pct")
+
+
 @kaydet("mfe", "sonra", ("mfe_pct",), "en yuksek lehte hareket")
 def _(t): return _f(t, "mfe_pct")
 

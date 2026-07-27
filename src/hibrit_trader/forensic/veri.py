@@ -35,24 +35,37 @@ GUVENILIR_BASLANGIC = "2026-07-23T00:00:00Z"
 #   yok     : hic yazilmiyor, kullanilamaz
 #   supheli : yaziliyor ama degeri dogrulanamadi
 ALAN_SICILI: dict[str, dict] = {
-    "pnl_pct":            {"durum": "tam"},
-    "pnl_usd":            {"durum": "tam"},
-    "cost_usd":           {"durum": "tam"},
-    "exit_reason":        {"durum": "tam"},
-    "hold_sec":           {"durum": "tam"},
-    "token_address":      {"durum": "tam"},
-    "chg_h1":             {"durum": "tam"},
-    "chg_m5":             {"durum": "tam"},
-    "liq_entry":          {"durum": "tam"},
+    "pnl_pct":            {"durum": "tam", "damga": "cikis"},
+    "pnl_usd":            {"durum": "tam", "damga": "cikis"},
+    "cost_usd":           {"durum": "tam", "damga": "giris"},
+    "exit_reason":        {"durum": "tam", "damga": "cikis"},
+    "hold_sec":           {"durum": "tam", "damga": "cikis"},
+    "token_address":      {"durum": "tam", "damga": "giris"},
+    # Turetilmis alan: defterde yok, yukleyici ts - hold_sec ile kurar.
+    # Buyuklugun kendisi (girisin ne zaman yapildigi) giris anina aittir;
+    # yeniden kurulum yontemi cikis verisi kullanir, bu bir sizinti degil.
+    "_giris_ts":          {"durum": "tam", "damga": "giris",
+                           "not": "yukleyici tarafindan ts - hold_sec ile kurulur"},
+    "chg_h1":             {"durum": "tam", "damga": "giris"},
+    "chg_m5":             {"durum": "tam", "damga": "giris"},
+    "liq_entry":          {"durum": "tam", "damga": "giris"},
     "mae_pct":            {"durum": "tam", "zaman": "sonra"},
     "mfe_pct":            {"durum": "tam", "zaman": "sonra"},
     "karar_fiyat":        {"durum": "tam"},
     "karar_cikis":        {"durum": "tam", "zaman": "sonra"},
     "karar_pnl_pct":      {"durum": "tam", "zaman": "sonra"},
-    "pool_yas_dk":        {"durum": "tam", "guvenilir_ts": "2026-07-21T00:00:00Z"},
-    "tetik_gecikme_sec":  {"durum": "kismi", "oran": 0.75},
-    "entry_fresh_fark_pct": {"durum": "kismi", "oran": 0.58},
-    "friction_pct":       {"durum": "kismi", "oran": 0.99},
+    "pool_yas_dk":        {"durum": "tam", "guvenilir_ts": "2026-07-21T00:00:00Z",
+                           "damga": "giris"},
+    # 28 Tem kod denetimi (v7hizli_session referans alindi):
+    #   :692  tetik_gecikme = now - _price_ts  -> CIKIS aninda uretilir
+    #   :721  friction_pct  = entry_slip_pct + cikis slip  -> dolum SONRASI
+    #   :518/:551 entry_fresh_fark_pct -> giris dogrulamasinda, karar aninda
+    #   :395-403/:541-546 chg_h1/chg_m5/liq_entry/cost_usd -> giris damgasi
+    "tetik_gecikme_sec":  {"durum": "kismi", "oran": 0.75, "damga": "cikis",
+                           "not": "cikisi tetikleyen ornek ile kapanis arasi gecikme"},
+    "entry_fresh_fark_pct": {"durum": "kismi", "oran": 0.58, "damga": "giris"},
+    "friction_pct":       {"durum": "kismi", "oran": 0.99, "damga": "dolum_sonrasi",
+                           "not": "entry_slip + cikis slip; karar aninda bilinemez"},
     "sol_chg_h1":         {"durum": "supheli", "not": "canli defterde sabit 0.000"},
     "mae_at_sec":         {"durum": "yok"},
     "mfe_at_sec":         {"durum": "yok"},

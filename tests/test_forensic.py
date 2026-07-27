@@ -172,3 +172,49 @@ def test_rapor_olcutu_damgalar(veri_dizin):
     mal = karsilastir.maliyet_ozeti(s.hedef, ev.islemler)
     m = rapor.metin(ev.ozet(), "gunluk_en_kotu_n", mal, imz, damga=s.damga)
     assert "SECICI DAMGASI" in m and "OLCUT" in m and "pct" in m
+
+
+def test_cikis_alani_giris_blogunda_ilan_edilemez():
+    """28 Tem kurali: cikis/dolum-sonrasi damgali alan giris ozelligi olamaz."""
+    with pytest.raises(ValueError, match="giris blogunda ilan edilemez"):
+        ozellik.kaydet("olmaz_gecikme", "giris", ("tetik_gecikme_sec",))(lambda t: 1.0)
+    with pytest.raises(ValueError, match="giris blogunda ilan edilemez"):
+        ozellik.kaydet("olmaz_friction", "giris", ("friction_pct",))(lambda t: 1.0)
+    with pytest.raises(ValueError, match="giris blogunda ilan edilemez"):
+        ozellik.kaydet("olmaz_hold", "giris", ("hold_sec",))(lambda t: 1.0)
+
+
+def test_tetik_gecikme_artik_sonra_blogunda():
+    assert "tetik_gecikme" in ozellik.sonrasi()
+    assert "tetik_gecikme" not in ozellik.giris_anI()
+    assert "friction" in ozellik.sonrasi()
+
+
+def test_giris_blogunun_tamami_giris_damgali():
+    from hibrit_trader.forensic.veri import ALAN_SICILI
+    for ad in ozellik.giris_anI():
+        for alan in ozellik.meta(ad)["alanlar"]:
+            assert ALAN_SICILI[alan].get("damga", "giris") == "giris", \
+                f"{ad} -> {alan} giris damgali degil"
+
+
+def test_guven_sinifi_ve_siralama(veri_dizin):
+    assert ozellik.meta("h1")["guven"] == "A"
+    assert ozellik.meta("taze_fark")["guven"] == "B"        # kismi alan
+    assert ozellik.meta("m5_h1_orani")["guven"] == "B"      # turev
+    bas = veri._ts(veri.GUVENILIR_BASLANGIC) + 7200
+    sat = []
+    for i in range(40):
+        sat.append(_satir("v7", bas + i * 60, +1.0, 1.0, tid=f"C{i}",
+                          chg_h1=10.0, entry_fresh_fark_pct=0.1))
+    for i in range(10):
+        sat.append(_satir("v7", bas + 4000 + i * 60, -20.0, -20.0, tid=f"H{i}",
+                          chg_h1=45.0, entry_fresh_fark_pct=-9.0))
+    (veri_dizin / "v7_trades.jsonl").write_text("\n".join(sat))
+    ev = veri.yukle(("v7",))
+    s = kohort.uygula("esik_alti_pct", ev.islemler, esik=-15.0)
+    imz = karsilastir.imza(s.hedef, s.kontrol,
+                           ozellikler=ozellik.giris_anI(), min_n=5)
+    olculen = [r for r in imz["satirlar"] if r["durum"] == "olculdu"]
+    siniflar = [r["guven"] for r in olculen]
+    assert siniflar == sorted(siniflar)     # A'lar B'lerden once

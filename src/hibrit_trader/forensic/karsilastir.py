@@ -100,6 +100,7 @@ def imza(hedef: list[dict], kontrol: list[dict],
         m = ozellik.meta(ad)
         satirlar.append({
             "ozellik": ad, "durum": "olculdu", "zaman": m["zaman"],
+            "guven": m["guven"], "turev": list(m["turev"]),
             "kismi_alanlar": list(m["kismi_alanlar"]),
             "hedef_n": len(hv), "kontrol_n": len(kv),
             "hedef_medyan": round(median(hv), 4),
@@ -109,8 +110,11 @@ def imza(hedef: list[dict], kontrol: list[dict],
             "gun_tutarliligi": f"{ayni}/{len(isaretler)}" if isaretler else "-",
             "eksik_hedef": h_eksik, "eksik_kontrol": k_eksik,
         })
+    # Siralama: ONCE guvenilirlik sinifi (A>B>C), SONRA etki buyuklugu.
+    # Boylece kismi/turev bir ozellik, tam ve bagimsiz bir ozelligin
+    # onune yalnizca buyuk delta gosterdigi icin gecemez.
     olculen = [s for s in satirlar if s["durum"] == "olculdu"]
-    olculen.sort(key=lambda s: -abs(s["cliff_delta"]))
+    olculen.sort(key=lambda s: (s.get("guven", "C"), -abs(s["cliff_delta"])))
     return {"satirlar": olculen + [s for s in satirlar if s["durum"] != "olculdu"],
             "hedef_n": len(hedef), "kontrol_n": len(kontrol),
             "gun_sayisi": len(gunler)}

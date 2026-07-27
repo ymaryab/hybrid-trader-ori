@@ -59,8 +59,9 @@ def metin(evren_ozet: dict, kohort_ad: str, maliyet: dict,
             ("sonra", "GIRISTEN SONRA OLUSANLAR",
              "yalniz teshis; bunlarla giris kurali KURULAMAZ")):
         s.append(f"{baslik}  ({aciklama})")
-        s.append("  %-22s %9s %9s %8s %8s %8s" %
-                 ("ozellik", "kohort", "kontrol", "delta", "buyukluk", "gun"))
+        s.append("  %-3s %-20s %9s %9s %8s %8s %6s" %
+                 ("gvn", "ozellik", "kohort", "kontrol", "delta", "buyukluk",
+                  "gun"))
         var = False
         for r in imza["satirlar"]:
             if r.get("zaman") != zaman:
@@ -71,11 +72,15 @@ def metin(evren_ozet: dict, kohort_ad: str, maliyet: dict,
                 var = True
                 continue
             var = True
-            uyari = " *kismi" if r["kismi_alanlar"] else ""
-            s.append("  %-22s %9.3f %9.3f %8.3f %8s %8s%s" %
-                     (r["ozellik"], r["hedef_medyan"], r["kontrol_medyan"],
-                      r["cliff_delta"], r["buyukluk"], r["gun_tutarliligi"],
-                      uyari))
+            not_ = ""
+            if r.get("kismi_alanlar"):
+                not_ += " *kismi"
+            if r.get("turev"):
+                not_ += " *turev(%s)" % ",".join(r["turev"])
+            s.append("  %-3s %-20s %9.3f %9.3f %8.3f %8s %6s%s" %
+                     (r.get("guven", "?"), r["ozellik"], r["hedef_medyan"],
+                      r["kontrol_medyan"], r["cliff_delta"], r["buyukluk"],
+                      r["gun_tutarliligi"], not_))
         if not var:
             s.append("  (kayitli ozellik yok)")
         s.append("")
@@ -84,6 +89,10 @@ def metin(evren_ozet: dict, kohort_ad: str, maliyet: dict,
     s.append("  cliff delta: |d|<0.15 ihmal · 0.15-0.33 kucuk · 0.33-0.47 orta"
              " · >=0.47 buyuk")
     s.append("  gun sutunu: etkinin ayni isarette kaldigi gun / olculebilen gun")
+    s.append("  gvn: A = tam dolu alan, karar aninda bilinir, bagimsiz")
+    s.append("       B = kismi dolu alan VEYA baska ozelliklerin turevi")
+    s.append("       C = degeri dogrulanmamis alan")
+    s.append("  siralama ONCE guven sinifina, sonra etki buyuklugune gore")
     s.append("  *kismi: ozellik, alani dolu olan ALT-EVRENDE olculdu")
     s.append("  Fabrika esik onermez; ayrim guclu gorunuyorsa siradaki adim"
              " ON-KAYITLI ve kor pencereli dogrulamadir.")
